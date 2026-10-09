@@ -6,14 +6,21 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  ACCOUNT_TIERS,
+  type AccountTier,
   missingTeamRoles,
+  PLATFORM_DATA_HANDLING,
+  REPORT_CADENCE_LABELS,
   RETENTION_DAYS,
+  type ReportCadence,
   STORE_CATEGORY_IDS,
   type StoreCategory,
+  type SubscribeErrorKind,
+  type SubscriptionStatus,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import type { Accounts } from "./accounts.ts";
+import { type Accounts, KindError } from "./accounts.ts";
 import type { Rooms } from "./rooms.ts";
 
 export const MARKET_FEE_RATE = 0.3; // 앱스토어 벤치마크 30% (§18 결정). 변경은 여기 한 곳.
@@ -32,10 +39,16 @@ export interface TeamPackage {
   summary: string;
   roles: PackageRole[];
   approvalPoints: string[]; // 승인 없이는 나가지 않는 행위 (§7.1-4)
-  reportCadence: "weekly";
+  reportCadence: ReportCadence;
   verified: boolean;
   metrics: { published: number; indexed: number; ai_citations: number };
   operatorNotice?: string;
+  /** "입점 심사 중" — 목록에는 보이지만 아직 구독할 수 없다 */
+  reviewing?: boolean;
+  /** 이 팀의 데이터 처리 방식. 없으면 플랫폼 공통 문구(PLATFORM_DATA_HANDLING) */
+  dataHandling?: string;
+  /** 이 등급(`users.tier`)이어야 구독할 수 있다. 없으면 누구나 */
+  requiredTier?: AccountTier;
   /** 비공개: 팀 YAML 경로·실행 이미지. 응답에 내보내지 않는다. */
   runtime: { teamYaml: string; image: string };
   createdAt: string;
@@ -44,13 +57,24 @@ export interface Subscription {
   id: string;
   packageId: string;
   roomId: string;
-  status: "active" | "cancelled";
+  /** active → (해지) cancelled: 기간 말(`endsAt`)까지 해지 예약 → ended */
+  status: SubscriptionStatus;
   priceMonthly: number; // 구독 시점 가격(원). 0 = 파일럿 무료
   startedAt: string;
   nextBillingAt: string;
   cancelledAt?: string;
   dataRetainedUntil?: string; // 해지 후 30일 (§6.2, §15.4.5)
+  /** 해지했을 때의 기간 말. 이 시각이 지나면 ended */
+  endsAt?: string;
+  /** 결제 수단 표시 문구. 파일럿은 결제가 없어 비어 있다 */
+  paymentMethod?: string;
 }
+/** 응답 모양 — 없는 값은 빠뜨리지 않고 null 로 낸다 (계약: `paymentMethod`·`endsAt`). */
+export const subscriptionView = (s: Subscription) => ({
+  ...s,
+  paymentMethod: s.paymentMethod ?? null,
+  endsAt: s.endsAt ?? null,
+});
 export interface Provisioning {
   id: string;
   userId: string;
@@ -66,13 +90,23 @@ const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const PRICE_PREFIX = "price:";
 const validPrice = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
+/** 발행→인용 전환율(0~100). 발행이 0건이면 아직 잴 수 없다 — null. */
+const conversionRate = ({ published, ai_citations }: TeamPackage["metrics"]): number | null =>
+  published > 0 ? Math.min(100, Math.round((ai_citations / published) * 1000) / 10) : null;
+/** `mine` = 보는 사람의 구독 상태. 주지 않으면(상세를 소유자 없이 조립할 때) 구독 안 함으로 낸다. */
 export const publicPackage = (
   { runtime: _runtime, ...pkg }: TeamPackage,
   priceMonthly: number,
+  mine: { subscribed: boolean; roomId: string | null } = { subscribed: false, roomId: null },
 ) => ({
   ...pkg,
   priceMonthly,
   roleCount: pkg.roles.length,
+  ...mine,
+  reviewing: pkg.reviewing === true,
+  reportCadence: REPORT_CADENCE_LABELS[pkg.reportCadence] as string,
+  dataHandling: pkg.dataHandling ?? PLATFORM_DATA_HANDLING,
+  conversionRate: conversionRate(pkg.metrics),
 });
 
 export class Catalog {
@@ -131,8 +165,25 @@ export class Catalog {
     await this.db.put("system", "packages", pkg);
     return pkg;
   }
+  /** 이 사용자가 지금 구독 중인(active) 패키지 → 그 방. 해지 예약·종료된 구독은 «구독 중» 이 아니다. */
+  private async subscribedRooms(owner: string): Promise<Map<string, string>> {
+    return new Map(
+      (await this.mine(owner))
+        .filter((s) => s.status === "active")
+        .map((s) => [s.packageId, s.roomId]),
+    );
+  }
+  /** 한 패키지의 공개 모양 (가격 + 보는 사람의 구독 상태). */
+  async packageView(pkg: TeamPackage, owner?: string) {
+    const roomId = owner ? (await this.subscribedRooms(owner)).get(pkg.id) : undefined;
+    return publicPackage(pkg, await this.price(pkg), {
+      subscribed: roomId !== undefined,
+      roomId: roomId ?? null,
+    });
+  }
   async packages(
     filter: { q?: string; category?: Category; sort?: "performance" | "price" | "newest" } = {},
+    owner?: string,
   ) {
     let list = await this.db.list<TeamPackage>("system", "packages");
     if (filter.category) list = list.filter((p) => p.category === filter.category);
@@ -145,7 +196,15 @@ export class Catalog {
           .includes(q),
       );
     }
-    const priced = await Promise.all(list.map(async (p) => publicPackage(p, await this.price(p))));
+    const rooms = owner ? await this.subscribedRooms(owner) : new Map<string, string>();
+    const priced = await Promise.all(
+      list.map(async (p) =>
+        publicPackage(p, await this.price(p), {
+          subscribed: rooms.has(p.id),
+          roomId: rooms.get(p.id) ?? null,
+        }),
+      ),
+    );
     const sort = filter.sort ?? "performance";
     return priced.sort((a, b) =>
       sort === "price"
@@ -172,21 +231,42 @@ export class Catalog {
 
   // ---- subscriptions (§6.3 트랜잭션) ----
   /** 구독 + 방 + 프로비저닝 큐를 한 번에. 중간에 실패하면 만든 것을 전부 되돌린다 (보상 롤백). */
+  /**
+   * `options.restore` — 해지했던 팀을 다시 구독할 때 기존 방을 되살린다(읽기 전용 해제). 아니면 새 방에서 시작한다.
+   * `options.tier` — 구독하는 사람의 등급. 패키지가 `requiredTier` 를 요구하는데 모자라면 403 `kind: "tier"`.
+   */
   async subscribe(
     owner: string,
     packageId: string,
-  ): Promise<{ subscription: Subscription; roomId: string }> {
+    options: { restore?: boolean; tier?: AccountTier } = {},
+  ): Promise<{ subscription: ReturnType<typeof subscriptionView>; roomId: string }> {
     const pkg = await this.packageById(packageId);
-    const active = (await this.mine(owner)).find(
-      (s) => s.packageId === packageId && s.status === "active",
-    );
-    if (active) throw new AppError("이미 구독 중인 팀입니다", 409);
+    if (pkg.reviewing) throw new AppError("입점 심사 중인 팀은 아직 구독할 수 없습니다", 409);
+    if (
+      pkg.requiredTier &&
+      ACCOUNT_TIERS.indexOf(options.tier ?? "free") < ACCOUNT_TIERS.indexOf(pkg.requiredTier)
+    )
+      throw new KindError<SubscribeErrorKind>(
+        "지금 등급으로는 이 팀을 구독할 수 없습니다. 등급을 올린 뒤 다시 시도하세요",
+        403,
+        "tier",
+      );
+    const subs = (await this.mine(owner)).filter((s) => s.packageId === packageId);
+    if (subs.some((s) => s.status === "active")) throw new AppError("이미 구독 중인 팀입니다", 409);
     const now = Date.now();
-    const room = await this.rooms.create(owner, {
-      packageId: pkg.id,
-      title: pkg.name,
-      character: pkg.character,
-    });
+    // 복원: 가장 최근에 해지한 구독의 방. 복원할 방이 없으면 새 방으로 바꿔치지 않고 실패한다
+    const prior = options.restore
+      ? subs.sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0]
+      : undefined;
+    if (options.restore && !prior)
+      throw new AppError("복원할 이전 구독이 없습니다. 새로 시작을 고르세요", 409);
+    const room = prior
+      ? await this.rooms.patch(owner, prior.roomId, { archived: false })
+      : await this.rooms.create(owner, {
+          packageId: pkg.id,
+          title: pkg.name,
+          character: pkg.character,
+        });
     const subscription: Subscription = {
       id: randomUUID(),
       packageId: pkg.id,
@@ -209,34 +289,103 @@ export class Catalog {
     } catch (error) {
       // ponytail: 문서 저장소라 DB 트랜잭션 대신 보상 롤백. 다중 인스턴스가 되면 Postgres 트랜잭션으로.
       await this.db.remove(owner, "subscriptions", subscription.id);
-      await this.db.remove(owner, "rooms", room.id);
+      // 복원한 방은 지우지 않고 다시 읽기 전용으로 돌려놓는다
+      if (prior) await this.rooms.patch(owner, room.id, { archived: true });
+      else await this.db.remove(owner, "rooms", room.id);
       throw new AppError(`구독에 실패해 되돌렸습니다: ${(error as Error).message}`, 502);
     }
+    // 복원한 방을 가리키던 옛 구독은 끝난 것으로 닫는다 — 한 방에 되살릴 수 있는 구독이 둘이 되지 않게
+    if (prior && prior.status !== "ended")
+      await this.db.put<Subscription>(owner, "subscriptions", {
+        ...prior,
+        status: "ended",
+        endsAt: subscription.startedAt,
+      });
     await this.rooms.post(owner, room.id, {
       role: "system",
       kind: "text",
-      text: `${pkg.name} 구독이 시작되었습니다. 팀이 준비되면 여기로 보고합니다.`,
+      text: prior
+        ? `${pkg.name} 구독을 다시 시작했습니다. 이전 방과 기록을 이어서 씁니다.`
+        : `${pkg.name} 구독이 시작되었습니다. 팀이 준비되면 여기로 보고합니다.`,
     });
-    return { subscription, roomId: room.id };
+    return { subscription: subscriptionView(subscription), roomId: room.id };
   }
-  async mine(owner: string) {
-    return this.db.list<Subscription>(owner, "subscriptions");
+  /** 내 구독 전부. 해지 예약의 기간 말(`endsAt`)이 지났으면 여기서 ended 로 닫는다 (읽는 곳마다 따로 판정하지 않게). */
+  async mine(owner: string): Promise<Subscription[]> {
+    const subs = await this.db.list<Subscription>(owner, "subscriptions");
+    const now = Date.now();
+    return Promise.all(
+      subs.map(async (s) =>
+        s.status === "cancelled" && s.endsAt !== undefined && Date.parse(s.endsAt) <= now
+          ? this.db.put<Subscription>(owner, "subscriptions", { ...s, status: "ended" })
+          : s,
+      ),
+    );
   }
-  /** 해지: 방은 읽기 전용(archived)으로 남고 30일 뒤 삭제 대상 */
-  async cancel(owner: string, id: string) {
-    const subscription = await this.db.get<Subscription>(owner, "subscriptions", id);
+  private async own(owner: string, id: string): Promise<Subscription> {
+    const subscription = (await this.mine(owner)).find((s) => s.id === id);
     if (!subscription) throw new AppError("구독을 찾을 수 없습니다", 404);
-    if (subscription.status === "cancelled") return subscription;
+    return subscription;
+  }
+  /** 해지(예약): 방은 읽기 전용(archived)으로 남고 30일 뒤 삭제 대상. 기간 말(`endsAt`)까지는 되돌릴 수 있다 */
+  async cancel(owner: string, id: string) {
+    const subscription = await this.own(owner, id);
+    if (subscription.status !== "active") return subscriptionView(subscription);
     const now = Date.now();
     const updated: Subscription = {
       ...subscription,
       status: "cancelled",
       cancelledAt: new Date(now).toISOString(),
       dataRetainedUntil: new Date(now + RETENTION_MS).toISOString(),
+      endsAt: subscription.nextBillingAt,
     };
     await this.db.put(owner, "subscriptions", updated);
     await this.rooms.patch(owner, subscription.roomId, { archived: true });
-    return updated;
+    return subscriptionView(updated);
+  }
+  /** 해지 예약 취소: cancelled → active, 방 읽기 전용 해제. 이미 끝난 구독은 되살리지 못한다(다시 구독). */
+  async resume(owner: string, id: string) {
+    const subscription = await this.own(owner, id);
+    if (subscription.status === "active") return subscriptionView(subscription);
+    if (subscription.status === "ended")
+      throw new AppError("이미 종료된 구독입니다. 스토어에서 다시 구독하세요", 409);
+    const others = (await this.mine(owner)).filter(
+      (s) => s.id !== id && s.packageId === subscription.packageId && s.status === "active",
+    );
+    if (others.length) throw new AppError("이미 구독 중인 팀입니다", 409);
+    const {
+      cancelledAt: _cancelledAt,
+      dataRetainedUntil: _retained,
+      endsAt: _endsAt,
+      ...rest
+    } = subscription;
+    const updated: Subscription = { ...rest, status: "active" };
+    await this.db.put(owner, "subscriptions", updated);
+    await this.rooms.patch(owner, subscription.roomId, { archived: false });
+    return subscriptionView(updated);
+  }
+  /** 설정 화면의 등급 줄: 지금 구독 중인 팀 이름들과 가장 가까운 다음 결제일. 구독이 없으면 둘 다 null. */
+  async tierSummary(owner: string): Promise<{
+    subscribed: boolean;
+    subscription: string | null;
+    nextBillingAt: string | null;
+  }> {
+    const active = (await this.mine(owner)).filter((s) => s.status === "active");
+    if (active.length === 0) return { subscribed: false, subscription: null, nextBillingAt: null };
+    const names = await Promise.all(
+      active.map(async (s) => {
+        const pkg = await this.db.get<TeamPackage>("system", "packages", s.packageId);
+        if (pkg) return pkg.name;
+        // 설정 화면 전체를 막지 않되, 없는 팀을 이름 있는 것처럼 꾸미지도 않는다
+        console.error(`[osiri] 구독 ${s.id} 의 팀 ${s.packageId} 를 찾을 수 없습니다`);
+        return `알 수 없는 팀(${s.packageId})`;
+      }),
+    );
+    return {
+      subscribed: true,
+      subscription: names.join(" · "),
+      nextBillingAt: active.map((s) => s.nextBillingAt).sort()[0] ?? null,
+    };
   }
   /** 내 구독 카드 (§6.2): 팀·요금제·다음 결제일·승인 대기·진척 */
   async cards(owner: string) {
@@ -256,7 +405,7 @@ export class Catalog {
         if (problems.length)
           console.error(`[osiri] 구독 카드 불완전 subscription=${s.id}: ${problems.join(" / ")}`);
         return {
-          ...s,
+          ...subscriptionView(s),
           packageName: pkg?.name ?? "",
           character: pkg?.character ?? "",
           pendingApprovals: board?.pendingApprovals ?? 0,
@@ -273,28 +422,50 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
   const app = new Hono<{ Variables: { owner: string } }>();
   app.get("/store/packages", async (c) =>
     c.json(
-      await catalog.packages({
-        q: c.req.query("q"),
-        // "전체" 는 값이 아니라 필터 없음 — category 를 보내지 않는다
-        category: z
-          .enum(STORE_CATEGORY_IDS)
-          .optional()
-          .parse(c.req.query("category") || undefined),
-        sort: c.req.query("sort") as "performance" | "price" | "newest" | undefined,
-      }),
+      await catalog.packages(
+        {
+          q: c.req.query("q"),
+          // "전체" 는 값이 아니라 필터 없음 — category 를 보내지 않는다
+          category: z
+            .enum(STORE_CATEGORY_IDS)
+            .optional()
+            .parse(c.req.query("category") || undefined),
+          sort: c.req.query("sort") as "performance" | "price" | "newest" | undefined,
+        },
+        c.get("owner"),
+      ),
     ),
   );
-  app.get("/store/packages/:slug", async (c) => {
-    const pkg = await catalog.packageBySlug(c.req.param("slug"));
-    return c.json(publicPackage(pkg, await catalog.price(pkg)));
-  });
+  app.get("/store/packages/:slug", async (c) =>
+    c.json(
+      await catalog.packageView(await catalog.packageBySlug(c.req.param("slug")), c.get("owner")),
+    ),
+  );
   app.post("/subscriptions", async (c) => {
-    const body = z.object({ packageId: z.string().min(1) }).parse(await c.req.json());
-    return c.json(await catalog.subscribe(c.get("owner"), body.packageId));
+    const body = z
+      .object({ packageId: z.string().min(1), restore: z.boolean().optional() })
+      .parse(await c.req.json());
+    const owner = c.get("owner");
+    try {
+      return c.json(
+        await catalog.subscribe(owner, body.packageId, {
+          restore: body.restore,
+          tier: (await accounts.userById(owner))?.tier,
+        }),
+      );
+    } catch (error) {
+      // 종류가 붙은 실패(등급 미달)는 본문에 kind 를 싣는다 — 공용 오류 처리기는 error 문장만 낸다
+      if (error instanceof KindError)
+        return c.json({ error: error.message, kind: error.kind }, error.status);
+      throw error;
+    }
   });
   app.get("/subscriptions/mine", async (c) => c.json(await catalog.cards(c.get("owner"))));
   app.post("/subscriptions/:id/cancel", async (c) =>
     c.json(await catalog.cancel(c.get("owner"), c.req.param("id"))),
+  );
+  app.post("/subscriptions/:id/resume", async (c) =>
+    c.json(await catalog.resume(c.get("owner"), c.req.param("id"))),
   );
 
   const admin = async (owner: string) => accounts.requireRole(owner, "admin");
@@ -328,6 +499,9 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
           .object({ published: z.number(), indexed: z.number(), ai_citations: z.number() })
           .default({ published: 0, indexed: 0, ai_citations: 0 }),
         operatorNotice: z.string().max(500).optional(),
+        reviewing: z.boolean().optional(),
+        dataHandling: z.string().min(1).max(500).optional(),
+        requiredTier: z.enum(ACCOUNT_TIERS).optional(),
         runtime: z.object({ teamYaml: z.string(), image: z.string() }),
       })
       .parse(await c.req.json());

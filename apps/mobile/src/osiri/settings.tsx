@@ -16,17 +16,26 @@ import {
 import { useEffect, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import {
+  ANSWER_MODE_LABELS,
+  ANSWER_MODES,
+  type AnswerMode,
+  CHARACTER_INTENSITIES,
+  CHARACTER_INTENSITY_LABELS,
+  type CharacterPrefs,
   EMBED_DOWNLOAD_MB,
   EMBED_MODEL_ID,
   FIXED_TIERS,
+  type FixedTier,
+  MODEL_KEY_PROVIDERS,
   type ModelTier,
+  type NotificationPrefs,
   RETENTION_DAYS,
   TIER_LABELS,
   USER_ROLES,
   type UserRole,
 } from "../../../../packages/domain/src/osiri";
 import type { Invite, PublicUser } from "../../../server/src/osiri/accounts.ts";
-import type { Routing } from "../../../server/src/osiri/routing.ts";
+import type { ModelKeyRow, Routing } from "../../../server/src/osiri/routing.ts";
 import {
   Button,
   Card,
@@ -47,41 +56,30 @@ import {
   ConnectionsScreen,
   column,
   columns,
-  KEY_PROVIDERS,
   Loaded,
-  type ModelKey,
   mono,
   PROVIDER_LABELS,
 } from "./connections";
 import { deviceAvailable, embedOnDevice, measureDevice } from "./device-embed";
+import { setCharacterPref } from "./eve";
 import { MemoryScreen } from "./memory";
 import { OperatorScreen } from "./operator";
 import { SkillsScreen } from "./skills";
 import { Block, Choice, useAction, useLoad, won } from "./store";
 
-// ---- 계약 타입 (서버 타입에 아직 없는 것만 한 번 선언 — 서버가 내보내면 그쪽을 type-import 한다) ----
-const ANSWER_MODE_LABELS = { auto: "자동", device: "항상 기기", server: "항상 서버" } as const;
-type AnswerMode = keyof typeof ANSWER_MODE_LABELS;
-const INTENSITY_LABELS = { motion: "동작", face: "표정만", text: "문구만" } as const;
-type Intensity = keyof typeof INTENSITY_LABELS;
-/** 계약 «설정»: GET /settings */
+/** `GET /settings` — 서버 routing.ts 의 `settingsView()` 가 만든다(내보낸 타입이 없어 여기 한 번 적는다). */
 interface AppSettings {
   tier: { label: string; subscription: string | null; nextBillingAt: string | null };
   answerMode: AnswerMode;
   autoEconomy: boolean;
-  fixedModel: string | null;
+  /** 고정한 서버 티어의 문자열("2"·"3"·"4"). null = 고정 안 함 */
+  fixedModel: `${FixedTier}` | null;
   monthlyCapKrw: number | null;
-  notifications: { approvals: boolean; weeklyReport: boolean };
-  character: { enabled: boolean; intensity: Intensity };
+  notifications: NotificationPrefs;
+  character: CharacterPrefs;
 }
-/** 계약 «설정»: GET /billing/usage. percent 는 상한 대비 0~100, null = 측정 중 */
-interface BillingUsage {
-  costKrw: number;
-  capKrw: number | null;
-  percent: number | null;
-  byok: boolean;
-  savedKrw: number | null;
-}
+/** `GET /billing/usage` — 서버 `Routing.billing()`. percent 는 상한 대비 0~100, null = 측정 중 */
+type BillingUsage = Awaited<ReturnType<Routing["billing"]>>;
 type MonthUsage = Awaited<ReturnType<Routing["month"]>>;
 
 // ---- 하위 화면 ----
@@ -164,7 +162,6 @@ const text = {
   autoEconomy: "가성비 자동 라우팅",
   fixedModel: "모델 직접 고르기",
   fixedNone: "고르지 않음",
-  fixedCurrent: (model: string) => `지금 고정된 모델: ${model}`,
   deviceTitle: "기기 모델",
   smallLayer: "작은 층 · 임베딩젬마 2",
   smallLayerHint: `기본 다운로드 ${EMBED_DOWNLOAD_MB}MB · 기억 검색·분류 신호`,
@@ -416,7 +413,6 @@ function ModelCard({
       setCap(undefined);
       notify(text.saved);
     });
-  const fixedTier = FIXED_TIERS.find((tier) => String(tier) === settings.fixedModel);
   return (
     <>
       <View>
@@ -424,7 +420,7 @@ function ModelCard({
         <Card style={{ gap: 12 }}>
           <Block title={text.answerMode}>
             <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-              {(Object.keys(ANSWER_MODE_LABELS) as AnswerMode[]).map((mode) => (
+              {ANSWER_MODES.map((mode) => (
                 <Choice
                   key={mode}
                   label={ANSWER_MODE_LABELS[mode]}
@@ -452,14 +448,11 @@ function ModelCard({
                   <Choice
                     key={tier}
                     label={TIER_LABELS[tier]}
-                    selected={fixedTier === tier}
-                    onPress={() => patch({ fixedModel: String(tier) })}
+                    selected={settings.fixedModel === `${tier}`}
+                    onPress={() => patch({ fixedModel: `${tier}` as const })}
                   />
                 ))}
               </View>
-              {settings.fixedModel !== null && fixedTier === undefined && (
-                <Text style={[s.small, mono]}>{text.fixedCurrent(settings.fixedModel)}</Text>
-              )}
             </Block>
           )}
           <ErrorNotice error={act.error} />
@@ -564,14 +557,14 @@ function UsageSummary({
 
 function KeysCard({ openConnections }: { openConnections: () => void }) {
   const { api } = useWorkspace();
-  const keys = useLoad(() => api.request<ModelKey[]>("/api/model-keys"));
+  const keys = useLoad(() => api.request<ModelKeyRow[]>("/api/model-keys"));
   return (
     <View>
       <SectionHeading title={text.keysTitle} />
       <Card style={{ gap: 8 }}>
         <Loaded state={keys} rows={1}>
           {(items) => {
-            const active = KEY_PROVIDERS.flatMap((provider) =>
+            const active = MODEL_KEY_PROVIDERS.flatMap((provider) =>
               items.filter((item) => item.provider === provider && item.status === "active"),
             );
             return active.length === 0 ? (
@@ -716,7 +709,9 @@ function PreferencesCard({
   const patch = (body: Partial<Pick<AppSettings, "notifications" | "character">>) =>
     act.run(async () => {
       await api.request("/api/settings", body, "PATCH");
-      onSaved(await api.request<AppSettings>("/api/settings"));
+      const next = await api.request<AppSettings>("/api/settings");
+      setCharacterPref(next.character); // 열려 있는 모든 캐릭터에 바로 반영
+      onSaved(next);
     });
   const { notifications, character } = settings;
   return (
@@ -750,10 +745,10 @@ function PreferencesCard({
           {character.enabled && (
             <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
               <Text style={s.small}>{text.intensity}</Text>
-              {(Object.keys(INTENSITY_LABELS) as Intensity[]).map((intensity) => (
+              {CHARACTER_INTENSITIES.map((intensity) => (
                 <Choice
                   key={intensity}
-                  label={INTENSITY_LABELS[intensity]}
+                  label={CHARACTER_INTENSITY_LABELS[intensity]}
                   selected={character.intensity === intensity}
                   onPress={() => patch({ character: { ...character, intensity } })}
                 />

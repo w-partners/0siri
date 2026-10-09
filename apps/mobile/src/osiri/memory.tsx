@@ -3,7 +3,15 @@
 import { Brain, ChevronDown, ChevronUp } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { EMBED_DOWNLOAD_MB, EMBED_DTYPE } from "../../../../packages/domain/src/osiri";
+import {
+  EMBED_DOWNLOAD_MB,
+  EMBED_DTYPE,
+  MEMORY_CATEGORIES,
+  MEMORY_CATEGORY_LABELS,
+  type MemoryCategory,
+  SKILL_STATUS_LABELS,
+} from "../../../../packages/domain/src/osiri";
+import type { Skill } from "../../../server/src/osiri/skills.ts";
 import {
   Button,
   Card,
@@ -22,29 +30,8 @@ import { Confirm, column, columns, Loaded, mono } from "./connections";
 import { measureDevice } from "./device-embed";
 import type { DeviceReport } from "./device-embed.types";
 import { CharacterAvatar } from "./eve";
-import type { Skill, SkillStatus } from "./skills";
 import { Choice, useAction, useLoad } from "./store";
 import { type Memory, type SearchResult, searchMemories } from "./tier0";
-
-// ---- 계약 타입 (서버 타입에 아직 없는 것만 한 번 선언 — 서버가 내보내면 그쪽을 type-import 한다) ----
-const CATEGORY_LABELS = {
-  profile: "프로필",
-  preference: "선호",
-  goal: "목표",
-  feedback: "피드백",
-} as const;
-type MemoryCategory = keyof typeof CATEGORY_LABELS;
-/** 계약 «기억»: GET /memories 항목 = 기존 Memory + category · sourceLabel("대화에서 학습" 등) */
-type Fact = Memory & { category: MemoryCategory; sourceLabel: string };
-type FactResult = Omit<SearchResult, "items"> & { items: Fact[] };
-// ponytail: 상태 라벨은 skills.tsx 의 text.status 와 같은 문구다 — 그쪽이 export 하지 않아 여기 한 번 더 있다. export 되면 이 표를 지운다
-const SKILL_STATUS_LABELS: Record<SkillStatus, string> = {
-  draft: "승인 대기",
-  active: "장착됨",
-  retire_proposed: "폐기 제안",
-  rejected: "반려됨",
-  retired: "폐기됨",
-};
 
 const text = {
   title: "기억",
@@ -135,15 +122,15 @@ function Facts() {
   const [category, setCategory] = useState<MemoryCategory>();
   const query = q.trim();
   // 티어 0: 기기 임베딩으로 검색하고, 안 되면 서버로 — 어느 쪽인지와 넘어간 이유를 숨기지 않는다 (§11.1)
-  const list = useLoad<FactResult>(
+  const list = useLoad<SearchResult>(
     async () => {
-      const all = await api.request<Fact[]>(
+      const all = await api.request<Memory[]>(
         `/api/memories?limit=200${category ? `&category=${category}` : ""}`,
       );
       if (!query) return { items: all, servedBy: "server" };
       const found = await searchMemories(api, query, all, 20);
-      // searchMemories 는 받은 항목을 그대로 돌려주므로 Fact 필드가 남는다. 서버 폴백 경로는 카테고리를 모르니 한 번 더 거른다
-      const items = (found.items as Fact[]).filter((m) => !category || m.category === category);
+      // 서버 폴백 경로(`/memories?q=`)는 카테고리를 모르니 한 번 더 거른다
+      const items = found.items.filter((m) => !category || m.category === category);
       return { ...found, items };
     },
     `${query}|${category ?? ""}`,
@@ -158,10 +145,10 @@ function Facts() {
         <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
           <Text style={s.small}>{text.category}</Text>
           <Choice label={text.all} selected={!category} onPress={() => setCategory(undefined)} />
-          {(Object.keys(CATEGORY_LABELS) as MemoryCategory[]).map((id) => (
+          {MEMORY_CATEGORIES.map((id) => (
             <Choice
               key={id}
-              label={CATEGORY_LABELS[id]}
+              label={MEMORY_CATEGORY_LABELS[id]}
               selected={category === id}
               onPress={() => setCategory(id)}
             />
@@ -192,7 +179,11 @@ function Facts() {
                 </Button>
               </Empty>
             ) : category ? (
-              <Empty icon={Brain} title={text.noneInCategory} detail={CATEGORY_LABELS[category]}>
+              <Empty
+                icon={Brain}
+                title={text.noneInCategory}
+                detail={MEMORY_CATEGORY_LABELS[category]}
+              >
                 <Button small onPress={() => setCategory(undefined)}>
                   {text.showAll}
                 </Button>
@@ -228,7 +219,7 @@ function Facts() {
   );
 }
 
-function FactRow({ fact, onChanged }: { fact: Fact; onChanged: () => void }) {
+function FactRow({ fact, onChanged }: { fact: Memory; onChanged: () => void }) {
   const { api, notify } = useWorkspace();
   const [mode, setMode] = useState<"idle" | "edit" | "remove">("idle");
   const [draft, setDraft] = useState(fact.text);

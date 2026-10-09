@@ -3,7 +3,9 @@
 import { CheckCheck, Clock3 } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
+import { APPROVAL_KINDS, type ApprovalKind } from "../../../../packages/domain/src/osiri";
 import type { Activity } from "../../../server/src/osiri/rooms.ts";
+import { ApiError } from "../api-response";
 import { Badge, Button, Card, Chip, colors, Empty, fonts, relativeDate, Skeleton, s } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
@@ -17,8 +19,7 @@ import {
 import { Choice, useLoad } from "./store";
 import { LoadError } from "./team-goals";
 
-// --- 계약 타입: docs/0siri-api-contract.md «승인 (화면 3·4)» GET /inbox. 서버에 타입이 생기면 type-import 로 바꾼다. ---
-export type ApprovalKind = "publish" | "consult" | "skill";
+// --- GET /inbox 응답. 서버에 내보낸 타입이 없다 — room-routes.ts 의 `app.get("/inbox")` 핸들러가 만든다. ---
 export type InboxApproval = PendingApproval & { kind: ApprovalKind; roomCharacter: string };
 /** 활동 한 줄. 종류 이름(label)은 서버가 준다 — 여기서 kind → 이름을 다시 만들지 않는다. */
 export type InboxActivity = Activity & { roomTitle: string; label: string };
@@ -29,7 +30,6 @@ export interface Inbox {
   failed: { roomId: string; roomTitle: string; error: string }[];
 }
 
-const KINDS: ApprovalKind[] = ["publish", "consult", "skill"];
 const text = {
   allTeams: "전체 팀",
   filter: "필터",
@@ -91,11 +91,12 @@ export function InboxScreen({
     try {
       status = (await decideApproval(api, a.id, decision, a.inputHash, reason)).status;
     } catch (e) {
-      // 실패했으면 그 카드의 현재 상태를 다시 읽는다. 아직 대기 중이면 사유를 카드에 그대로 보인다.
-      const fresh = await api.request<Inbox>(path);
-      inbox.setData(fresh);
-      const unknown = fresh.failed.some((f) => f.roomId === a.roomId);
-      if (unknown || fresh.pending.some((x) => x.id === a.id)) throw e;
+      // 이미 처리된 건은 409 + 현재 status 로 온다(AlreadyDecidedError). 그 밖의 실패는 사유를 카드에 그대로 보인다.
+      const current =
+        e instanceof ApiError && e.status === 409
+          ? (e.body as { status?: unknown } | undefined)?.status
+          : undefined;
+      if (typeof current !== "string") throw e;
       status = null; // 이미 다른 화면에서 처리됨 — 성공 토스트를 내지 않는다
     }
     setSettled((list) => [...list.filter((x) => x.item.id !== a.id), { item: a, status }]);
@@ -145,7 +146,7 @@ export function InboxScreen({
     <View style={{ flex: 1, gap: 14 }}>
       <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
         <Text style={s.small}>{text.filter}</Text>
-        {KINDS.map((k) => (
+        {APPROVAL_KINDS.map((k) => (
           <Choice
             key={k}
             label={text.kinds[k]}

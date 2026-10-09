@@ -1,11 +1,11 @@
 // 0Siri 계정 라우트 (0SIRI-SPEC §21 S1). openmuse 패턴대로 /api 아래에 둔다.
-//  공개:  POST /api/auth/login · POST /api/auth/invite/accept · POST /api/auth/logout
-//  인증:  GET /api/me · PATCH /api/me/profile · 관리자 /api/admin/*
+//  공개:  POST /api/auth/login · POST /api/auth/invite/accept · POST /api/auth/logout · POST /api/auth/waitlist
+//  인증:  GET /api/me · PATCH /api/me/profile · POST /api/account/delete · 관리자 /api/admin/*
 import { Hono } from "hono";
 import { z } from "zod";
 import { USER_ROLES } from "../../../../packages/domain/src/osiri.ts";
 import { AppError } from "../errors.ts";
-import type { Accounts } from "./accounts.ts";
+import type { Accounts, AuditWriter } from "./accounts.ts";
 
 type Env = { Variables: { owner: string } };
 
@@ -27,6 +27,21 @@ export function publicAccountRoutes(accounts: Accounts) {
     await accounts.logout(c.req.header("authorization"));
     return c.json({ ok: true });
   });
+  // 초대 코드가 없을 때 "초대 대기 신청". 같은 번호는 한 줄만 남는다 (멱등)
+  app.post("/waitlist", async (c) => {
+    const body = z.object({ phone: z.string().min(1).max(40) }).parse(await c.req.json());
+    await accounts.joinWaitlist(body.phone);
+    return c.json({ ok: true });
+  });
+  return app;
+}
+
+/** 탈퇴 요청 — `POST /api/account/delete`. 인증 뒤에 둔다. 증적은 `audit`(Rooms.audit)으로 남긴다. */
+export function accountDeletionRoutes(accounts: Accounts, audit: AuditWriter) {
+  const app = new Hono<Env>();
+  app.post("/account/delete", async (c) =>
+    c.json(await accounts.requestDeletion(c.get("owner"), audit)),
+  );
   return app;
 }
 
@@ -44,6 +59,8 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
         displayName: z.string().max(40).optional(),
         credentialText: z.string().max(120).optional(),
         onboardedAt: z.string().optional(),
+        specialty: z.string().max(80).optional(),
+        region: z.string().max(80).optional(),
       })
       .parse(await c.req.json());
     return c.json(await accounts.updateProfile(c.get("owner"), body));
@@ -71,6 +88,10 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
   app.get("/admin/invites", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
     return c.json(await accounts.listInvites());
+  });
+  app.get("/admin/waitlist", async (c) => {
+    await accounts.requireRole(c.get("owner"), "admin");
+    return c.json(await accounts.listWaitlist());
   });
   app.get("/admin/users", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");

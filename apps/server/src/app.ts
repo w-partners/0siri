@@ -25,16 +25,22 @@ import { AgentService } from "./engine/service.ts";
 import { AppError } from "./errors.ts";
 import { Files } from "./files.ts";
 import { GoogleAuth } from "./google-auth.ts";
-import { privateAccountRoutes, publicAccountRoutes } from "./osiri/account-routes.ts";
+import {
+  accountDeletionRoutes,
+  privateAccountRoutes,
+  publicAccountRoutes,
+} from "./osiri/account-routes.ts";
 import { Accounts } from "./osiri/accounts.ts";
 import { Approvals } from "./osiri/approvals.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
+import { Operator, operatorRoutes } from "./osiri/operator.ts";
 import { roomPersona } from "./osiri/persona.ts";
 import { roomRoutes, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
-import { Routing, routingRoutes } from "./osiri/routing.ts";
+import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
+import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -70,6 +76,8 @@ export async function createApp(
   const memories = new Memories(db);
   const catalog = new Catalog(db, rooms);
   const routing = new Routing(db, rooms);
+  const skills = new Skills(db, rooms);
+  const operator = new Operator(db, rooms, catalog, accounts, skills);
   const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   agent.osiri = { memories, routing };
@@ -161,6 +169,8 @@ export async function createApp(
   // 공개: 전화번호 로그인·초대 수락 (S1). 워커: 워커 토큰으로 인증 — 사용자 인증 미들웨어 앞에 둔다.
   app.route("/api/auth", publicAccountRoutes(accounts));
   app.route("/api/worker", workerRoutes(osiri));
+  // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
+  app.route("/api/worker", skillWorkerRoutes(skills));
   app.use("/api/*", async (c, next) => {
     const signedRoute =
       /^\/api\/files\/[^/]+\/content$|^\/api\/browsers\/[^/]+\/(?:preview|console)$/.test(
@@ -196,6 +206,13 @@ export async function createApp(
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", storeRoutes(catalog, accounts));
   app.route("/api", routingRoutes(routing));
+  app.route("/api", settingsRoutes(routing, catalog));
+  app.route(
+    "/api",
+    accountDeletionRoutes(accounts, (owner, input) => rooms.audit(owner, input)),
+  );
+  app.route("/api", skillRoutes(skills));
+  app.route("/api", operatorRoutes(operator));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));
   app.get("/api/calendar/events", async (c) => {
     const query = z

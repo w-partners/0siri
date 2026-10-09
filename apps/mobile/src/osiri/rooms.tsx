@@ -33,13 +33,18 @@ import {
   PRESENCE_LABELS,
   PRESENCE_STATES,
   type PresenceState,
+  REJECT_REASON_KINDS,
+  REJECT_REASON_LABELS,
+  type RejectReasonKind,
+  STAGE_LABELS,
+  VISIBLE_STAGES,
 } from "../../../../packages/domain/src/osiri";
 import type { Approval } from "../../../server/src/osiri/approvals.ts";
 import type {
   Activity,
   RoomBoard,
+  RoomCard,
   RoomMessage,
-  Room as RoomRecord,
   TaskStage,
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
@@ -67,28 +72,13 @@ import { LoadState, useLoad } from "./store";
 import { type GoalProposal, TeamGoalsScreen } from "./team-goals";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
-/** GET /rooms 항목 = 서버 Room 레코드 + list() 가 얹는 배지·상태 (계약 «방»). */
-export type Room = RoomRecord & {
-  pendingApprovals: number;
-  progress: number;
-  presence: string;
-  muted?: boolean;
-  /** 약속한 보고 주기를 넘긴 팀 — «멈춘 팀» */
-  stalled?: boolean;
-  /** 개인 방은 "일반 등급" */
-  tierLabel?: string;
-};
+/** GET /rooms 항목 — 서버 RoomCard 가 정본 */
+export type Room = RoomCard;
 const isPresence = (v: string): v is PresenceState =>
   (PRESENCE_STATES as readonly string[]).includes(v);
 /** GET /inbox 의 pending 항목 (tokenHash 제외 + roomTitle). */
 export type PendingApproval = Omit<Approval, "tokenHash"> & { roomTitle: string };
-export type RejectKind = "tone" | "fact" | "topic";
-/** 반려 사유 이름 — 화면 3·4 가 이 카드 하나를 같이 쓰므로 여기 한 곳 */
-export const REJECT_KINDS: { id: RejectKind; label: string }[] = [
-  { id: "tone", label: "톤" },
-  { id: "fact", label: "사실" },
-  { id: "topic", label: "주제" },
-];
+export type RejectKind = RejectReasonKind;
 /** 계약 «방» — 누가 답했는지 */
 export interface AnsweredBy {
   tier: number;
@@ -162,8 +152,6 @@ const text = {
   noReport: "예정 없음",
   openBoard: "현황판 보기",
   openGoals: "목표 보기",
-  // 화면에 보이는 흐름 5단계(기획 화면 3). 서버 flow 의 geo·done 은 화면 단계가 아니다.
-  stages: { detect: "감지", draft: "초안", review: "검수", approval: "승인 대기", publish: "발행" },
   board: "현황판",
   boardLine: (pending: number, progress: number) =>
     `현황 요약 승인 대기 ${pending} · 진척 ${progress}%`,
@@ -602,7 +590,7 @@ function Bar({ value }: { value: number }) {
     </View>
   );
 }
-const FLOW = Object.keys(text.stages) as (keyof typeof text.stages)[];
+const FLOW = VISIBLE_STAGES; // 화면에 보이는 흐름 5단계 (서버 flow 의 geo·done 은 화면 단계가 아니다)
 /** 흐름 5단계: 지난 단계 ✓ · 지금 단계 강조 · 사이를 선으로 잇는다 */
 function Flow({ flow }: { flow: Record<TaskStage, number> }) {
   // 지금 단계 = 일이 걸려 있는 가장 뒤 단계
@@ -653,7 +641,7 @@ function Flow({ flow }: { flow: Record<TaskStage, number> }) {
               />
             </View>
             <Text style={[s.small, now && { color: colors.accent, fontWeight: "700" }]}>
-              {text.stages[stage]}
+              {STAGE_LABELS[stage]}
             </Text>
           </View>
         );
@@ -850,7 +838,7 @@ export function ApprovalCard({
         <View style={{ gap: 8 }}>
           <Text style={s.small}>{text.rejectWhy}</Text>
           <View style={[s.row, { gap: 8 }]}>
-            {REJECT_KINDS.map((k) => (
+            {REJECT_REASON_KINDS.map((id) => ({ id, label: REJECT_REASON_LABELS[id] })).map((k) => (
               <Pressable
                 key={k.id}
                 accessibilityRole="radio"

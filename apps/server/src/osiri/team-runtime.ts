@@ -133,13 +133,22 @@ export class TeamRuntime {
     return this.options.llm(role, tier, `${agent.description}\n\n${agent.instruction}`, user);
   }
 
-  /** 팀장: 목표 분해 → 목표 트리 등록 (§8). */
-  async decompose(goalText: string): Promise<Goal[]> {
+  /**
+   * 팀장: 목표 분해 → 목표 트리 등록 (§8).
+   * `existingLong` 을 주면(사용자가 만들어 시작을 누른 장기 목표) 장기 목표를 새로 만들지 않고 그 아래에 붙인다.
+   */
+  async decompose(goalText: string, existingLong?: Pick<Goal, "id">): Promise<Goal[]> {
     await this.presence("working", "목표 분해 중");
     const plan = json<{ long: string; mid: string[]; short: { title: string; tasks: string[] }[] }>(
       await this.ask("root", `변호사의 목표: ${goalText}`),
     );
-    const long = await this.api<Goal>("/goals", { title: plan.long, level: "long" });
+    if (!Array.isArray(plan.mid) || !Array.isArray(plan.short) || plan.short.length === 0)
+      throw new Error("팀장이 낸 분해 결과에 단기 목표가 없습니다 — 실행할 작업이 생기지 않습니다");
+    const long = existingLong
+      ? (await this.api<Goal[]>("/goals")).find((g) => g.id === existingLong.id)
+      : await this.api<Goal>("/goals", { title: plan.long, level: "long" });
+    if (!long)
+      throw new Error(`분해할 장기 목표 ${existingLong?.id} 을(를) 이 방에서 찾을 수 없습니다`);
     const mids = await Promise.all(
       plan.mid.map((title) => this.api<Goal>("/goals", { title, level: "mid", parentId: long.id })),
     );

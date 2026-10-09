@@ -3,7 +3,11 @@
 //  - 승인은 1회용 approval_token. 토큰은 도구명+입력 해시에 묶이며, 입력이 바뀌면 무효.
 //  - 승인본은 동결(frozenHash). 법률 패키지 발행 승인은 변호사(방 소유자) 본인만 — 운영자·관리자 대리 승인 불가.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { PRESENCE_LABELS } from "../../../../packages/domain/src/osiri.ts";
+import {
+  type ApprovalKind,
+  PRESENCE_LABELS,
+  type RejectReasonKind,
+} from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { EventBus } from "./events.ts";
@@ -26,6 +30,9 @@ export interface Approval {
   decidedBy?: string;
   decidedAt?: string;
   reason?: string;
+  reasonKind?: RejectReasonKind; // 반려 사유 종류 — 반려에는 반드시 있다
+  /** 요청자가 밝힌 종류. 밝히지 않은 요청은 `approvalKind()` 가 정한다 */
+  kind?: ApprovalKind;
   messageId?: string; // 방 타임라인의 승인 카드
   requestedBy: string; // 워커 역할명 또는 "chat"
   createdAt: string;
@@ -54,8 +61,19 @@ const STATUS_LABELS: Record<ApprovalStatus, string> = {
   expired: "만료됨",
   consumed: "집행됨",
 };
-const alreadyDecided = (status: ApprovalStatus) =>
-  new AppError(`이미 처리된 승인 요청입니다 (현재 상태: ${STATUS_LABELS[status]})`, 409);
+/** 이미 처리된 승인에 다시 결재했다 — 라우트가 409 와 함께 현재 `status` 를 돌려준다. */
+export class AlreadyDecidedError extends AppError {
+  constructor(public readonly approvalStatus: ApprovalStatus) {
+    super(`이미 처리된 승인 요청입니다 (현재 상태: ${STATUS_LABELS[approvalStatus]})`, 409);
+  }
+}
+const alreadyDecided = (status: ApprovalStatus) => new AlreadyDecidedError(status);
+/**
+ * 승인 종류. 요청자가 밝혔으면 그 값. 밝히지 않은 승인은 "publish" 다 —
+ * 승인 게이트는 밖으로 나가는(external) 도구 실행만 막고, 그것이 곧 발행 승인이기 때문이다.
+ */
+export const approvalKind = (approval: Pick<Approval, "kind">): ApprovalKind =>
+  approval.kind ?? "publish";
 
 export class Approvals {
   constructor(
@@ -72,9 +90,21 @@ export class Approvals {
   }
   /** 대기 중인 승인. 만료 시각이 지난 것은 여기서 만료 처리하고 목록에서 뺀다 — 결재함·배지 수가 실제와 맞도록. */
   async pending(owner: string): Promise<Approval[]> {
+    return this.sweep(owner, await this.db.listByStatus<Approval>(owner, "approvals", "pending"));
+  }
+  /** 한 방의 대기 승인 — 결재함이 팀별로 따로 읽어 한 팀이 실패해도 나머지를 준다. 만료 처리는 `pending` 과 같다. */
+  async pendingForRoom(owner: string, roomId: string): Promise<Approval[]> {
+    return this.sweep(
+      owner,
+      (await this.db.listByField<Approval>(owner, "approvals", "roomId", roomId)).filter(
+        (a) => a.status === "pending",
+      ),
+    );
+  }
+  private async sweep(owner: string, candidates: Approval[]): Promise<Approval[]> {
     const live: Approval[] = [];
     const expiredRooms = new Set<string>();
-    for (const approval of await this.db.listByStatus<Approval>(owner, "approvals", "pending")) {
+    for (const approval of candidates) {
       if (Date.parse(approval.expiresAt) > this.now()) live.push(approval);
       else if (await this.expire(owner, approval)) expiredRooms.add(approval.roomId);
     }
@@ -133,6 +163,7 @@ export class Approvals {
       summary: string;
       evidence?: string;
       requestedBy: string;
+      kind?: ApprovalKind;
     },
   ): Promise<Approval> {
     const hash = inputHash(input.toolName, input.input);
@@ -152,6 +183,7 @@ export class Approvals {
       evidence: input.evidence,
       status: "pending",
       requestedBy: input.requestedBy,
+      ...(input.kind ? { kind: input.kind } : {}),
       createdAt: new Date(this.now()).toISOString(),
       expiresAt: new Date(this.now() + APPROVAL_TTL_MS).toISOString(),
     };
@@ -182,6 +214,7 @@ export class Approvals {
       action: `approval.request:${approval.toolName}`,
       approvalId: approval.id,
       result: "ok",
+      roomId: input.roomId,
     });
     this.bus.setPresence(owner, input.roomId, "waiting", `${approval.title} 승인 대기 중`);
     this.bus.publish(owner, {
@@ -199,12 +232,23 @@ export class Approvals {
     owner: string,
     id: string,
     decision: "approve" | "reject",
-    options: { reason?: string; decidedBy: string; frozenHash?: string },
+    options: {
+      reason?: string;
+      reasonKind?: RejectReasonKind;
+      decidedBy: string;
+      frozenHash?: string;
+    },
   ): Promise<Approval> {
+    // 사유 종류는 반려에만 남긴다
+    const reasonKind = decision === "reject" ? options.reasonKind : undefined;
     const approval = await this.get(owner, id);
     if (options.frozenHash && options.frozenHash !== approval.inputHash)
       throw new AppError("승인 대상이 바뀌었습니다. 최신 내용을 다시 확인하세요", 409);
+    // 이미 처리된 건은 무엇을 보내든 409 (현재 상태를 알려 준다)
     if (approval.status !== "pending") throw alreadyDecided(approval.status);
+    // 반려는 사유 종류(톤·사실·주제)가 있어야 팀이 무엇을 고칠지 안다 — 없으면 받지 않는다
+    if (decision === "reject" && !reasonKind)
+      throw new AppError("반려에는 사유 종류(reasonKind: tone·fact·topic)가 필요합니다", 400);
     if (Date.parse(approval.expiresAt) <= this.now()) {
       await this.expire(owner, approval);
       throw new AppError("승인 요청이 만료되었습니다", 409);
@@ -215,6 +259,7 @@ export class Approvals {
       decidedBy: options.decidedBy,
       decidedAt: new Date(this.now()).toISOString(),
       reason: options.reason,
+      ...(reasonKind ? { reasonKind } : {}),
       ...(token ? { tokenHash: sha(token), tokenDelivered: false } : {}),
     };
     // pending 인 것만 원자적으로 바꾼다 (동시 결재 방지)
@@ -229,7 +274,12 @@ export class Approvals {
     if (!updated) throw alreadyDecided((await this.get(owner, id)).status);
     if (approval.messageId)
       await this.rooms.updateMessage(owner, approval.messageId, {
-        payload: { status: updated.status, reason: options.reason, decidedAt: updated.decidedAt },
+        payload: {
+          status: updated.status,
+          reason: options.reason,
+          ...(reasonKind ? { reasonKind } : {}),
+          decidedAt: updated.decidedAt,
+        },
       });
     await this.rooms.activity(owner, {
       roomId: approval.roomId,
@@ -244,6 +294,7 @@ export class Approvals {
         packageId: null,
         kind: "reject",
         reason: options.reason ?? "",
+        reasonKind,
         approvalId: id,
         createdAt: new Date(this.now()).toISOString(),
       });
@@ -253,6 +304,8 @@ export class Approvals {
       action: `approval.${decision}:${approval.toolName}`,
       approvalId: id,
       result: "ok",
+      roomId: approval.roomId,
+      ...(reasonKind ? { reasonKind } : {}),
     });
     const stillPending = (await this.pending(owner)).some((a) => a.roomId === approval.roomId);
     this.bus.setPresence(

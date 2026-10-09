@@ -2,9 +2,19 @@
 // 캐릭터를 두지 않는다 — 도구·키 상태만 보인다. 키 원문은 제출 즉시 입력란에서 지우고 다시 그리지 않는다.
 import { type ReactNode, useState } from "react";
 import { Text, View } from "react-native";
-import { MODEL_PROVIDERS, type ModelProvider } from "../../../../packages/domain/src/osiri";
-import type { McpServer, McpTool, Risk } from "../../../server/src/osiri/mcp.ts";
-import type { MuseApi } from "../api";
+import {
+  MCP_AUTH_TYPES,
+  MCP_RISKS,
+  type McpAuthType,
+  type McpRisk,
+  MODEL_KEY_ERROR_KINDS,
+  MODEL_KEY_PROVIDERS,
+  type ModelKeyErrorKind,
+  type ModelKeyProvider,
+} from "../../../../packages/domain/src/osiri";
+import type { Mcp, McpTool } from "../../../server/src/osiri/mcp.ts";
+import type { ModelKeyRow } from "../../../server/src/osiri/routing.ts";
+import { ApiError } from "../api-response";
 import {
   Button,
   Card,
@@ -21,42 +31,25 @@ import {
 import { useWorkspace } from "../workspace";
 import { Choice, useAction, useLoad } from "./store";
 
-// ---- 계약 타입 (서버 타입에 아직 없는 필드만 한 번 선언 — 서버가 내보내면 그쪽을 type-import 한다) ----
-/** 계약 «연결»: GET /connections 의 MCP 항목 = 기존 공개 모양 + toolCount · risks(위험도별 도구 수) */
-type McpItem = Omit<McpServer, "headers"> & {
-  headerNames: string[];
-  toolCount: number;
-  risks: Record<Risk, number>;
-};
-/** 계약 «연결»: POST /connections/mcp/test 의 응답 도구 */
-type TestedTool = Pick<McpTool, "name" | "risk">;
-type AuthType = "none" | "header" | "oauth";
-export type KeyProvider = ModelProvider | "compatible";
-/** 계약 «연결»: GET /model-keys 의 한 줄 */
-export interface ModelKey {
-  provider: KeyProvider;
-  status: "active" | "none";
-  last4: string | null;
-  baseUrl?: string;
-}
-type KeyErrorKind = "format" | "auth" | "network";
+/** `GET /connections/mcp` 항목 — 서버 `Mcp.overview()` 가 만든다. 도구 수를 못 세면 toolCount·risks 가 null 이고 toolsError 가 온다. */
+type McpItem = Awaited<ReturnType<Mcp["overview"]>>[number];
+/** `POST /connections/mcp/test` 의 응답 도구 — 서버 `Mcp.test()` */
+type TestedTool = Awaited<ReturnType<Mcp["test"]>>[number];
 
 // ---- 라벨 (개념마다 한 곳) ----
-export const KEY_PROVIDERS: KeyProvider[] = [...MODEL_PROVIDERS, "compatible"];
-export const PROVIDER_LABELS: Record<KeyProvider, string> = {
+export const PROVIDER_LABELS: Record<ModelKeyProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
   google: "Google",
   compatible: "호환 주소 (OpenAI-compatible)",
 };
-const RISKS: Risk[] = ["read", "write", "external"];
-const riskTint: Record<Risk, string> = {
+const riskTint: Record<McpRisk, string> = {
   read: colors.okBg,
   write: colors.warnBg,
   external: colors.missBg,
 };
-const AUTH_LABELS: Record<AuthType, string> = { none: "none", header: "header", oauth: "OAuth" };
-const KEY_ERROR_LABELS: Record<KeyErrorKind, string> = {
+const AUTH_LABELS: Record<McpAuthType, string> = { none: "none", header: "header", oauth: "OAuth" };
+const KEY_ERROR_LABELS: Record<ModelKeyErrorKind, string> = {
   format: "형식 오류 — 키 모양이 맞지 않습니다",
   auth: "권한 부족 — 이 키로는 모델 목록을 읽을 수 없습니다",
   network: "네트워크 — 제공자에 닿지 못했습니다",
@@ -109,7 +102,6 @@ const text = {
   keySaved: "키를 등록했습니다",
   removeKey: "이 키를 지우면 즉시 폐기되고 공용 열쇠(월 상한 적용)로 돌아갑니다.",
   missingRow: (label: string) => `서버 응답에 ${label} 항목이 없습니다`,
-  requestFailed: (status: number) => `요청 실패 (${status})`,
   subscription: "ChatGPT·Claude 구독 계정 연결",
   subscriptionChip: "지원 예정/제한",
   subscriptionHint: "제공자가 공식 지원할 때만 엽니다. 기본 경로는 API 키입니다.",
@@ -188,7 +180,7 @@ export function Confirm({
   );
 }
 
-function RiskBadge({ risk, suffix }: { risk: Risk; suffix?: string }) {
+function RiskBadge({ risk, suffix }: { risk: McpRisk; suffix?: string }) {
   // 기획: 위험도 배지는 read/write/external 그대로 적는다
   return (
     <Chip tint={riskTint[risk]}>
@@ -276,18 +268,33 @@ function McpRow({
   const { api } = useWorkspace();
   const [confirming, setConfirming] = useState(false);
   const remove = useAction();
+  const { risks } = server;
   return (
     <View style={{ gap: 6, paddingBottom: 12, borderBottomWidth: 1, borderColor: colors.line }}>
       <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
         <Text style={[s.text, { fontWeight: "600" }]}>
-          {server.name} — <Text style={mono}>{text.toolCount(server.toolCount)}</Text>
+          {server.name}
+          {server.toolCount === null ? null : (
+            <>
+              {" — "}
+              <Text style={mono}>{text.toolCount(server.toolCount)}</Text>
+            </>
+          )}
         </Text>
-        {RISKS.filter((risk) => server.risks[risk] > 0).map((risk) => (
-          <RiskBadge key={risk} risk={risk} />
-        ))}
+        {risks
+          ? MCP_RISKS.filter((risk) => risks[risk] > 0).map((risk) => (
+              <RiskBadge key={risk} risk={risk} />
+            ))
+          : null}
         {/* 표시 전용 칩 — 끄는 스위치를 두지 않는다 */}
-        {server.risks.external > 0 && <Chip tint={colors.warnBg}>{text.approvalRequired}</Chip>}
+        {risks && risks.external > 0 ? (
+          <Chip tint={colors.warnBg}>{text.approvalRequired}</Chip>
+        ) : null}
       </View>
+      {/* 서버가 도구 수를 세지 못했다 — 0개로 보이지 않고 서버가 준 사유를 그대로 보인다 */}
+      {"toolsError" in server ? (
+        <Text style={[s.small, { color: colors.miss }]}>{server.toolsError}</Text>
+      ) : null}
       <Text style={s.small}>{server.url}</Text>
       {server.headerNames.length > 0 && (
         <Text style={s.small}>
@@ -368,7 +375,7 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
   const { api, notify } = useWorkspace();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const [authType, setAuthType] = useState<AuthType>("none");
+  const [authType, setAuthType] = useState<McpAuthType>("none");
   const [headerName, setHeaderName] = useState("");
   const [headerValue, setHeaderValue] = useState("");
   // 테스트한 주소·인증과 저장하는 주소·인증이 같아야 한다 → 그 값이 바뀌면 테스트 결과를 버린다
@@ -393,7 +400,7 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
       />
       <Text style={[s.small, { fontWeight: "600", color: colors.text }]}>{text.auth}</Text>
       <View style={[s.row, { gap: 8, flexWrap: "wrap", marginBottom: 12 }]}>
-        {(Object.keys(AUTH_LABELS) as AuthType[]).map((type) => (
+        {MCP_AUTH_TYPES.map((type) => (
           <Choice
             key={type}
             label={AUTH_LABELS[type]}
@@ -494,51 +501,23 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
 }
 
 // ---- 모델 계정 (BYOK) ----
-class KeyError extends Error {
-  constructor(
-    message: string,
-    readonly kind?: KeyErrorKind,
-  ) {
-    super(message);
+/** 키 검증 실패. kind 는 서버 오류 본문(`{ error, kind }`)의 것 — 없으면 지어내지 않는다. */
+type KeyFailure = { message: string; kind?: ModelKeyErrorKind };
+const isKeyErrorKind = (value: unknown): value is ModelKeyErrorKind =>
+  (MODEL_KEY_ERROR_KINDS as readonly unknown[]).includes(value);
+const keyFailure = (e: unknown): KeyFailure => {
+  if (e instanceof ApiError) {
+    const kind = (e.body as { kind?: unknown } | undefined)?.kind;
+    return { message: e.message, kind: isKeyErrorKind(kind) ? kind : undefined };
   }
-}
-const isKeyErrorKind = (value: unknown): value is KeyErrorKind =>
-  typeof value === "string" && value in KEY_ERROR_LABELS;
-
-/** PUT /model-keys/:provider. api.request 는 오류 본문에서 error 문장만 남기므로, kind 를 읽으려고 이 요청만 직접 보낸다. */
-async function putModelKey(
-  api: MuseApi,
-  provider: KeyProvider,
-  body: { apiKey: string; baseUrl?: string },
-) {
-  let response: Response;
-  try {
-    response = await fetch(api.url(`/api/model-keys/${provider}`), {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${api.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    // 요청이 서버에 닿지 못했다 = 네트워크
-    throw new KeyError(e instanceof Error ? e.message : String(e), "network");
-  }
-  if (response.ok) return;
-  const raw = await response.text();
-  let payload: { error?: unknown; kind?: unknown } = {};
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    // JSON 이 아닌 오류 본문 — 아래에서 상태 코드로 알린다 (종류는 지어내지 않는다)
-  }
-  throw new KeyError(
-    typeof payload.error === "string" ? payload.error : text.requestFailed(response.status),
-    isKeyErrorKind(payload.kind) ? payload.kind : undefined,
-  );
-}
+  // fetch 가 던진 TypeError = 요청이 서버에 닿지 못했다 = 네트워크
+  if (e instanceof TypeError) return { message: e.message, kind: "network" };
+  return { message: e instanceof Error ? e.message : String(e) };
+};
 
 function ModelKeysPanel() {
   const { api } = useWorkspace();
-  const list = useLoad(() => api.request<ModelKey[]>("/api/model-keys"));
+  const list = useLoad(() => api.request<ModelKeyRow[]>("/api/model-keys"));
   return (
     <View>
       <SectionHeading title={text.keysTitle} />
@@ -551,7 +530,7 @@ function ModelKeysPanel() {
                   <Text style={s.text}>{text.publicKey}</Text>
                 </View>
               )}
-              {KEY_PROVIDERS.map((provider) => {
+              {MODEL_KEY_PROVIDERS.map((provider) => {
                 const item = keys.find((key) => key.provider === provider);
                 return item ? (
                   <KeyCard key={provider} item={item} onChanged={list.retry} />
@@ -576,13 +555,13 @@ function ModelKeysPanel() {
   );
 }
 
-function KeyCard({ item, onChanged }: { item: ModelKey; onChanged: () => void }) {
+function KeyCard({ item, onChanged }: { item: ModelKeyRow; onChanged: () => void }) {
   const { api, notify } = useWorkspace();
   const [mode, setMode] = useState<"idle" | "edit" | "remove">("idle");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(item.baseUrl ?? ""); // 선택 필드 — 없으면 빈 입력란
   const [verifying, setVerifying] = useState(false);
-  const [failure, setFailure] = useState<KeyError>();
+  const [failure, setFailure] = useState<KeyFailure>();
   const remove = useAction();
   const active = item.status === "active";
   const compatible = item.provider === "compatible";
@@ -592,12 +571,13 @@ function KeyCard({ item, onChanged }: { item: ModelKey; onChanged: () => void })
     setVerifying(true);
     setFailure(undefined);
     try {
-      await putModelKey(api, item.provider, {
-        apiKey: key,
-        ...(compatible ? { baseUrl: baseUrl.trim() } : {}),
-      });
+      await api.request(
+        `/api/model-keys/${item.provider}`,
+        { apiKey: key, ...(compatible ? { baseUrl: baseUrl.trim() } : {}) },
+        "PUT",
+      );
     } catch (e) {
-      setFailure(e instanceof KeyError ? e : new KeyError(String(e)));
+      setFailure(keyFailure(e));
       return;
     } finally {
       setVerifying(false);

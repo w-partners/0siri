@@ -7,6 +7,7 @@ import { createApp } from "../apps/server/src/app.ts";
 import { createStore } from "../apps/server/src/db.ts";
 import { ConversationAgent } from "../apps/server/src/engine/conversation.ts";
 import { SearchService, searchInstructions } from "../apps/server/src/search.ts";
+import project from "../package.json" with { type: "json" };
 import { browserFixture } from "./helpers/browser.ts";
 import { modelFixture } from "./helpers/model.ts";
 import { searchFixture, searchSource } from "./helpers/search.ts";
@@ -41,7 +42,7 @@ test("search preserves citations, reuses session IDs and sends project identity 
   assert.notEqual(args[0].session_id, args[2].session_id);
   assert.ok(!requests.some(({ rpc }) => rpc.method === "tools/list"));
   for (const { headers } of requests) {
-    assert.equal(headers["user-agent"], "openmuse/0.1.0");
+    assert.equal(headers["user-agent"], `openmuse/${project.version}`); // 버전은 package.json 이 정본
     assert.equal(headers.authorization, undefined);
     assert.equal(headers["x-api-key"], undefined);
   }

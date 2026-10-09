@@ -3,29 +3,20 @@
 import { Sparkles } from "lucide-react-native";
 import { useState } from "react";
 import { Text, useWindowDimensions, View } from "react-native";
+import {
+  type OperatorSkillDecision,
+  SKILL_SCOPE_LABELS,
+  SKILL_STATUS_LABELS,
+  type SkillDecision,
+  type SkillStatus,
+} from "../../../../packages/domain/src/osiri";
+import type { Skill } from "../../../server/src/osiri/skills.ts";
 import { Button, Card, Chip, colors, Empty, ErrorNotice, Field, fonts, Skeleton, s } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood } from "./eve";
 import type { Room } from "./rooms";
 import { useAction, useLoad } from "./store";
 import { LoadError } from "./team-goals";
-
-// --- 계약 타입: docs/0siri-api-contract.md «스킬 (화면 9)». 서버에 타입이 생기면 type-import 로 바꾼다. ---
-export type SkillStatus = "draft" | "active" | "retire_proposed" | "rejected" | "retired";
-export interface Skill {
-  id: string;
-  roomId: string | null;
-  scope: "personal" | "package";
-  name: string;
-  version: string;
-  status: SkillStatus;
-  evidence: string;
-  appliesTo: string;
-  proposedBy: string;
-  measuring: boolean;
-  effect: string | null;
-  createdAt: string;
-}
 
 const text = {
   draftsHeading: "승인 대기 초안",
@@ -47,14 +38,6 @@ const text = {
   sendReject: "반려 보내기",
   cancel: "취소",
   packageNote: "패키지 공통 스킬은 운영자가 승인합니다",
-  scope: { personal: "개인 스킬", package: "패키지 공통" } satisfies Record<Skill["scope"], string>,
-  status: {
-    draft: "승인 대기",
-    active: "장착됨",
-    retire_proposed: "폐기 제안",
-    rejected: "반려됨",
-    retired: "폐기됨",
-  } satisfies Record<SkillStatus, string>,
   measuring: "효과 측정 중",
   rollback: "롤백",
   retire: "폐기",
@@ -75,7 +58,7 @@ function SkillTitle({ skill }: { skill: Skill }) {
         <Text style={s.heading}>{skill.name}</Text>
         <Text style={[s.small, mono]}>v{skill.version}</Text>
       </View>
-      <Chip>{text.scope[skill.scope]}</Chip>
+      <Chip>{SKILL_SCOPE_LABELS[skill.scope]}</Chip>
     </View>
   );
 }
@@ -95,7 +78,7 @@ export function SkillDraftCard({
   character?: string;
   /** false 면 버튼 대신 «운영자가 승인» 안내만 보인다 */
   canDecide: boolean;
-  onDecide: (decision: "approve" | "reject", reason?: string) => Promise<void>;
+  onDecide: (decision: OperatorSkillDecision, reason?: string) => Promise<void>;
 }) {
   const act = useAction();
   const [rejecting, setRejecting] = useState(false);
@@ -106,7 +89,9 @@ export function SkillDraftCard({
       <View style={[s.row, { gap: 10, alignItems: "flex-start" }]}>
         <CharacterAvatar character={character} size={32} mood={moodOf(skill.status)} />
         <SkillTitle skill={skill} />
-        {draft ? null : <Chip tint={statusTint(skill.status)}>{text.status[skill.status]}</Chip>}
+        {draft ? null : (
+          <Chip tint={statusTint(skill.status)}>{SKILL_STATUS_LABELS[skill.status]}</Chip>
+        )}
       </View>
       <Text style={s.text}>
         {text.evidence}: {skill.evidence}
@@ -175,7 +160,7 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
     const fresh = await api.request<Skill[]>(path);
     skills.setData(fresh);
     const now = fresh.find((x) => x.id === skill.id);
-    if (now) notify(`${now.name} v${now.version} · ${text.status[now.status]}`);
+    if (now) notify(`${now.name} v${now.version} · ${SKILL_STATUS_LABELS[now.status]}`);
   };
 
   const list = skills.data;
@@ -300,7 +285,7 @@ function RetireCard({
   onDecide,
 }: {
   skill: Skill;
-  onDecide: (decision: "retire" | "keep") => Promise<void>;
+  onDecide: (decision: Exclude<SkillDecision, OperatorSkillDecision>) => Promise<void>;
 }) {
   const act = useAction();
   return (

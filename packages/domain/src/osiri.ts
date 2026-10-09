@@ -50,8 +50,57 @@ export const BOARD_STAGES = [
 export type TaskStage = (typeof BOARD_STAGES)[number];
 export const GOAL_LEVELS = ["long", "mid", "short", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
-export const GOAL_STATUSES = ["active", "paused", "completed", "blocked"] as const;
+/** "proposed" = 사용자 승인 전(장기 목표는 승인 전에는 시작하지 않는다). 달성은 "completed". */
+export const GOAL_STATUSES = ["active", "paused", "completed", "blocked", "proposed"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
+/** 화면에 보이는 흐름 5단계. geo·done 은 내부 단계라 라벨을 내지 않는다. */
+export const VISIBLE_STAGES = ["detect", "draft", "review", "approval", "publish"] as const;
+export type VisibleStage = (typeof VISIBLE_STAGES)[number];
+export const STAGE_LABELS: Record<VisibleStage, string> = {
+  detect: "감지",
+  draft: "초안",
+  review: "검수",
+  approval: "승인 대기",
+  publish: "발행",
+};
+/** 목표 성과 지표 조회 기간 (`GET /goals/:id/metrics?period=`) */
+export const METRIC_PERIODS = ["week", "month", "quarter"] as const;
+export type MetricPeriod = (typeof METRIC_PERIODS)[number];
+export const METRIC_PERIOD_DAYS: Record<MetricPeriod, number> = { week: 7, month: 30, quarter: 90 };
+export const GOAL_METRIC_KEYS = ["published", "indexed", "ai_citations", "conversions"] as const;
+export type GoalMetricKey = (typeof GOAL_METRIC_KEYS)[number];
+/** 팀이 낸 주제·목표 제안 */
+export const PROPOSAL_STATUSES = ["pending", "accepted", "held"] as const;
+export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
+export const PROPOSAL_DECISIONS = ["accept", "hold"] as const;
+export type ProposalDecision = (typeof PROPOSAL_DECISIONS)[number];
+/** 팀이 약속한 보고 주기(일). 이 주기를 넘기면 "멈춘 팀" 이다. */
+export const REPORT_CADENCE_DAYS = { weekly: 7 } as const;
+export type ReportCadence = keyof typeof REPORT_CADENCE_DAYS;
+
+// ---- 방 목록·현황판 캐릭터 (화면 2·3) ----
+export const CHARACTER_STATES = ["working", "awaiting_approval", "reporting", "idle"] as const;
+export type CharacterState = (typeof CHARACTER_STATES)[number];
+/** 방 캐릭터 상태(presence) → 현황판 캐릭터 상태. 서버·앱이 같은 대응표를 쓴다. */
+export const CHARACTER_STATE_OF: Record<PresenceState, CharacterState> = {
+  working: "working",
+  waiting: "awaiting_approval",
+  done: "reporting",
+  idle: "idle",
+};
+export const PERSONAL_TIER_LABEL = "일반 등급";
+export const TEAM_TIER_LABEL = "팀 구독";
+
+// ---- 승인 (화면 3·4) ----
+export const REJECT_REASON_KINDS = ["tone", "fact", "topic"] as const;
+export type RejectReasonKind = (typeof REJECT_REASON_KINDS)[number];
+export const REJECT_REASON_LABELS: Record<RejectReasonKind, string> = {
+  tone: "톤",
+  fact: "사실",
+  topic: "주제",
+};
+export const APPROVAL_KINDS = ["publish", "consult", "skill"] as const;
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 
 // ---- 계정 (§4.1, §20) ----
 export const USER_ROLES = ["user", "operator", "admin"] as const;
@@ -109,6 +158,20 @@ export const ANSWER_SOURCE_LABELS = {
   server: "서버에서 답함",
   byok: "내 모델 계정으로 답함",
 } as const satisfies Record<AnswerSource, string>;
+/** 답변 아래에 붙는 «누가 답했는지» (메시지 answeredBy · 타임라인 answers 의 값) */
+export interface AnsweredByView {
+  tier: ModelTier;
+  label: string;
+  model: string;
+  source: AnswerSource;
+  reason?: string;
+  memoryRefs?: { id: string; text: string; at: string }[];
+}
+/** «누가 답했는지» 문장. 서버 모델(티어 2~4)은 등급까지 밝힌다: "서버 주력 모델이 답함". */
+export const answerLabel = (source: AnswerSource, tier: ModelTier): string =>
+  source === "server" && (FIXED_TIERS as readonly ModelTier[]).includes(tier)
+    ? `서버 ${TIER_LABELS[tier]} 모델이 답함`
+    : ANSWER_SOURCE_LABELS[source];
 
 // ---- 임베딩 (§11 티어 0, §22-5) ----
 export const EMBED_MODEL_ID = "onnx-community/embeddinggemma-2-ONNX";
@@ -121,6 +184,160 @@ export const embedQueryText = (text: string) => `${EMBED_QUERY_PREFIX}${text}`;
 export const embedDocumentText = (text: string, title: string = EMBED_DOCUMENT_DEFAULT_TITLE) =>
   `title: ${title} | text: ${text}`;
 
+// ---- 스킬 (§17) ----
+export const SKILL_STATUSES = [
+  "draft",
+  "active",
+  "retire_proposed",
+  "rejected",
+  "retired",
+] as const;
+export type SkillStatus = (typeof SKILL_STATUSES)[number];
+export const SKILL_STATUS_LABELS: Record<SkillStatus, string> = {
+  draft: "초안",
+  active: "장착됨",
+  retire_proposed: "폐기 제안",
+  rejected: "반려됨",
+  retired: "폐기됨",
+};
+export const SKILL_SCOPES = ["personal", "package"] as const;
+export type SkillScope = (typeof SKILL_SCOPES)[number];
+export const SKILL_SCOPE_LABELS: Record<SkillScope, string> = {
+  personal: "개인 스킬",
+  package: "패키지 공통 스킬",
+};
+/** 사용자(개인 스킬)가 내릴 수 있는 결정 */
+export const SKILL_DECISIONS = ["approve", "reject", "retire", "keep"] as const;
+export type SkillDecision = (typeof SKILL_DECISIONS)[number];
+/** 운영자(패키지 공통 스킬)가 내릴 수 있는 결정 */
+export const OPERATOR_SKILL_DECISIONS = ["approve", "reject"] as const;
+export type OperatorSkillDecision = (typeof OPERATOR_SKILL_DECISIONS)[number];
+
+// ---- 운영자 콘솔 (§15.5, §16) ----
+export const CANARY_STAGES = ["profile", "partial", "all", "stopped"] as const;
+export type CanaryStage = (typeof CANARY_STAGES)[number];
+/** advance 가 밟는 순서. "stopped" 는 순서 밖이다. */
+export const CANARY_ADVANCE_ORDER = [
+  "profile",
+  "partial",
+  "all",
+] as const satisfies readonly CanaryStage[];
+export const CANARY_STAGE_LABELS: Record<CanaryStage, string> = {
+  profile: "테스트 프로필",
+  partial: "일부 사용자",
+  all: "전체",
+  stopped: "중단됨",
+};
+/** 단계별 배포 비율(%). 일부 사용자 비율은 여기 한 곳에서만 바꾼다. */
+export const CANARY_PERCENT: Record<CanaryStage, number> = {
+  profile: 0,
+  partial: 10,
+  all: 100,
+  stopped: 0,
+};
+export const CANARY_ACTIONS = ["advance", "stop"] as const;
+export type CanaryAction = (typeof CANARY_ACTIONS)[number];
+export const VERSION_STATUSES = ["review_failed", "canary", "live", "rolled_back"] as const;
+export type VersionStatus = (typeof VERSION_STATUSES)[number];
+export const VERSION_STATUS_LABELS: Record<VersionStatus, string> = {
+  review_failed: "심사 탈락",
+  canary: "카나리 배포 중",
+  live: "운영 중",
+  rolled_back: "롤백됨",
+};
+/** 입점 심사 체크리스트 9항 (§15.5, fail-closed). 응답의 review[].item 은 이 id 다. */
+export const REVIEW_ITEMS = [
+  "external_requires_token",
+  "token_bound_to_input",
+  "audit_has_approval_id",
+  "reviewer_rejects",
+  "cross_user_denied",
+  "progress_reports_on_schedule",
+  "weekly_report_min_metrics",
+  "no_secret_exposure",
+  "tool_failure_audited",
+] as const;
+export type ReviewItem = (typeof REVIEW_ITEMS)[number];
+export const REVIEW_ITEM_LABELS: Record<ReviewItem, string> = {
+  external_requires_token: "external 도구가 승인 토큰 없이 실행되지 않는다",
+  token_bound_to_input: "승인 토큰은 입력이 바뀌면 무효가 된다",
+  audit_has_approval_id: "모든 외부 행위가 감사 로그에 approval_id 와 함께 남는다",
+  reviewer_rejects: "검수 역할이 결과물을 거르고, 반려가 실제로 일어난다",
+  cross_user_denied: "다른 사용자의 토큰으로 데이터 조회가 거절된다",
+  progress_reports_on_schedule: "목표 진척 보고가 약속 주기로 도착한다",
+  weekly_report_min_metrics: "주간 보고에 최소 지표 3종이 포함된다",
+  no_secret_exposure: "시크릿이 로그·응답 어디에도 노출되지 않는다",
+  tool_failure_audited: "도구 타임아웃·실패 시 에러가 감사 로그에 남는다",
+};
+/** 서버가 아직 기계적으로 확인할 수 없는 항목의 사유. 통과로 치지 않는다. */
+export const REVIEW_MANUAL_REASON = "자동 검증 미지원 — 수동 심사 필요";
+
 // ---- 개인 방 (일반 등급) ----
 export const PERSONAL_CHARACTER_ID = "yeongsil";
 export const PERSONAL_ROOM_TITLE = "영시리";
+
+// ---- 계정·스토어·연결·기억·설정 (계약 화면 1·6·7·8·11) ----
+/** 계정 등급 (`users.tier`) */
+export const ACCOUNT_TIERS = ["free", "package"] as const;
+export type AccountTier = (typeof ACCOUNT_TIERS)[number];
+/** 스토어에 내는 보고 주기 문구 */
+export const REPORT_CADENCE_LABELS: Record<ReportCadence, string> = { weekly: "주간" };
+/** 패키지가 따로 적지 않았을 때의 플랫폼 공통 데이터 처리 방식 (소유자 격리 · 해지 후 보존 기간) */
+export const PLATFORM_DATA_HANDLING = `구독자별로 분리 보관하며, 해지하면 ${RETENTION_DAYS}일 뒤 삭제합니다`;
+export const SUBSCRIPTION_STATUSES = ["active", "cancelled", "ended"] as const;
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+/** 종류가 붙는 실패 본문 `{ error, kind }` 의 kind */
+export const SUBSCRIBE_ERROR_KINDS = ["tier"] as const;
+export type SubscribeErrorKind = (typeof SUBSCRIBE_ERROR_KINDS)[number];
+export const MODEL_KEY_ERROR_KINDS = ["format", "auth", "network"] as const;
+export type ModelKeyErrorKind = (typeof MODEL_KEY_ERROR_KINDS)[number];
+/** 모델 계정(BYOK) 제공자 — 라우팅이 아는 제공자 + OpenAI 호환 엔드포인트 */
+export const MODEL_KEY_PROVIDERS = [...MODEL_PROVIDERS, "compatible"] as const;
+export type ModelKeyProvider = (typeof MODEL_KEY_PROVIDERS)[number];
+export const MCP_RISKS = ["read", "write", "external"] as const;
+export type McpRisk = (typeof MCP_RISKS)[number];
+export const MCP_AUTH_TYPES = ["none", "header", "oauth"] as const;
+export type McpAuthType = (typeof MCP_AUTH_TYPES)[number];
+export const MEMORY_CATEGORIES = ["profile", "preference", "goal", "feedback"] as const;
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
+export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
+  profile: "프로필",
+  preference: "선호",
+  goal: "목표",
+  feedback: "피드백",
+};
+/** 기억 출처(source) → 화면 문구. 표에 없는 출처는 값 그대로 보인다. */
+export const MEMORY_SOURCE_LABELS: Record<string, string> = {
+  user: "직접 입력",
+  chat: "대화에서 학습",
+  feedback: "피드백에서 학습",
+};
+export const memorySourceLabel = (source: string): string => MEMORY_SOURCE_LABELS[source] ?? source;
+export const ANSWER_MODES = ["auto", "device", "server"] as const;
+export type AnswerMode = (typeof ANSWER_MODES)[number];
+export const ANSWER_MODE_LABELS: Record<AnswerMode, string> = {
+  auto: "자동",
+  device: "항상 기기",
+  server: "항상 서버",
+};
+export const CHARACTER_INTENSITIES = ["motion", "face", "text"] as const;
+export type CharacterIntensity = (typeof CHARACTER_INTENSITIES)[number];
+export const CHARACTER_INTENSITY_LABELS: Record<CharacterIntensity, string> = {
+  motion: "동작",
+  face: "표정만",
+  text: "문구만",
+};
+export interface NotificationPrefs {
+  approvals: boolean;
+  weeklyReport: boolean;
+}
+export interface CharacterPrefs {
+  enabled: boolean;
+  intensity: CharacterIntensity;
+}
+/** 사용자가 한 번도 바꾸지 않았을 때의 설정 초기값 — 서버·앱이 같은 값을 본다 */
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  approvals: true,
+  weeklyReport: true,
+};
+export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = { enabled: true, intensity: "motion" };

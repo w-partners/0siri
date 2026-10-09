@@ -5,10 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { PASSWORD_MIN } from "../../../../packages/domain/src/osiri";
-import type { Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
+import type { Accounts, Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
 import type { Room } from "../../../server/src/osiri/rooms.ts";
 import { API_URL, apiBase, type MuseApi, setApiBase } from "../api";
-import { readApiPayload } from "../api-response";
+import { ApiError, readApiPayload } from "../api-response";
 import { Button, Card, colors, ErrorNotice, Field, fonts, Skeleton, s } from "../ui";
 import { useAction, useWide } from "./store";
 
@@ -162,9 +162,8 @@ export async function logout(api: MuseApi): Promise<string> {
 }
 
 // --- /api/me ---
-// 계약(docs/0siri-api-contract.md «로그인·온보딩»)의 사무소 프로필 필드 — 서버 Profile 타입에 들어오면 이 교차 타입은 그대로 흡수된다.
-type OfficeProfile = Profile & { specialty?: string; region?: string };
-export type Me = { user: PublicUser; profile: OfficeProfile };
+/** `GET /me` — 서버 account-routes.ts 의 `app.get("/me")` 핸들러가 만든다(내보낸 타입이 없어 여기 한 번 적는다). */
+export type Me = { user: PublicUser; profile: Profile };
 export function useMe(api: MuseApi) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
@@ -249,27 +248,16 @@ function TierCard() {
 }
 
 // --- 로그인 ---
-type AuthResult = { token: string; user: PublicUser };
-/** 인증 전 요청. 서버가 준 사유 문장과 함께 상태 코드를 남긴다(초대 거절 400 을 가려 재신청을 안내하려고). */
-class ApiFailure extends Error {
-  constructor(
-    reason: string,
-    readonly status: number,
-  ) {
-    super(reason);
-  }
-}
+/** `POST /auth/login` · `/auth/invite/accept` 의 응답 — 서버 `Accounts.login()` */
+type AuthResult = Awaited<ReturnType<Accounts["login"]>>;
+/** 인증 전 요청. 실패는 ApiError(서버가 준 사유 문장 + 상태 코드)로 온다. */
 async function publicPost<T>(path: string, body: unknown) {
   const response = await fetch(`${apiBase()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  try {
-    return await readApiPayload<T>(response);
-  } catch (e) {
-    throw new ApiFailure(message(e), response.status);
-  }
+  return readApiPayload<T>(response);
 }
 /** 초대 링크 `…/?invite=<code>` (계약). 서버가 지금 내는 `/invite/<code>` 꼴도 같이 읽는다. */
 function inviteFromUrl() {
@@ -327,7 +315,7 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
       }
       onToken(result.token);
     } catch (e) {
-      if (intent === "signup") setInviteRejected(e instanceof ApiFailure && e.status === 400);
+      if (intent === "signup") setInviteRejected(e instanceof ApiError && e.status === 400);
       setError(message(e));
     } finally {
       setBusy("");

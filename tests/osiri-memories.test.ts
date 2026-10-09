@@ -115,3 +115,32 @@ test("한국어 질의 12건 — 기대 기억이 1위, 소유자 격리, 삭제
     SEED.length - 1,
   );
 });
+
+test("옛 records 기억은 한 번만 옮겨지고 프롬프트용 조회는 소유자 것만 낸다", {
+  timeout: 600_000,
+}, async () => {
+  await db.put("legacy-a", "memories", {
+    id: "legacy-1",
+    text: "생일 선물로는 만년필을 좋아한다",
+    createdAt: "2026-01-02T03:04:05.000Z",
+  });
+  await db.put("legacy-b", "memories", { id: "legacy-2", text: "주말에는 등산을 간다" });
+  await db.put("legacy-b", "memories", { id: "broken", note: "text 없음" });
+  assert.deepEqual(await memories.migrateLegacy(), { found: 3, migrated: 2, skipped: 1 });
+  assert.deepEqual(await memories.migrateLegacy(), { found: 3, migrated: 0, skipped: 1 });
+  const moved = await memories.list("legacy-a");
+  assert.equal(moved.length, 1, "두 번 돌려도 한 건");
+  assert.equal(moved[0]?.id, "legacy-1");
+  assert.equal(moved[0]?.createdAt, "2026-01-02T03:04:05.000Z");
+  assert.equal(moved[0]?.source, "chat");
+  assert.ok(await db.get("legacy-a", "memories", "legacy-1"), "원본은 지우지 않는다");
+  // 같은 id 로 다시 쓰면(채팅 재시도) 늘지 않는다
+  await memories.add("legacy-a", "생일 선물로는 만년필을 좋아한다", "chat", { id: "legacy-1" });
+  assert.equal((await memories.list("legacy-a")).length, 1);
+  const recalled = await memories.forPrompt("legacy-a", "선물 뭐가 좋을까");
+  assert.equal(recalled.error, undefined);
+  assert.deepEqual(recalled.memories, [
+    { text: "생일 선물로는 만년필을 좋아한다", source: "chat" },
+  ]);
+  assert.deepEqual((await memories.forPrompt("nobody", "선물")).memories, []);
+});

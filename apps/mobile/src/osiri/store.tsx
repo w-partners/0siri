@@ -7,8 +7,10 @@ import {
   STORE_CATEGORY_ALL_LABEL,
   STORE_CATEGORY_LABELS,
   type StoreCategory,
+  type SubscribeErrorKind,
 } from "../../../../packages/domain/src/osiri";
-import type { Catalog, publicPackage, Subscription } from "../../../server/src/osiri/store.ts";
+import type { Catalog, publicPackage } from "../../../server/src/osiri/store.ts";
+import { ApiError } from "../api-response";
 import {
   Badge,
   Button,
@@ -27,20 +29,10 @@ import {
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
 
-// 계약(docs/0siri-api-contract.md «스토어»)에 있고 서버 타입에는 아직 없는 필드만 여기서 덧붙인다.
-type Pkg = Omit<ReturnType<typeof publicPackage>, "reportCadence"> & {
-  subscribed: boolean;
-  roomId: string | null;
-  reviewing: boolean;
-  reportCadence: string;
-  dataHandling: string;
-  conversionRate: number | null;
-};
-type Sub = Omit<Awaited<ReturnType<Catalog["cards"]>>[number], "status"> & {
-  status: Subscription["status"] | "ended";
-  paymentMethod: string | null;
-  endsAt: string | null;
-};
+/** `GET /store/packages` 항목 — 서버 `publicPackage()` 가 만든다. */
+type Pkg = ReturnType<typeof publicPackage>;
+/** `GET /subscriptions/mine` 항목 — 서버 `Catalog.cards()` 가 만든다. */
+type Sub = Awaited<ReturnType<Catalog["cards"]>>[number];
 type SubscribeResult = Awaited<ReturnType<Catalog["subscribe"]>>;
 type StoreTab = "explore" | "mine";
 
@@ -61,7 +53,6 @@ const text = {
   approvals: "승인 지점",
   approvalsHint: "아래 행위는 사용자의 승인 없이는 실행되지 않습니다.",
   cadence: "보고 주기",
-  cadences: { weekly: "주간" } as Record<string, string>,
   dataHandling: "데이터 처리 방식",
   metrics: "공개 성과 지표",
   notice: "운영자 공지",
@@ -69,6 +60,7 @@ const text = {
   disclosed: "공개: 역할 구성 · 승인 지점 · 보고 주기 · 성과 지표",
   undisclosed: "비공개: 프롬프트 전문 · 검수 규칙",
   subscribe: "구독하기",
+  tierNotice: "구독 안내",
   confirmTitle: "구독 확인",
   confirmBody: (name: string) =>
     `「${name}」 구독을 시작합니다. 팀 방이 만들어지고 팀장이 첫 인사를 보냅니다.`,
@@ -557,19 +549,31 @@ function PackageDetail({
   const [createdRoom, setCreatedRoom] = useState<string>();
   const act = useAction();
   const refresh = useAction();
+  // 등급이 모자라 거절된 구독(403 · kind "tier") — 오류가 아니라 안내로 따로 보인다
+  const [tierNotice, setTierNotice] = useState("");
   // 해지했던 팀을 다시 구독하는가 — 그러면 기존 방·기억을 복원할지 새로 시작할지 묻는다
   const prior = subs.data?.some((sub) => sub.packageId === pkg.id && sub.status !== "active");
 
   const subscribe = () =>
     act.run(async () => {
       let result: SubscribeResult;
+      setTierNotice("");
       try {
         result = await api.request<SubscribeResult>("/api/subscriptions", {
           packageId: pkg.id,
           ...(prior ? { restore } : null),
         });
       } catch (e) {
-        setConfirming(false); // 실패하면 확인 전 단계로 되돌리고, 서버가 준 사유(등급 미달이면 구독 안내 문장)를 보인다
+        setConfirming(false); // 실패하면 확인 전 단계로 되돌리고, 서버가 준 사유를 보인다
+        const kind: SubscribeErrorKind = "tier";
+        if (
+          e instanceof ApiError &&
+          e.status === 403 &&
+          (e.body as { kind?: unknown } | undefined)?.kind === kind
+        ) {
+          setTierNotice(e.message);
+          return;
+        }
         throw e;
       }
       setCreatedRoom(result.roomId);
@@ -607,7 +611,7 @@ function PackageDetail({
         ))}
       </Block>
       <Block title={text.cadence}>
-        <Text style={s.text}>{text.cadences[pkg.reportCadence] ?? pkg.reportCadence}</Text>
+        <Text style={s.text}>{pkg.reportCadence}</Text>
       </Block>
       <Block title={text.dataHandling}>
         <Text style={s.text}>{pkg.dataHandling}</Text>
@@ -625,6 +629,20 @@ function PackageDetail({
         <Text style={s.small}>{text.undisclosed}</Text>
       </Block>
       <ErrorNotice error={act.error || refresh.error} />
+      {tierNotice ? (
+        <Card
+          style={{
+            gap: 8,
+            padding: 14,
+            borderColor: colors.warn,
+            backgroundColor: colors.warnBg,
+            alignItems: "flex-start",
+          }}
+        >
+          <Chip tint={colors.card}>{text.tierNotice}</Chip>
+          <Text style={s.text}>{tierNotice}</Text>
+        </Card>
+      ) : null}
       {roomId ? (
         <View style={{ gap: 8 }}>
           {createdRoom ? (

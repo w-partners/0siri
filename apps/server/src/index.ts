@@ -25,6 +25,11 @@ else
   console.log(
     "[osiri] 팀 프로비저너 꺼짐 (TEAM_PROVISIONER_ENABLED=false) — 구독해도 팀 워커 컨테이너가 뜨지 않고 큐에만 쌓입니다",
   );
+// 탈퇴 요청 후 보존 기간이 지난 계정을 지운다 (기동 직후 한 번 + 주기적으로). 지운 내용은 로그와 system 감사 로그에 남는다
+osiri.accounts.startPurgeSweep({
+  memories: osiri.memories,
+  audit: (owner, input) => osiri.rooms.audit(owner, input),
+});
 // 임베딩 모델을 미리 올리고(첫 검색 지연 방지), 옛 기억 저장소(records)를 pgvector 로 옮긴다. 기동은 막지 않는다
 void warmUp()
   .then(() => osiri.memories.migrateLegacy())

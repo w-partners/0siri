@@ -4,6 +4,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, LinearGradient, Path, Rect, Stop } from "react-native-svg";
+import {
+  type CharacterPrefs,
+  DEFAULT_CHARACTER_PREFS,
+} from "../../../../packages/domain/src/osiri";
 import { Mascot } from "../ui";
 
 /** idle=쉼(얼굴 꺼짐) · listening=듣는 중 · thinking=일하는 중(웃으며 노트북) · speaking=말하는 중 · happy=완료 · alert=승인 대기 */
@@ -53,8 +57,8 @@ export function useReducedMotion() {
 }
 
 // --- 캐릭터 설정 (화면 11 «캐릭터 끄기 · 반응 강도») — 값은 서버 GET /settings 의 character, 여기는 그 사본을 들고만 있는다 ---
-export type CharacterPref = { enabled: boolean; intensity: "motion" | "face" | "text" };
-let pref: CharacterPref = { enabled: true, intensity: "motion" };
+export type CharacterPref = CharacterPrefs;
+let pref: CharacterPref = DEFAULT_CHARACTER_PREFS;
 const prefListeners = new Set<() => void>();
 export function setCharacterPref(next: CharacterPref) {
   pref = next;

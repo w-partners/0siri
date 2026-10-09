@@ -4,6 +4,20 @@ import { Check, Lock, PackageOpen, X } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import {
+  CANARY_ADVANCE_ORDER,
+  CANARY_STAGE_LABELS,
+  type CanaryAction,
+  VERSION_STATUS_LABELS,
+} from "../../../../packages/domain/src/osiri";
+import type {
+  Operator,
+  OperatorMetrics,
+  PackageVersion,
+  VersionSource,
+} from "../../../server/src/osiri/operator.ts";
+import type { Skill } from "../../../server/src/osiri/skills.ts";
+import { ApiError } from "../api-response";
+import {
   Badge,
   Button,
   Card,
@@ -18,43 +32,18 @@ import {
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { useMe } from "./auth";
 import { CharacterAvatar } from "./eve";
-import { type Skill, SkillDraftCard } from "./skills";
+import { SkillDraftCard } from "./skills";
 import { Choice, useAction, useLoad } from "./store";
 import { LoadError, Meter } from "./team-goals";
 
-// --- 계약 타입: docs/0siri-api-contract.md «운영자 콘솔 (화면 10)». 서버에 타입이 생기면 type-import 로 바꾼다. ---
-export interface OperatorPackage {
-  id: string;
-  name: string;
-  character: string;
-  /** 아직 올린 버전이 없으면 null */
-  currentVersion: string | null;
-  pendingSkills: number;
-}
-export type CanaryStage = "profile" | "partial" | "all" | "stopped";
-export type VersionStatus = "review_failed" | "canary" | "live" | "rolled_back";
-export interface OperatorVersion {
-  id: string;
-  version: string;
-  source: { imageDigest?: string; mcpUrl?: string };
-  review: { item: string; pass: boolean; reason?: string }[];
-  canary: { stage: CanaryStage; percent: number };
-  status: VersionStatus;
-  createdAt: string;
-}
-export interface OperatorMetrics {
-  approvalRate: number | null;
-  topRejectReason: string | null;
-  citations: number | null;
-}
+/** `GET /operator/packages` 항목 — 서버 `Operator.packages()` 가 돌려주는 모양 그대로. */
+type OperatorPackage = Awaited<ReturnType<Operator["packages"]>>[number];
 
 type Menu = "versions" | "skills" | "metrics" | "notices";
 const MENUS: Menu[] = ["versions", "skills", "metrics", "notices"];
-type SourceKind = "imageDigest" | "mcpUrl";
+type SourceKind = keyof VersionSource;
 const SOURCES: SourceKind[] = ["imageDigest", "mcpUrl"];
-const STAGES = ["profile", "partial", "all"] as const;
 
 const text = {
   operatorOnly: "운영자 전용 메뉴입니다",
@@ -85,23 +74,12 @@ const text = {
   cancel: "취소",
   emptyVersionsDetail: "첫 버전을 제출하면 자동 심사를 거쳐 카나리 배포가 시작돼요.",
   submitFirst: "버전 제출하기",
-  versionStatus: {
-    review_failed: "심사 실패",
-    canary: "배포 중",
-    live: "배포됨",
-    rolled_back: "롤백됨",
-  } satisfies Record<VersionStatus, string>,
   review: "자동 심사",
   reviewScore: (pass: number, total: number) => `${pass}/${total}항 통과`,
   pass: "통과",
   fail: "실패",
   blocked: "심사에 실패해 배포가 막혔습니다. 실패한 항목을 고쳐 다시 제출해 주세요.",
   canary: "카나리 배포",
-  stage: { profile: "테스트 프로필", partial: "일부 사용자", all: "전체" } satisfies Record<
-    (typeof STAGES)[number],
-    string
-  >,
-  stopped: "확대 중단됨",
   stoppedHint: "확대를 멈췄어요. 지표가 나빠졌다면 이전 버전으로 롤백하세요.",
   advance: "확대",
   stop: "중단",
@@ -128,10 +106,25 @@ const mono = { fontFamily: fonts.mono };
 
 export function OperatorScreen() {
   const { api, navigate } = useWorkspace();
-  const { me, loading, error, reload } = useMe(api);
-  if (!me) return loading ? <Skeleton rows={2} /> : <LoadError error={error} onRetry={reload} />;
-  // 서버도 403 으로 막는다. 여기서는 먼저 이유를 말해 준다.
-  if (me.user.role === "user")
+  const { width } = useWindowDimensions();
+  // 운영자가 아니면 서버가 403 으로 막는다 — 그때만 «운영자 전용» 안내다(null). 역할을 화면에서 다시 따지지 않는다.
+  const packages = useLoad(() =>
+    api.request<OperatorPackage[]>("/api/operator/packages").catch((e: unknown) => {
+      if (e instanceof ApiError && e.status === 403) return null;
+      throw e;
+    }),
+  );
+  const [picked, setPicked] = useState("");
+  const [menu, setMenu] = useState<Menu>("versions");
+
+  const list = packages.data;
+  if (list === undefined)
+    return packages.error ? (
+      <LoadError error={packages.error} onRetry={packages.retry} />
+    ) : (
+      <Skeleton rows={3} />
+    );
+  if (list === null)
     return (
       <Card>
         <Empty icon={Lock} title={text.operatorOnly} detail={text.operatorOnlyDetail}>
@@ -140,23 +133,6 @@ export function OperatorScreen() {
           </Button>
         </Empty>
       </Card>
-    );
-  return <Console />;
-}
-
-function Console() {
-  const { api, navigate } = useWorkspace();
-  const { width } = useWindowDimensions();
-  const packages = useLoad(() => api.request<OperatorPackage[]>("/api/operator/packages"));
-  const [picked, setPicked] = useState("");
-  const [menu, setMenu] = useState<Menu>("versions");
-
-  const list = packages.data;
-  if (!list)
-    return packages.error ? (
-      <LoadError error={packages.error} onRetry={packages.retry} />
-    ) : (
-      <Skeleton rows={3} />
     );
   if (list.length === 0)
     return (
@@ -248,7 +224,7 @@ function PackagePanel({
 }) {
   const { api, notify } = useWorkspace();
   const q = `package_id=${encodeURIComponent(pkg.id)}`;
-  const versions = useLoad(() => api.request<OperatorVersion[]>(`/api/operator/versions?${q}`));
+  const versions = useLoad(() => api.request<PackageVersion[]>(`/api/operator/versions?${q}`));
   const metrics = useLoad(() => api.request<OperatorMetrics>(`/api/operator/metrics?${q}`));
   const queue = useLoad(() => api.request<Skill[]>(`/api/operator/skills?${q}`));
   const act = useAction();
@@ -273,7 +249,7 @@ function PackagePanel({
       setFormOpen(false);
       reloadVersions(); // 심사 결과는 다시 읽은 버전 목록이 보여 준다
     });
-  const canary = (version: OperatorVersion, action: "advance" | "stop") =>
+  const canary = (version: PackageVersion, action: CanaryAction) =>
     act.run(async () => {
       await api.request(`/api/operator/versions/${version.id}/canary`, { action });
       reloadVersions();
@@ -524,14 +500,14 @@ function VersionCard({
   busy,
   onCanary,
 }: {
-  version: OperatorVersion;
+  version: PackageVersion;
   busy: boolean;
-  onCanary: (action: "advance" | "stop") => void;
+  onCanary: (action: CanaryAction) => void;
 }) {
   const failed = version.status === "review_failed";
   const passed = version.review.filter((r) => r.pass).length;
   const { stage, percent } = version.canary;
-  const at = STAGES.indexOf(stage as (typeof STAGES)[number]); // "stopped" 는 -1
+  const at = (CANARY_ADVANCE_ORDER as readonly string[]).indexOf(stage); // "stopped" 는 -1
   const tint =
     version.status === "live"
       ? colors.okBg
@@ -544,7 +520,7 @@ function VersionCard({
     <Card style={{ gap: 12, borderColor: failed ? colors.miss : colors.line }}>
       <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
         <Text style={[s.heading, mono]}>v{version.version}</Text>
-        <Chip tint={tint}>{text.versionStatus[version.status]}</Chip>
+        <Chip tint={tint}>{VERSION_STATUS_LABELS[version.status]}</Chip>
         <Text style={s.small}>{relativeDate(version.createdAt)}</Text>
       </View>
       {version.source.imageDigest ? (
@@ -564,7 +540,7 @@ function VersionCard({
           <Text style={[s.small, mono]}>{text.reviewScore(passed, version.review.length)}</Text>
         </View>
         {version.review.map((r) => (
-          <View key={r.item} style={[s.row, { gap: 8, alignItems: "flex-start" }]}>
+          <View key={r.id} style={[s.row, { gap: 8, alignItems: "flex-start" }]}>
             {r.pass ? <Check size={14} color={colors.ok} /> : <X size={14} color={colors.miss} />}
             <View style={{ flex: 1 }}>
               <Text style={s.muted}>
@@ -588,14 +564,16 @@ function VersionCard({
           <View style={[s.row, { gap: 8 }]}>
             <Text style={[s.small, { fontWeight: "600", color: colors.text }]}>{text.canary}</Text>
             <Text style={[s.small, mono]}>{percent}%</Text>
-            {stage === "stopped" ? <Chip tint={colors.missBg}>{text.stopped}</Chip> : null}
+            {stage === "stopped" ? (
+              <Chip tint={colors.missBg}>{CANARY_STAGE_LABELS.stopped}</Chip>
+            ) : null}
           </View>
           <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-            {STAGES.map((step, i) => (
+            {CANARY_ADVANCE_ORDER.map((step, i) => (
               <View key={step} style={[s.row, { gap: 6 }]}>
                 {i > 0 ? <Text style={s.small}>→</Text> : null}
                 <Chip tint={i < at ? colors.okBg : i === at ? colors.accentSoft : undefined}>
-                  {text.stage[step]}
+                  {CANARY_STAGE_LABELS[step]}
                   {i < at ? " ✓" : ""}
                 </Chip>
               </View>

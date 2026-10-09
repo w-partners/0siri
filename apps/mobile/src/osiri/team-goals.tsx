@@ -4,6 +4,21 @@ import { ArrowDown, ArrowUp, Store, Target } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import {
+  GOAL_METRIC_KEYS,
+  type GoalMetricKey,
+  METRIC_PERIODS,
+  type MetricPeriod,
+  type ProposalDecision,
+  STAGE_LABELS,
+} from "../../../../packages/domain/src/osiri";
+import type {
+  GoalMetrics,
+  GoalProposal,
+  RoomCard,
+  TaskStage,
+  TeamGoal,
+} from "../../../server/src/osiri/rooms.ts";
+import {
   Button,
   Card,
   Chip,
@@ -19,34 +34,11 @@ import {
 } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
-import type { Room, TeamGoal } from "./rooms";
 import { Choice, useAction, useLoad } from "./store";
 
-// --- 계약 타입: docs/0siri-api-contract.md «방»·«목표 (화면 1·5)». 서버에 타입이 생기면 type-import 로 바꾼다. ---
-/** 장기 목표는 사용자 승인 전에는 "proposed" 다. 달성은 기존 "completed". */
-export type RoomGoal = Omit<TeamGoal, "status"> & { status: TeamGoal["status"] | "proposed" };
-/** GET /rooms 항목의 stalled — 약속한 보고 주기를 넘긴 «멈춘 팀». */
-export type GoalRoom = Room & { stalled: boolean };
-export type GoalPeriod = "week" | "month" | "quarter";
-export type MetricKey = "published" | "indexed" | "ai_citations" | "conversions";
-export interface GoalMetrics {
-  period: GoalPeriod;
-  measuredAt: string | null;
-  /** null = 아직 측정 전 */
-  metrics: Record<MetricKey, number | null>;
-}
-export interface GoalProposal {
-  id: string;
-  roomId: string;
-  title: string;
-  detail: string;
-  status: "pending" | "accepted" | "held";
-  proposedBy: string;
-  createdAt: string;
-}
+// rooms.tsx 가 제안 카드 타입을 여기서 가져간다 — 정의는 서버 rooms.ts 하나다.
+export type { GoalProposal };
 
-const PERIODS: GoalPeriod[] = ["week", "month", "quarter"];
-const METRICS: MetricKey[] = ["published", "indexed", "ai_citations", "conversions"];
 const text = {
   retry: "재시도",
   noRooms: "팀이 없어요",
@@ -58,7 +50,7 @@ const text = {
   examples: ["상속 분야에서 AI 답변에 먼저 인용되고 싶어", "이번 달 글 8건을 발행하고 싶어"],
   goChat: "대화하러 가기",
   levels: { long: "장기", mid: "중기", short: "단기", task: "작업" } satisfies Record<
-    RoomGoal["level"],
+    TeamGoal["level"],
     string
   >,
   status: {
@@ -67,7 +59,7 @@ const text = {
     completed: "달성",
     paused: "일시정지",
     blocked: "막힘",
-  } satisfies Record<RoomGoal["status"], string>,
+  } satisfies Record<TeamGoal["status"], string>,
   started: "시작",
   activate: "승인",
   activateHint: "장기 목표는 승인해야 시작돼요.",
@@ -80,13 +72,13 @@ const text = {
   stalledDetail: "약속한 보고 주기를 넘겼어요. 방에서 팀 상태를 확인해 주세요.",
   openRoom: "방 열기",
   metricsHeading: "지표",
-  period: { week: "주", month: "월", quarter: "분기" } satisfies Record<GoalPeriod, string>,
+  period: { week: "주", month: "월", quarter: "분기" } satisfies Record<MetricPeriod, string>,
   metrics: {
     published: "발행",
     indexed: "색인",
     ai_citations: "인용",
     conversions: "전환",
-  } satisfies Record<MetricKey, string>,
+  } satisfies Record<GoalMetricKey, string>,
   // 지표 칩을 누르면 보이는 측정 방법
   how: {
     published: "승인을 거쳐 실제로 발행된 글의 수예요. 발행 기록(감사 로그)에서 셉니다.",
@@ -95,7 +87,7 @@ const text = {
     ai_citations:
       "AI 답변이 우리 글을 출처로 든 횟수예요. 같은 질문을 주기적으로 다시 물어 인용 점유를 잽니다(동일 질문 재질문 방식).",
     conversions: "글을 보고 상담·문의로 이어진 건수예요. 유입 경로가 확인된 건만 셉니다.",
-  } satisfies Record<MetricKey, string>,
+  } satisfies Record<GoalMetricKey, string>,
   howTitle: (label: string) => `${label} — 측정 방법`,
   collecting: "수집 중",
   notMeasured: "아직 측정 전이에요",
@@ -116,7 +108,7 @@ const text = {
   noTasks: "진행 중인 작업이 없어요.",
 };
 
-const statusTint: Record<RoomGoal["status"], string> = {
+const statusTint: Record<TeamGoal["status"], string> = {
   proposed: colors.warnBg,
   active: colors.accentSoft,
   completed: colors.okBg,
@@ -124,6 +116,9 @@ const statusTint: Record<RoomGoal["status"], string> = {
   blocked: colors.missBg,
 };
 const mono = { fontFamily: fonts.mono };
+/** 작업의 흐름 단계 이름. 화면에 내지 않는 내부 단계(geo·done)는 이름이 없다. */
+const stageLabel = (stage?: TaskStage) =>
+  stage ? (STAGE_LABELS as Partial<Record<TaskStage, string>>)[stage] : undefined;
 
 /** 목록 단위 에러: 사유 문장 + 재시도. 화면 4·5·9·10 이 같이 쓴다. */
 export function LoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
@@ -151,7 +146,7 @@ export function Meter({ value, tone = colors.accent }: { value: number; tone?: s
     </View>
   );
 }
-const meterTone = (status: RoomGoal["status"]) =>
+const meterTone = (status: TeamGoal["status"]) =>
   status === "completed" ? colors.ok : status === "blocked" ? colors.miss : colors.accent;
 
 export function TeamGoalsScreen({
@@ -162,7 +157,7 @@ export function TeamGoalsScreen({
   onOpenRoom?: (roomId: string) => void;
 }) {
   const { api, navigate } = useWorkspace();
-  const rooms = useLoad(() => api.request<GoalRoom[]>("/api/rooms"));
+  const rooms = useLoad(() => api.request<RoomCard[]>("/api/rooms"));
   const [picked, setPicked] = useState("");
 
   if (!rooms.data)
@@ -199,7 +194,7 @@ export function TeamGoalsScreen({
       )}
       {rooms.error ? <LoadError error={rooms.error} onRetry={rooms.retry} /> : null}
       {room ? (
-        <RoomGoals key={room.id} room={room} onOpenRoom={onOpenRoom} />
+        <TeamGoals key={room.id} room={room} onOpenRoom={onOpenRoom} />
       ) : (
         <LoadError error={text.roomMissing} onRetry={rooms.retry} />
       )}
@@ -207,16 +202,16 @@ export function TeamGoalsScreen({
   );
 }
 
-function RoomGoals({
+function TeamGoals({
   room,
   onOpenRoom,
 }: {
-  room: GoalRoom;
+  room: RoomCard;
   onOpenRoom?: (roomId: string) => void;
 }) {
   const { api, navigate } = useWorkspace();
   const { width } = useWindowDimensions();
-  const goals = useLoad(() => api.request<RoomGoal[]>(`/api/goals?room_id=${room.id}`), room.id);
+  const goals = useLoad(() => api.request<TeamGoal[]>(`/api/goals?room_id=${room.id}`), room.id);
   const proposals = useLoad(
     () => api.request<GoalProposal[]>(`/api/goals/proposals?room_id=${room.id}`),
     room.id,
@@ -228,19 +223,19 @@ function RoomGoals({
   const childrenOf = (parentId: string | null) =>
     (list ?? []).filter((g) => g.parentId === parentId && g.level !== "task");
   // 단기 목표 순서: 이웃과 order 를 맞바꾼다(두 건 PATCH). 서버가 방 타임라인에 알림을 남긴다.
-  const move = (goal: RoomGoal, other: RoomGoal) =>
+  const move = (goal: TeamGoal, other: TeamGoal) =>
     act.run(async () => {
       await api.request(`/api/goals/${goal.id}/order`, { order: other.order }, "PATCH");
       await api.request(`/api/goals/${other.id}/order`, { order: goal.order }, "PATCH");
       goals.retry();
     });
-  const activate = (goal: RoomGoal) =>
+  const activate = (goal: TeamGoal) =>
     act.run(async () => {
       await api.request(`/api/goals/${goal.id}/activate`, {});
       goals.retry(); // 상태 칩은 서버가 돌려준 목록으로만 바뀐다
     });
 
-  const row = (goal: RoomGoal, depth: number) => {
+  const row = (goal: TeamGoal, depth: number) => {
     const siblings = goal.level === "short" ? childrenOf(goal.parentId) : [];
     const idx = siblings.indexOf(goal);
     const openable = goal.level === "short" && onOpenRoom;
@@ -284,7 +279,7 @@ function RoomGoals({
               index={idx}
               count={siblings.length}
               disabled={act.busy}
-              onMove={(dir) => void move(goal, siblings[idx + dir] as RoomGoal)}
+              onMove={(dir) => void move(goal, siblings[idx + dir] as TeamGoal)}
             />
           ) : null}
         </View>
@@ -423,6 +418,7 @@ function RoomGoals({
                     <Text style={[s.text, { flex: 1 }]} numberOfLines={2}>
                       {t.title}
                     </Text>
+                    {stageLabel(t.stage) ? <Chip>{stageLabel(t.stage)}</Chip> : null}
                     <Chip tint={statusTint[t.status]}>{text.status[t.status]}</Chip>
                     <Text style={[s.small, mono, { width: 40, textAlign: "right" }]}>
                       {t.progress}%
@@ -481,7 +477,7 @@ function RoomGoals({
 }
 
 /** 목표 상태: proposed → active → achieved. 일시정지·막힘은 따로 칩으로 붙는다. */
-function StatusTrack({ status }: { status: RoomGoal["status"] }) {
+function StatusTrack({ status }: { status: TeamGoal["status"] }) {
   const steps = ["proposed", "active", "completed"] as const;
   const off = status === "paused" || status === "blocked";
   return (
@@ -539,16 +535,16 @@ function Reorder({
 }
 
 /** 장기 목표의 지표 칩 + 기간 전환. 조회에 실패하면 마지막 측정값과 그 시각을 보인다. */
-function MetricsCard({ goal }: { goal: RoomGoal }) {
+function MetricsCard({ goal }: { goal: TeamGoal }) {
   const { api } = useWorkspace();
-  const [period, setPeriod] = useState<GoalPeriod>("month");
-  const [explain, setExplain] = useState<MetricKey | null>(null);
+  const [period, setPeriod] = useState<MetricPeriod>("month");
+  const [explain, setExplain] = useState<GoalMetricKey | null>(null);
   const load = useLoad(
     () => api.request<GoalMetrics>(`/api/goals/${goal.id}/metrics?period=${period}`),
     `${goal.id}|${period}`,
   );
   // 실패했을 때 보일 값: 마지막으로 성공한 조회(useLoad 가 남겨 둔다), 그것도 없으면 팀이 목표에 보고한 값.
-  const reported: Record<MetricKey, number | null> = {
+  const reported: Record<GoalMetricKey, number | null> = {
     published: goal.metrics?.published ?? null,
     indexed: goal.metrics?.indexed ?? null,
     ai_citations: goal.metrics?.ai_citations ?? null,
@@ -560,7 +556,7 @@ function MetricsCard({ goal }: { goal: RoomGoal }) {
       <View style={[s.between, { gap: 8, flexWrap: "wrap" }]}>
         <Text style={s.heading}>{text.metricsHeading}</Text>
         <View style={[s.row, { gap: 6 }]}>
-          {PERIODS.map((p) => (
+          {METRIC_PERIODS.map((p) => (
             <Choice
               key={p}
               label={text.period[p]}
@@ -577,7 +573,7 @@ function MetricsCard({ goal }: { goal: RoomGoal }) {
         <Skeleton rows={1} height={28} />
       ) : (
         <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-          {METRICS.map((k) => {
+          {GOAL_METRIC_KEYS.map((k) => {
             const v = values[k];
             return (
               <Pressable
@@ -629,7 +625,7 @@ function MetricsCard({ goal }: { goal: RoomGoal }) {
 function ProposalCard({ proposal, onDecided }: { proposal: GoalProposal; onDecided: () => void }) {
   const { api } = useWorkspace();
   const act = useAction();
-  const decide = (decision: "accept" | "hold") =>
+  const decide = (decision: ProposalDecision) =>
     act.run(async () => {
       await api.request(`/api/goals/proposals/${proposal.id}/decide`, { decision });
       onDecided(); // 결과 칩은 다시 읽은 목록의 status 로 그린다

@@ -7,29 +7,51 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  ANSWER_MODES,
   ANSWER_SOURCE_LABELS,
+  type AnswerMode,
   type AnswerSource,
+  CHARACTER_INTENSITIES,
+  type CharacterPrefs,
+  DEFAULT_CHARACTER_PREFS,
+  DEFAULT_NOTIFICATION_PREFS,
   FIXED_TIERS,
   type FixedTier,
+  MODEL_KEY_PROVIDERS,
   MODEL_PROVIDERS,
+  type ModelKeyErrorKind,
+  type ModelKeyProvider,
   type ModelProvider,
   type ModelTier,
+  type NotificationPrefs,
+  PERSONAL_TIER_LABEL,
   ROUTE_KINDS,
   type RouteKind,
+  TEAM_TIER_LABEL,
 } from "../../../../packages/domain/src/osiri.ts";
 import { decryptSecret, encryptSecret } from "../../../../packages/integrations/src/vault.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
+import { KindError } from "./accounts.ts";
 import type { Rooms } from "./rooms.ts";
+import type { Catalog } from "./store.ts";
 
 export type { ModelTier };
 export type Provider = ModelProvider;
+/**
+ * 사용자 설정 한 벌 — 저장 기록은 이것 하나다(owner, "settings", "routing").
+ * 라우팅이 읽는 값(답변 방식·가성비·고정·상한)과 화면 설정(알림·캐릭터)이 같은 기록에 있고, `GET /settings` 는 이 기록의 다른 모양일 뿐이다.
+ */
 export interface RoutingSettings {
   id: "routing";
   autoEconomy: boolean; // 가성비 자동 (기본 켬)
   fixedTier?: FixedTier; // 난이도 고정 (항상 주력 등)
   monthlyCapKrw?: number; // 월 상한. 도달 시 상향 억제 + 알림
   deviceLlmEnabled: boolean; // 티어 1 플래그 — 9단계 실측 통과 전 기본 꺼짐
+  /** 답변 방식. 없으면 auto(규칙대로) */
+  answerMode?: AnswerMode;
+  notifications?: NotificationPrefs;
+  character?: CharacterPrefs;
 }
 export interface UsageEntry {
   id: string;
@@ -61,11 +83,24 @@ export interface AnsweredBy {
   reason: string;
 }
 export interface ModelAccount {
-  id: Provider;
+  id: ModelKeyProvider;
   keyCiphertext: string;
   last4: string;
   validatedAt: string;
+  /** compatible(OpenAI 호환 엔드포인트)일 때만 */
+  baseUrl?: string;
 }
+/** `GET /model-keys` 의 한 줄 — 제공자마다 하나 */
+export interface ModelKeyRow {
+  provider: ModelKeyProvider;
+  status: "active" | "none";
+  last4: string | null;
+  baseUrl?: string;
+}
+type ProbeResult =
+  | { ok: true }
+  | { ok: false; reason: "network"; message: string }
+  | { ok: false; reason: "auth" | "limit" | "status"; status: number };
 export interface RouteInput {
   text: string;
   needsTools?: boolean; // 도구 호출·외부 발행 → 무조건 서버
@@ -187,6 +222,16 @@ export class Routing {
         ...(defaultModelUsed ? { defaultModelUsed } : {}),
       };
     };
+    const onDevice = (reason: string): RouteDecision => ({
+      tier: 1,
+      model: "device",
+      reason,
+      servedBy: "device",
+      badge: ANSWER_SOURCE_LABELS.device,
+      capped,
+    });
+    // 답변 방식(설정 화면): auto = 아래 규칙대로 · device = 대화는 기기에서 · server = 기기로 보내지 않는다
+    const mode = settings.answerMode ?? "auto";
     if (input.deviceFailed) return decide(2, "fallback_reason=device_model_failed");
     if (input.needsTools) return decide(3, "도구 호출·외부 행위는 서버");
     if (input.longTask) return decide(3, "긴 작업은 서버");
@@ -194,17 +239,12 @@ export class Routing {
     if (kind === "strategy" || kind === "review") return decide(4, `${kind}: 최고 모델`);
     if (kind === "draft") return decide(3, "초안: 주력 모델");
     if (kind === "monitor" || kind === "report") return decide(2, `${kind}: 경량 모델`);
+    // 사용자가 «항상 기기» 를 골랐다 — 도구·긴 작업·팀 업무가 아닌 대화는 길이·난이도와 무관하게 기기로
+    if (mode === "device" && !input.serverOnly) return onDevice("답변 방식: 항상 기기");
     const short = input.text.trim().length <= 40 && !/\n/.test(input.text);
     if (short && !HARD.test(input.text)) {
-      if (settings.deviceLlmEnabled && !input.serverOnly)
-        return {
-          tier: 1,
-          model: "device",
-          reason: "사소한 대화: 기기 LLM",
-          servedBy: "device",
-          badge: ANSWER_SOURCE_LABELS.device,
-          capped,
-        };
+      if (mode === "auto" && settings.deviceLlmEnabled && !input.serverOnly)
+        return onDevice("사소한 대화: 기기 LLM");
       return decide(2, "사소한 대화: 경량 모델");
     }
     if (HARD.test(input.text) || input.text.length > 600)
@@ -377,18 +417,18 @@ export class Routing {
       ({ keyCiphertext: _k, ...a }) => a,
     );
   }
-  /** 검증 호출 → 통과해야 저장. 실패 사유는 구체적으로 (인증/한도/네트워크). */
-  async connectAccount(
-    owner: string,
-    provider: Provider,
+  /** 제공자에게 실제로 물어 키를 검증한다 (모델 목록 조회). 아무것도 저장하지 않는다. */
+  private async probeKey(
+    provider: ModelKeyProvider,
     apiKey: string,
-    fetchFn: typeof fetch = fetch,
-  ) {
-    const key = this.key();
-    const probe: Record<Provider, { url: string; headers: Record<string, string> }> = {
+    baseUrl: string | undefined,
+    fetchFn: typeof fetch,
+  ): Promise<ProbeResult> {
+    const bearer = { Authorization: `Bearer ${apiKey}` };
+    const probe: Record<ModelKeyProvider, { url: string; headers: Record<string, string> }> = {
       openai: {
         url: `${this.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"}/models`,
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: bearer,
       },
       anthropic: {
         url: `${this.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"}/v1/models`,
@@ -398,6 +438,7 @@ export class Routing {
         url: `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
         headers: {},
       },
+      compatible: { url: `${(baseUrl ?? "").replace(/\/+$/, "")}/models`, headers: bearer },
     };
     let response: Response;
     try {
@@ -406,34 +447,259 @@ export class Routing {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (error) {
-      throw new AppError(
-        `네트워크 오류로 키를 검증하지 못했습니다: ${(error as Error).message}`,
-        502,
-      );
+      return { ok: false, reason: "network", message: (error as Error).message };
     }
     if (response.status === 401 || response.status === 403)
-      throw new AppError("인증 실패: 키가 올바르지 않습니다", 400);
-    if (response.status === 429) throw new AppError("한도 초과: 제공자가 요청을 거부했습니다", 400);
-    if (!response.ok) throw new AppError(`키 검증 실패 (${response.status})`, 400);
+      return { ok: false, reason: "auth", status: response.status };
+    if (response.status === 429) return { ok: false, reason: "limit", status: response.status };
+    if (!response.ok) return { ok: false, reason: "status", status: response.status };
+    return { ok: true };
+  }
+  private async storeAccount(
+    owner: string,
+    provider: ModelKeyProvider,
+    apiKey: string,
+    encryptionKey: string,
+    baseUrl?: string,
+  ) {
     const account: ModelAccount = {
       id: provider,
-      keyCiphertext: encryptSecret(apiKey, key),
+      keyCiphertext: encryptSecret(apiKey, encryptionKey),
       last4: apiKey.slice(-4),
       validatedAt: new Date().toISOString(),
+      ...(baseUrl ? { baseUrl } : {}),
     };
     await this.db.put(owner, "model-accounts", account);
     const { keyCiphertext: _k, ...safe } = account;
     return safe;
+  }
+  /** 검증 호출 → 통과해야 저장. 실패 사유는 구체적으로 (인증/한도/네트워크). */
+  async connectAccount(
+    owner: string,
+    provider: Provider,
+    apiKey: string,
+    fetchFn: typeof fetch = fetch,
+  ) {
+    const key = this.key();
+    const result = await this.probeKey(provider, apiKey, undefined, fetchFn);
+    if (!result.ok) {
+      if (result.reason === "network")
+        throw new AppError(`네트워크 오류로 키를 검증하지 못했습니다: ${result.message}`, 502);
+      if (result.reason === "auth") throw new AppError("인증 실패: 키가 올바르지 않습니다", 400);
+      if (result.reason === "limit")
+        throw new AppError("한도 초과: 제공자가 요청을 거부했습니다", 400);
+      throw new AppError(`키 검증 실패 (${result.status})`, 400);
+    }
+    return this.storeAccount(owner, provider, apiKey, key);
+  }
+  /** `GET /model-keys` — 제공자마다 한 줄. 키가 없으면 status "none", last4 null. */
+  async modelKeys(owner: string): Promise<ModelKeyRow[]> {
+    const saved = await this.db.list<ModelAccount>(owner, "model-accounts");
+    return MODEL_KEY_PROVIDERS.map((provider) => {
+      const account = saved.find((a) => a.id === provider);
+      return account
+        ? {
+            provider,
+            status: "active" as const,
+            last4: account.last4,
+            ...(account.baseUrl ? { baseUrl: account.baseUrl } : {}),
+          }
+        : { provider, status: "none" as const, last4: null };
+    });
+  }
+  /**
+   * `PUT /model-keys/:provider` — 키 교체. 형식 → 제공자 검증을 **통과한 뒤에만** 저장하므로, 실패하면 이전 키가 그대로 남는다.
+   * 실패는 종류를 붙인다: format(모양이 틀림) · auth(제공자가 거절) · network(제공자에 닿지 못했거나 제공자가 판정을 주지 않음).
+   */
+  async replaceKey(
+    owner: string,
+    provider: ModelKeyProvider,
+    input: { apiKey: string; baseUrl?: string },
+    fetchFn: typeof fetch = fetch,
+  ): Promise<ModelKeyRow> {
+    const fail = (kind: ModelKeyErrorKind, message: string) =>
+      new KindError<ModelKeyErrorKind>(message, 400, kind);
+    const apiKey = input.apiKey.trim();
+    if (apiKey.length < 8 || apiKey.length > 500 || /\s/.test(apiKey))
+      throw fail("format", "키 형식이 올바르지 않습니다 (공백 없이 8~500자)");
+    let baseUrl: string | undefined;
+    if (provider === "compatible") {
+      const raw = input.baseUrl?.trim();
+      if (!raw || !URL.canParse(raw) || !/^https?:$/.test(new URL(raw).protocol))
+        throw fail("format", "호환 엔드포인트는 http(s) 주소(baseUrl)가 필요합니다");
+      baseUrl = raw.replace(/\/+$/, "");
+    } else if (input.baseUrl?.trim()) {
+      throw fail("format", "baseUrl 은 호환 엔드포인트(compatible)에서만 쓸 수 있습니다");
+    }
+    const encryptionKey = this.key();
+    const result = await this.probeKey(provider, apiKey, baseUrl, fetchFn);
+    if (!result.ok) {
+      if (result.reason === "auth")
+        throw fail("auth", "인증 실패: 제공자가 이 키를 받아들이지 않았습니다");
+      if (result.reason === "network")
+        throw fail("network", `제공자에 연결하지 못해 키를 검증하지 못했습니다: ${result.message}`);
+      throw fail(
+        "network",
+        result.reason === "limit"
+          ? "제공자가 한도 초과로 응답해 키를 검증하지 못했습니다. 잠시 뒤 다시 시도하세요"
+          : `제공자가 검증 요청에 ${result.status} 로 응답해 키를 확인하지 못했습니다`,
+      );
+    }
+    const saved = await this.storeAccount(owner, provider, apiKey, encryptionKey, baseUrl);
+    return {
+      provider,
+      status: "active",
+      last4: saved.last4,
+      ...(saved.baseUrl ? { baseUrl: saved.baseUrl } : {}),
+    };
   }
   /** 실행 시점에만 복호화해 주입한다. 로그·응답에 쓰지 않는다. */
   async apiKey(owner: string, provider: Provider): Promise<string | undefined> {
     const account = await this.db.get<ModelAccount>(owner, "model-accounts", provider);
     return account ? decryptSecret(account.keyCiphertext, this.key()) : undefined;
   }
-  async disconnectAccount(owner: string, provider: Provider) {
+  async disconnectAccount(owner: string, provider: ModelKeyProvider) {
     await this.db.remove(owner, "model-accounts", provider);
   }
+
+  // ---- 설정 화면 (화면 11) — 위 settings() 기록의 다른 모양 ----
+  /** `GET /billing/usage`. 잴 수 없는 값은 0 으로 꾸미지 않고 null("측정 중") 로 낸다. */
+  async billing(owner: string) {
+    const [settings, month, keys] = await Promise.all([
+      this.settings(owner),
+      this.month(owner),
+      this.db.list<ModelAccount>(owner, "model-accounts"),
+    ]);
+    const capKrw = settings.monthlyCapKrw ?? null;
+    // 단가 없는 사용분이 있으면 지출을 다 잰 것이 아니다 — 상한 대비 비율을 낼 수 없다
+    const percent =
+      capKrw === null || month.unpricedCalls > 0
+        ? null
+        : capKrw === 0
+          ? 100
+          : Math.min(100, Math.round((month.costKrw / capKrw) * 1000) / 10);
+    return {
+      costKrw: month.costKrw,
+      capKrw,
+      percent,
+      byok: keys.length > 0,
+      savedKrw: month.savedKrw,
+    };
+  }
 }
+
+const settingsView = (
+  settings: RoutingSettings,
+  tier: Awaited<ReturnType<Catalog["tierSummary"]>>,
+) => ({
+  tier: {
+    label: tier.subscribed ? TEAM_TIER_LABEL : PERSONAL_TIER_LABEL,
+    subscription: tier.subscription,
+    nextBillingAt: tier.nextBillingAt,
+  },
+  answerMode: settings.answerMode ?? ("auto" as AnswerMode),
+  autoEconomy: settings.autoEconomy,
+  fixedModel: settings.fixedTier === undefined ? null : String(settings.fixedTier),
+  monthlyCapKrw: settings.monthlyCapKrw ?? null,
+  notifications: settings.notifications ?? DEFAULT_NOTIFICATION_PREFS,
+  character: settings.character ?? DEFAULT_CHARACTER_PREFS,
+});
+const FIXED_MODELS = FIXED_TIERS.map(String);
+
+/**
+ * S7·S11 계약 라우트: /settings · /settings/model · /billing/usage · /model-keys.
+ * 저장은 전부 `Routing` 의 기록(설정 한 벌 · model-accounts)이다 — 라우팅이 읽는 바로 그 값.
+ */
+export function settingsRoutes(
+  routing: Routing,
+  catalog: Pick<Catalog, "tierSummary">,
+  /** 키 검증 호출에 쓰는 fetch — 시험이 제공자 응답을 바꿔 끼운다 */
+  fetchFn: typeof fetch = fetch,
+) {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  const view = async (owner: string) =>
+    settingsView(await routing.settings(owner), await catalog.tierSummary(owner));
+  app.get("/settings", async (c) => c.json(await view(c.get("owner"))));
+  app.patch("/settings/model", async (c) => {
+    const body = z
+      .object({
+        answerMode: z.enum(ANSWER_MODES).optional(),
+        autoEconomy: z.boolean().optional(),
+        fixedModel: z.enum(FIXED_MODELS).nullable().optional(),
+        monthlyCapKrw: z.number().min(0).nullable().optional(),
+      })
+      .parse(await c.req.json());
+    const patch: Partial<Omit<RoutingSettings, "id">> = {};
+    if (body.answerMode !== undefined) patch.answerMode = body.answerMode;
+    if (body.autoEconomy !== undefined) patch.autoEconomy = body.autoEconomy;
+    if (body.fixedModel !== undefined)
+      patch.fixedTier = FIXED_TIERS.find((tier) => String(tier) === body.fixedModel);
+    if (body.monthlyCapKrw !== undefined) patch.monthlyCapKrw = body.monthlyCapKrw ?? undefined;
+    await routing.updateSettings(c.get("owner"), patch);
+    return c.json(await view(c.get("owner")));
+  });
+  app.patch("/settings", async (c) => {
+    const body = z
+      .object({
+        notifications: z
+          .object({ approvals: z.boolean().optional(), weeklyReport: z.boolean().optional() })
+          .optional(),
+        character: z
+          .object({
+            enabled: z.boolean().optional(),
+            intensity: z.enum(CHARACTER_INTENSITIES).optional(),
+          })
+          .optional(),
+      })
+      .parse(await c.req.json());
+    const current = await routing.settings(c.get("owner"));
+    const patch: Partial<Omit<RoutingSettings, "id">> = {};
+    // 일부만 보내도 된다 — 보내지 않은 항목은 지금 값을 지킨다
+    if (body.notifications)
+      patch.notifications = {
+        ...(current.notifications ?? DEFAULT_NOTIFICATION_PREFS),
+        ...definedOnly(body.notifications),
+      };
+    if (body.character)
+      patch.character = {
+        ...(current.character ?? DEFAULT_CHARACTER_PREFS),
+        ...definedOnly(body.character),
+      };
+    await routing.updateSettings(c.get("owner"), patch);
+    return c.json(await view(c.get("owner")));
+  });
+  app.get("/billing/usage", async (c) => c.json(await routing.billing(c.get("owner"))));
+
+  const providerSchema = z.enum(MODEL_KEY_PROVIDERS);
+  app.get("/model-keys", async (c) => c.json(await routing.modelKeys(c.get("owner"))));
+  app.put("/model-keys/:provider", async (c) => {
+    const provider = providerSchema.parse(c.req.param("provider"));
+    try {
+      const body = z
+        .object({ apiKey: z.string(), baseUrl: z.string().max(500).optional() })
+        .parse(await c.req.json());
+      return c.json(await routing.replaceKey(c.get("owner"), provider, body, fetchFn));
+    } catch (error) {
+      // 종류가 붙은 실패는 본문에 kind 를 싣는다 — 공용 오류 처리기는 error 문장만 낸다
+      if (error instanceof KindError)
+        return c.json({ error: error.message, kind: error.kind }, error.status);
+      if (error instanceof z.ZodError)
+        return c.json(
+          { error: "키 형식이 올바르지 않습니다", kind: "format" satisfies ModelKeyErrorKind },
+          400,
+        );
+      throw error;
+    }
+  });
+  app.delete("/model-keys/:provider", async (c) => {
+    await routing.disconnectAccount(c.get("owner"), providerSchema.parse(c.req.param("provider")));
+    return c.json({ ok: true });
+  });
+  return app;
+}
+/** undefined 인 키를 뺀다 — 펼쳐 덮을 때 지금 값을 undefined 로 지우지 않게 */
+const definedOnly = <T extends object>(value: T): Partial<T> =>
+  Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 
 const SOURCE_OF: Record<UsageEntry["source"], AnswerSource> = {
   platform: "server",

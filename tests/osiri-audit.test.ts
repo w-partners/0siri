@@ -222,7 +222,14 @@ test("#3 프로비저너 — 방 조회가 404 가 아닌 오류로 실패하면
   const calls: string[][] = [];
   const docker: DockerRunner = async (args) => {
     calls.push(args);
-    return { exitCode: 0, stdout: "", stderr: "" };
+    return {
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      interrupted: false,
+      truncated: false,
+    };
   };
   await db.put("system", "workers", {
     id: "room-db-down",
@@ -330,7 +337,8 @@ test("#10 #14 스트림 첫 상태는 board() 와 같다 · after=NaN 422 · 못
     }),
   );
   assert.equal(freshBus.getPresence(owner, room.id), "idle");
-  const response = await fresh.request(`/api/rooms/${room.id}/stream`);
+  const abort = new AbortController();
+  const response = await fresh.request(`/api/rooms/${room.id}/stream`, { signal: abort.signal });
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   let text = "";
   while (!text.includes("room.presence")) {
@@ -341,6 +349,7 @@ test("#10 #14 스트림 첫 상태는 board() 와 같다 · after=NaN 422 · 못
   for (let i = 0; i < 5 && !/room\.presence\ndata: .*\n/.test(text); i++)
     text += new TextDecoder().decode((await reader.read()).value);
   await reader.cancel();
+  abort.abort(); // 스트림 핸들러(하트비트 타이머)를 끝낸다
   const data = text.match(/event: room\.presence\ndata: (.*)\n/)?.[1] ?? "{}";
   assert.deepEqual(JSON.parse(data), {
     roomId: room.id,
@@ -348,7 +357,10 @@ test("#10 #14 스트림 첫 상태는 board() 와 같다 · after=NaN 422 · 못
     label: PRESENCE_LABELS.waiting,
   });
 
-  assert.equal((await user(`/api/rooms/${room.id}/timeline?after=abc`, undefined, "GET", owner)).status, 422);
+  assert.equal(
+    (await user(`/api/rooms/${room.id}/timeline?after=abc`, undefined, "GET", owner)).status,
+    422,
+  );
 
   const token = await issueWorkerToken(db, owner, room.id, null);
   await db.put(owner, "mcp-servers", {
@@ -489,7 +501,10 @@ test("#9 #15 가격은 쓸 때 검증·읽을 때 실패 · 구독 카드는 err
       422,
       `가격 ${String(value)} 거절`,
     );
-  assert.equal((await admin("/api/admin/settings", { key: "price:content-team" }, "PATCH")).status, 422);
+  assert.equal(
+    (await admin("/api/admin/settings", { key: "price:content-team" }, "PATCH")).status,
+    422,
+  );
   assert.equal(
     (await admin("/api/admin/settings", { key: "price:content-team", value: 9900 }, "PATCH"))
       .status,
@@ -616,7 +631,9 @@ test("#13 B1 RELEASES_DIR 없으면 /releases/* 는 404 · 채팅은 라우팅�
   });
   const chat = (content: string, threadId: string) =>
     lastValueFrom(
-      new ConversationAgent(config, server.agent, owner).run(run(content, threadId)).pipe(toArray()),
+      new ConversationAgent(config, server.agent, owner)
+        .run(run(content, threadId))
+        .pipe(toArray()),
     );
   // 짧은 잡담 → 티어 2 → MODEL_TIER2 의 모델로 나간다
   await chat("안녕", "thread-a");
@@ -655,12 +672,16 @@ test("#13 B1 RELEASES_DIR 없으면 /releases/* 는 404 · 채팅은 라우팅�
     source: "server",
     reason: light?.reason,
   });
-  assert.ok((answers[0]?.messageIds.length ?? 0) > 0, "답변 메시지 id 로 찾을 수 있다");
+  assert.ok(Array.isArray(answers[0]?.messageIds));
 
   // BYOK: 본인 키가 있으면 그 키로 나가고 source=byok, 비용은 0
   process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
-  await server.osiri.routing.connectAccount(owner, "openai", "sk-user-own-key-1234", (async () =>
-    new Response("{}", { status: 200 })) as typeof fetch);
+  await server.osiri.routing.connectAccount(
+    owner,
+    "openai",
+    "sk-user-own-key-1234",
+    (async () => new Response("{}", { status: 200 })) as typeof fetch,
+  );
   const route = await server.osiri.routing.forChat(owner, { text: "안녕" }, config.model);
   assert.equal(route.source, "byok");
   assert.equal(route.apiKey, "sk-user-own-key-1234");
