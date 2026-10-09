@@ -151,7 +151,11 @@ export default function App() {
           <WorkspaceApp token={token} onLogout={() => setToken("")} />
         </CopilotKitProvider>
       ) : (
-        <LoginScreen onToken={setToken} />
+        // 로그인 전에도 새 버전을 알린다 — 로그아웃 상태로 두면 영영 옛 버전에 남는다.
+        <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
+          <UpdateBanner />
+          <LoginScreen onToken={setToken} />
+        </SafeAreaView>
       )}
     </SafeAreaProvider>
   );
