@@ -248,13 +248,12 @@ export class Approvals {
     input: { approvalId: string; token: string; toolName: string; input: unknown },
   ): Promise<Approval> {
     const approval = await this.db.get<Approval>(owner, "approvals", input.approvalId);
-    if (!approval || !approval.tokenHash)
-      throw new AppError("승인 토큰이 없습니다. 실행이 차단되었습니다", 403);
-    const expected = Buffer.from(approval.tokenHash, "hex");
+    // 아직 승인되지 않았거나(토큰 해시 없음) 없는 승인이어도 시도 자체를 감사 로그에 남긴다
+    const expected = Buffer.from(approval?.tokenHash ?? "", "hex");
     const actual = Buffer.from(sha(input.token), "hex");
     const tokenOk = expected.length === actual.length && timingSafeEqual(expected, actual);
-    const hashOk = inputHash(input.toolName, input.input) === approval.inputHash;
-    if (!tokenOk || !hashOk || approval.status !== "approved") {
+    const hashOk = !!approval && inputHash(input.toolName, input.input) === approval.inputHash;
+    if (!approval || !tokenOk || !hashOk || approval.status !== "approved") {
       await this.rooms.audit(owner, {
         packageId: null,
         actor: "gate",
