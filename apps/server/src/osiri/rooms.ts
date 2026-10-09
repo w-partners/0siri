@@ -112,9 +112,15 @@ export class Rooms {
   async ensurePersonalRoom(owner: string): Promise<Room> {
     const rooms = await this.db.list<Room>(owner, "rooms");
     const personal = rooms.find((room) => room.packageId === null);
-    return personal ?? this.create(owner, { packageId: null, title: "영시리", character: "yeongsil" });
+    return (
+      personal ?? this.create(owner, { packageId: null, title: "영시리", character: "yeongsil" })
+    );
   }
-  async patch(owner: string, roomId: string, patch: Partial<Pick<Room, "pinned" | "title" | "lastSeenAt" | "archived" | "lastReport">>) {
+  async patch(
+    owner: string,
+    roomId: string,
+    patch: Partial<Pick<Room, "pinned" | "title" | "lastSeenAt" | "archived" | "lastReport">>,
+  ) {
     const room = await this.get(owner, roomId);
     const next = { ...room, ...patch };
     await this.db.put(owner, "rooms", next);
@@ -244,7 +250,12 @@ export class Rooms {
   async updateGoal(
     owner: string,
     goalId: string,
-    patch: Partial<Pick<TeamGoal, "progress" | "status" | "stage" | "metrics" | "nextActions" | "order" | "title">>,
+    patch: Partial<
+      Pick<
+        TeamGoal,
+        "progress" | "status" | "stage" | "metrics" | "nextActions" | "order" | "title"
+      >
+    >,
     actor = "system",
   ): Promise<TeamGoal> {
     const goal = await this.db.get<TeamGoal>(owner, "team-goals", goalId);
@@ -333,7 +344,9 @@ export class Rooms {
       };
     });
     const shortTerm = byLevel.find((b) => b.level === "short");
-    const progress = shortTerm?.count ? shortTerm.progress : (byLevel.find((b) => b.count)?.progress ?? 0);
+    const progress = shortTerm?.count
+      ? shortTerm.progress
+      : (byLevel.find((b) => b.count)?.progress ?? 0);
     return {
       roomId,
       flow,

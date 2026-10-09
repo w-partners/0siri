@@ -47,18 +47,28 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
     const room = await rooms.get(owner, roomId);
     const digest = after === undefined ? await rooms.digestSince(owner, roomId) : null;
     const messages = await rooms.timeline(owner, roomId, after);
-    if (after === undefined) await rooms.patch(owner, roomId, { lastSeenAt: new Date().toISOString() });
+    if (after === undefined)
+      await rooms.patch(owner, roomId, { lastSeenAt: new Date().toISOString() });
     return c.json({ room, digest, messages, board: await rooms.board(owner, roomId) });
   });
   app.post("/rooms/:id/messages", async (c) => {
     const body = z
-      .object({ text: z.string().min(1).max(4000), kind: z.enum(["text", "report"]).default("text") })
+      .object({
+        text: z.string().min(1).max(4000),
+        kind: z.enum(["text", "report"]).default("text"),
+      })
       .parse(await c.req.json());
     return c.json(
-      await rooms.post(c.get("owner"), c.req.param("id"), { role: "user", kind: body.kind, text: body.text }),
+      await rooms.post(c.get("owner"), c.req.param("id"), {
+        role: "user",
+        kind: body.kind,
+        text: body.text,
+      }),
     );
   });
-  app.get("/rooms/:id/board", async (c) => c.json(await rooms.board(c.get("owner"), c.req.param("id"))));
+  app.get("/rooms/:id/board", async (c) =>
+    c.json(await rooms.board(c.get("owner"), c.req.param("id"))),
+  );
   // 캐릭터 탭 → 팀 상태 요약 시트 (§5)
   app.get("/rooms/:id/summary", async (c) => {
     const owner = c.get("owner");
@@ -69,12 +79,16 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       rooms.goals(owner, roomId),
     ]);
     const today = new Date().toISOString().slice(0, 10);
-    const doneToday = goals.filter((g) => g.status === "completed" && g.updatedAt.startsWith(today)).length;
+    const doneToday = goals.filter(
+      (g) => g.status === "completed" && g.updatedAt.startsWith(today),
+    ).length;
     return c.json({
       presence: board.presence,
       label: presenceLabel[board.presence as PresenceState] ?? board.presence,
       flow: board.flow,
-      pendingApprovals: pending.filter((a) => a.roomId === roomId).map((a) => ({ id: a.id, title: a.title })),
+      pendingApprovals: pending
+        .filter((a) => a.roomId === roomId)
+        .map((a) => ({ id: a.id, title: a.title })),
       doneToday,
       progress: board.progress,
       nextReportAt: board.nextReportAt ?? null,
@@ -104,7 +118,10 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
           } else await send(event.type, event);
         })();
       });
-      const heartbeat = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }), 25_000);
+      const heartbeat = setInterval(
+        () => void stream.writeSSE({ event: "ping", data: "" }),
+        25_000,
+      );
       stream.onAbort(() => {
         open = false;
         clearInterval(heartbeat);
@@ -129,7 +146,11 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       decidedBy: c.get("owner"),
       frozenHash: body.frozenHash,
     });
-    const { token: _token, tokenHash: _hash, ...safe } = result as typeof result & { token?: string };
+    const {
+      token: _token,
+      tokenHash: _hash,
+      ...safe
+    } = result as typeof result & { token?: string };
     return c.json(safe);
   });
   // S4 결재함 — 전 팀 승인 대기 + 활동 (§10 ③층)
@@ -142,8 +163,14 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
     ]);
     const titles = new Map(roomList.map((r) => [r.id, r.title]));
     return c.json({
-      pending: pending.map(({ tokenHash: _t, ...a }) => ({ ...a, roomTitle: titles.get(a.roomId) ?? "" })),
-      activities: activities.map((a) => ({ ...a, roomTitle: a.roomId ? (titles.get(a.roomId) ?? "") : "" })),
+      pending: pending.map(({ tokenHash: _t, ...a }) => ({
+        ...a,
+        roomTitle: titles.get(a.roomId) ?? "",
+      })),
+      activities: activities.map((a) => ({
+        ...a,
+        roomTitle: a.roomId ? (titles.get(a.roomId) ?? "") : "",
+      })),
     });
   });
   // S5 목표 (조회·순서 전용; 생성은 대화/워커)
@@ -154,7 +181,12 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
   });
   app.patch("/goals/:id/order", async (c) => {
     const body = z.object({ order: z.number().int().min(0) }).parse(await c.req.json());
-    const goal = await rooms.updateGoal(c.get("owner"), c.req.param("id"), { order: body.order }, "user");
+    const goal = await rooms.updateGoal(
+      c.get("owner"),
+      c.req.param("id"),
+      { order: body.order },
+      "user",
+    );
     await rooms.post(c.get("owner"), goal.roomId, {
       role: "system",
       kind: "text",
@@ -172,7 +204,12 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
   return app;
 }
 
-export async function issueWorkerToken(db: Store, owner: string, roomId: string, packageId: string | null) {
+export async function issueWorkerToken(
+  db: Store,
+  owner: string,
+  roomId: string,
+  packageId: string | null,
+) {
   const token = randomBytes(32).toString("base64url");
   await db.put("system", "worker-tokens", {
     id: sha(token),
@@ -232,8 +269,13 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
   });
   // 승인 토큰 집행 — 서버가 게이트. 토큰·도구·입력이 전부 맞을 때만 1회 통과
   app.post("/approvals/:id/consume", async (c) => {
-    const body = z.object({ token: z.string().min(1), toolName: z.string().min(1), input: z.unknown() }).parse(await c.req.json());
-    const consumed = await approvals.consume(c.get("owner"), { approvalId: c.req.param("id"), ...body });
+    const body = z
+      .object({ token: z.string().min(1), toolName: z.string().min(1), input: z.unknown() })
+      .parse(await c.req.json());
+    const consumed = await approvals.consume(c.get("owner"), {
+      approvalId: c.req.param("id"),
+      ...body,
+    });
     return c.json({ id: consumed.id, status: consumed.status });
   });
   // 목표 트리 (팀장이 분해해 보고)
@@ -250,7 +292,11 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       })
       .parse(await c.req.json());
     return c.json(
-      await rooms.createGoal(c.get("owner"), { roomId: c.get("roomId"), ...body, parentId: body.parentId ?? null }),
+      await rooms.createGoal(c.get("owner"), {
+        roomId: c.get("roomId"),
+        ...body,
+        parentId: body.parentId ?? null,
+      }),
     );
   });
   app.post("/goals/:id/progress", async (c) => {
@@ -260,7 +306,11 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
         stage: stageSchema.optional(),
         status: z.enum(["active", "paused", "completed", "blocked"]).optional(),
         metrics: z
-          .object({ published: z.number().optional(), indexed: z.number().optional(), ai_citations: z.number().optional() })
+          .object({
+            published: z.number().optional(),
+            indexed: z.number().optional(),
+            ai_citations: z.number().optional(),
+          })
           .optional(),
         next_actions: z.array(z.string()).optional(),
         actor: z.string().max(60).default("team"),
@@ -269,7 +319,13 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
     const goal = await rooms.updateGoal(
       c.get("owner"),
       c.req.param("id"),
-      { progress: body.progress, stage: body.stage, status: body.status, metrics: body.metrics, nextActions: body.next_actions },
+      {
+        progress: body.progress,
+        stage: body.stage,
+        status: body.status,
+        metrics: body.metrics,
+        nextActions: body.next_actions,
+      },
       body.actor,
     );
     return c.json(goal);
@@ -288,7 +344,8 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
         external: z.boolean().optional(),
       })
       .parse(await c.req.json());
-    if (body.external && !body.approval_id) throw new AppError("외부 행위 감사 로그에는 approval_id 가 필요합니다", 422);
+    if (body.external && !body.approval_id)
+      throw new AppError("외부 행위 감사 로그에는 approval_id 가 필요합니다", 422);
     const entry = await rooms.audit(c.get("owner"), {
       packageId: c.get("packageId"),
       goalId: body.goal_id,
@@ -299,7 +356,12 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       result: body.result,
     });
     if (body.result === "error")
-      await rooms.activity(c.get("owner"), { roomId: c.get("roomId"), kind: "error", actor: body.actor, title: `오류: ${body.action}` });
+      await rooms.activity(c.get("owner"), {
+        roomId: c.get("roomId"),
+        kind: "error",
+        actor: body.actor,
+        title: `오류: ${body.action}`,
+      });
     return c.json({ id: entry.id });
   });
   // 주간 보고 (§15.4.3) — 최소 지표 3종
@@ -324,7 +386,12 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       text: body.summary,
       payload: { card: "weekly-report", metrics: body.metrics, actor: body.actor },
     });
-    await rooms.activity(c.get("owner"), { roomId: c.get("roomId"), kind: "report", actor: body.actor, title: "주간 보고 도착" });
+    await rooms.activity(c.get("owner"), {
+      roomId: c.get("roomId"),
+      kind: "report",
+      actor: body.actor,
+      title: "주간 보고 도착",
+    });
     return c.json({ id: message.id });
   });
   // 타임라인에 카드·텍스트 게시 (팀장 메시지, 현황 카드 등)
@@ -344,13 +411,25 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       payload: { ...body.payload, actor: body.actor },
     });
     if (body.actor)
-      await rooms.activity(c.get("owner"), { roomId: c.get("roomId"), kind: "system", actor: body.actor, title: body.text?.slice(0, 80) ?? body.kind });
+      await rooms.activity(c.get("owner"), {
+        roomId: c.get("roomId"),
+        kind: "system",
+        actor: body.actor,
+        title: body.text?.slice(0, 80) ?? body.kind,
+      });
     return c.json({ id: message.id });
   });
   // 캐릭터 상태 (§5): 작업 중/완료는 워커가 알린다. 승인 대기는 서버가 승인 카드에서 자동 판정
   app.post("/presence", async (c) => {
-    const body = z.object({ state: z.enum(["working", "done", "idle"]), label: z.string().max(80).optional() }).parse(await c.req.json());
-    bus.setPresence(c.get("owner"), c.get("roomId"), body.state, body.label ?? presenceLabel[body.state]);
+    const body = z
+      .object({ state: z.enum(["working", "done", "idle"]), label: z.string().max(80).optional() })
+      .parse(await c.req.json());
+    bus.setPresence(
+      c.get("owner"),
+      c.get("roomId"),
+      body.state,
+      body.label ?? presenceLabel[body.state],
+    );
     return c.json({ ok: true });
   });
   return app;

@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite/vector";
 import pg from "pg";
 import { backgroundFailure } from "./log.ts";
 
@@ -12,6 +13,10 @@ interface Database {
 
 export class Store {
   constructor(private readonly db: Database) {}
+  /** 0Siri: records 밖의 테이블(pgvector 기억)용 직접 질의. 소유자 스코프는 호출자가 WHERE 로 건다. */
+  sql<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: T[] }> {
+    return this.db.query(text, params) as Promise<{ rows: T[] }>;
+  }
   async get<T = Record<string, unknown>>(
     owner: string,
     kind: string,
@@ -180,7 +185,7 @@ export async function createStore(
     database = { query: async (sql, params) => pool.query(sql, params), close: () => pool.end() };
   } else {
     if (options.dataDir) await mkdir(dirname(options.dataDir), { recursive: true, mode: 0o700 });
-    const embedded = new PGlite(options.dataDir);
+    const embedded = new PGlite(options.dataDir, { extensions: { vector } });
     await embedded.waitReady;
     database = {
       query: (sql, params) => embedded.query<Row>(sql, params),
@@ -190,5 +195,7 @@ export async function createStore(
   await database.query(
     "CREATE TABLE IF NOT EXISTS records(owner text NOT NULL,kind text NOT NULL,id text NOT NULL,data jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner,kind,id))",
   );
+  // 0Siri 기억 벡터 (pgvector). 서버 Postgres 는 pgvector 이미지, 내장 PGlite 는 vector 확장을 위에서 로드한다.
+  await database.query("CREATE EXTENSION IF NOT EXISTS vector");
   return new Store(database);
 }

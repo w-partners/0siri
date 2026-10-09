@@ -42,7 +42,8 @@ export function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value);
 }
-export const inputHash = (toolName: string, input: unknown) => sha(`${toolName}\n${canonical(input)}`);
+export const inputHash = (toolName: string, input: unknown) =>
+  sha(`${toolName}\n${canonical(input)}`);
 
 export class Approvals {
   constructor(
@@ -98,7 +99,15 @@ export class Approvals {
     const card = await this.rooms.post(owner, input.roomId, {
       role: "assistant",
       kind: "card",
-      payload: { card: "approval", approvalId: approval.id, status: "pending", title: approval.title, summary: approval.summary, evidence: approval.evidence, toolName: approval.toolName },
+      payload: {
+        card: "approval",
+        approvalId: approval.id,
+        status: "pending",
+        title: approval.title,
+        summary: approval.summary,
+        evidence: approval.evidence,
+        toolName: approval.toolName,
+      },
     });
     approval.messageId = card.id;
     await this.db.put(owner, "approvals", approval);
@@ -116,7 +125,12 @@ export class Approvals {
       result: "ok",
     });
     this.bus.setPresence(owner, input.roomId, "waiting", `${approval.title} 승인 대기 중`);
-    this.bus.publish(owner, { type: "approval", roomId: input.roomId, approvalId: approval.id, status: "pending" });
+    this.bus.publish(owner, {
+      type: "approval",
+      roomId: input.roomId,
+      approvalId: approval.id,
+      status: "pending",
+    });
     this.bus.publish(owner, { type: "inbox" });
     return approval;
   }
@@ -126,14 +140,20 @@ export class Approvals {
     owner: string,
     id: string,
     decision: "approve" | "reject",
-    options: { reason?: string; decidedBy: string; frozenHash?: string } ,
+    options: { reason?: string; decidedBy: string; frozenHash?: string },
   ): Promise<Approval> {
     const approval = await this.get(owner, id);
     if (options.frozenHash && options.frozenHash !== approval.inputHash)
       throw new AppError("승인 대상이 바뀌었습니다. 최신 내용을 다시 확인하세요", 409);
     if (approval.status !== "pending") return approval;
     if (Date.parse(approval.expiresAt) <= this.now()) {
-      await this.db.compareAndSwap(owner, "approvals", id, { status: "pending" }, { status: "expired" });
+      await this.db.compareAndSwap(
+        owner,
+        "approvals",
+        id,
+        { status: "pending" },
+        { status: "expired" },
+      );
       throw new AppError("승인 요청이 만료되었습니다", 409);
     }
     const token = decision === "approve" ? randomBytes(32).toString("base64url") : undefined;
@@ -181,8 +201,18 @@ export class Approvals {
       result: "ok",
     });
     const stillPending = (await this.pending(owner)).some((a) => a.roomId === approval.roomId);
-    this.bus.setPresence(owner, approval.roomId, stillPending ? "waiting" : "done", stillPending ? "승인 대기 중" : "결재 완료");
-    this.bus.publish(owner, { type: "approval", roomId: approval.roomId, approvalId: id, status: updated.status });
+    this.bus.setPresence(
+      owner,
+      approval.roomId,
+      stillPending ? "waiting" : "done",
+      stillPending ? "승인 대기 중" : "결재 완료",
+    );
+    this.bus.publish(owner, {
+      type: "approval",
+      roomId: approval.roomId,
+      approvalId: id,
+      status: updated.status,
+    });
     this.bus.publish(owner, { type: "board", roomId: approval.roomId });
     this.bus.publish(owner, { type: "inbox" });
     // 토큰은 메모리로만 돌려준다 — 저장은 해시뿐
@@ -190,7 +220,11 @@ export class Approvals {
   }
 
   /** 워커 폴링: 승인됐으면 토큰을 **한 번만** 넘긴다. 이후에는 상태만. */
-  async pollForWorker(owner: string, id: string, pendingToken?: string): Promise<{ status: ApprovalStatus; token?: string }> {
+  async pollForWorker(
+    owner: string,
+    id: string,
+    pendingToken?: string,
+  ): Promise<{ status: ApprovalStatus; token?: string }> {
     const approval = await this.get(owner, id);
     if (approval.status === "approved" && !approval.tokenDelivered && pendingToken) {
       const delivered = await this.db.compareAndSwap<Approval>(
@@ -209,9 +243,13 @@ export class Approvals {
    * 집행 (fail-closed): 토큰·도구명·입력이 모두 맞아야 1회 소비된다. 무엇 하나라도 확인 못 하면 403.
    * 입력이 승인본과 다르면 (해시 불일치) 무효 — §9.1 "입력이 바뀌면 무효".
    */
-  async consume(owner: string, input: { approvalId: string; token: string; toolName: string; input: unknown }): Promise<Approval> {
+  async consume(
+    owner: string,
+    input: { approvalId: string; token: string; toolName: string; input: unknown },
+  ): Promise<Approval> {
     const approval = await this.db.get<Approval>(owner, "approvals", input.approvalId);
-    if (!approval || !approval.tokenHash) throw new AppError("승인 토큰이 없습니다. 실행이 차단되었습니다", 403);
+    if (!approval || !approval.tokenHash)
+      throw new AppError("승인 토큰이 없습니다. 실행이 차단되었습니다", 403);
     const expected = Buffer.from(approval.tokenHash, "hex");
     const actual = Buffer.from(sha(input.token), "hex");
     const tokenOk = expected.length === actual.length && timingSafeEqual(expected, actual);
@@ -225,7 +263,9 @@ export class Approvals {
         result: "blocked",
       });
       throw new AppError(
-        !hashOk ? "승인된 내용과 입력이 다릅니다. 새 승인이 필요합니다" : "승인 토큰이 유효하지 않습니다",
+        !hashOk
+          ? "승인된 내용과 입력이 다릅니다. 새 승인이 필요합니다"
+          : "승인 토큰이 유효하지 않습니다",
         403,
       );
     }

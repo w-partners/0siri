@@ -77,17 +77,11 @@ export class Accounts {
     return this.db.get<User>("system", "users", id);
   }
   async userByPhone(phone: string): Promise<User | null> {
-    const index = await this.db.get<{ id: string; userId: string }>(
-      "system",
-      "phone-index",
-      phone,
-    );
+    const index = await this.db.get<{ id: string; userId: string }>("system", "phone-index", phone);
     return index ? this.userById(index.userId) : null;
   }
   async profile(userId: string): Promise<Profile> {
-    return (
-      (await this.db.get<Profile>(userId, "profiles", "me")) ?? { id: "me", displayName: "" }
-    );
+    return (await this.db.get<Profile>(userId, "profiles", "me")) ?? { id: "me", displayName: "" };
   }
   async requireRole(userId: string, ...roles: Role[]): Promise<User> {
     const user = await this.userById(userId);
