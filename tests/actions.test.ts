@@ -103,7 +103,7 @@ test("expired and disconnected proposals never reach the provider", async () => 
   connected = false;
   await assert.rejects(
     service.decide("revoked-user", revoked.id, revoked.hash, "approve"),
-    /disconnected/i,
+    /연결이 끊어졌습니다/,
   );
   assert.equal(calls, 0);
 });
