@@ -565,6 +565,12 @@ export const t = {
     taskThread: {
       reload: "작업 결과 다시 불러오기",
     },
+    /** browser-address.ts — 주소 입력 검증 메시지. */
+    address: {
+      invalid: "올바르지 않은 주소입니다",
+      hint: "웹사이트 주소를 입력하세요. 예: copilotkit.ai 또는 https://news.ycombinator.com",
+      fallbackSite: "브라우저",
+    },
   },
   /** ui.tsx 공용 컴포넌트와 소형 모듈(background-updates·assistant-response)의 문구. */
   ui: {

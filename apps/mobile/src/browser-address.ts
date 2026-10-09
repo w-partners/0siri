@@ -1,3 +1,5 @@
+import { t } from "./strings";
+
 export function browserAddress(value: string): string {
   const input = value.trim();
   try {
@@ -8,17 +10,17 @@ export function browserAddress(value: string): string {
       url.password ||
       /\s/.test(input)
     )
-      throw new Error("Invalid address");
+      throw new Error(t.tools.address.invalid);
     return url.href;
   } catch {
-    throw new Error("Enter a website address, like copilotkit.ai or https://news.ycombinator.com.");
+    throw new Error(t.tools.address.hint);
   }
 }
 
 export function browserSite(value: string): string {
   try {
-    return new URL(value).hostname.replace(/^www\./, "") || "Browser";
+    return new URL(value).hostname.replace(/^www\./, "") || t.tools.address.fallbackSite;
   } catch {
-    return "Browser";
+    return t.tools.address.fallbackSite;
   }
 }
