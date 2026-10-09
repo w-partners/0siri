@@ -74,9 +74,12 @@ test("wrong owner and stale hash cannot approve", async () => {
   const proposal = await service.propose("private-user", email);
   await assert.rejects(
     service.decide("attacker", proposal.id, proposal.hash, "approve"),
-    /not found/i,
+    /찾을 수 없습니다/,
   );
-  await assert.rejects(service.decide("private-user", proposal.id, "stale", "approve"), /changed/i);
+  await assert.rejects(
+    service.decide("private-user", proposal.id, "stale", "approve"),
+    /변경되었습니다/,
+  );
 });
 test("expired and disconnected proposals never reach the provider", async () => {
   let now = Date.now();
@@ -152,12 +155,12 @@ test("account switching and reconnecting invalidate a prepared action", async ()
   connection = { id: "connection-b", account: "b@example.com" };
   await assert.rejects(
     service.decide("account-user", proposal.id, proposal.hash, "approve"),
-    /connection changed/i,
+    /연결이 변경되었습니다/,
   );
   connection = { id: "connection-new-a", account: "a@example.com" };
   await assert.rejects(
     service.decide("account-user", proposal.id, proposal.hash, "approve"),
-    /connection changed/i,
+    /연결이 변경되었습니다/,
   );
   assert.equal(calls, 0);
 });
@@ -316,7 +319,7 @@ test("a task cancelled between claim and execution never reaches the provider", 
   });
   await assert.rejects(
     service.decide("cancel-race", proposal.id, proposal.hash, "approve"),
-    /resume the task/i,
+    /태스크를 재개하세요/,
   );
   assert.equal(calls, 0);
   const saved = await db.get<ActionProposal>("cancel-race", "actions", proposal.id);

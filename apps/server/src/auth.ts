@@ -19,7 +19,7 @@ export class Auth {
         !this.config.accessKey ||
         !timingSafeEqual(digest(accessKey), digest(this.config.accessKey)))
     )
-      throw new AppError("Access key is incorrect", 401);
+      throw new AppError("접근 키가 올바르지 않습니다.", 401);
     const token = randomBytes(32).toString("base64url");
     await this.db.put("system", "sessions", {
       id: digest(token).toString("hex"),
@@ -29,14 +29,14 @@ export class Auth {
     return { token, mode: this.config.mode };
   }
   async owner(authorization?: string) {
-    if (!authorization?.startsWith("Bearer ")) throw new AppError("Sign in to OpenMuse", 401);
+    if (!authorization?.startsWith("Bearer ")) throw new AppError("0Siri에 로그인하세요.", 401);
     const session = await this.db.get<{ owner: string; expiresAt: number }>(
       "system",
       "sessions",
       digest(authorization.slice(7)).toString("hex"),
     );
     if (!session || session.expiresAt < Date.now())
-      throw new AppError("Session expired. Sign in again.", 401);
+      throw new AppError("세션이 만료되었습니다. 다시 로그인하세요.", 401);
     return session.owner;
   }
   sign(owner: string, path: string) {
@@ -56,12 +56,12 @@ export class Auth {
       Number(expires) < Date.now() ||
       !/^\w{64}$/.test(signature)
     )
-      throw new AppError("Document link expired; refresh the workspace", 401);
+      throw new AppError("문서 링크가 만료되었습니다. 워크스페이스를 새로고침하세요.", 401);
     const expected = createHmac("sha256", this.signingKey)
       .update(`${owner}\n${url.pathname}\n${expires}`)
       .digest("hex");
     if (!timingSafeEqual(Buffer.from(expected), Buffer.from(signature)))
-      throw new AppError("Invalid access link", 403);
+      throw new AppError("접근 링크가 올바르지 않습니다.", 403);
     return owner;
   }
 }

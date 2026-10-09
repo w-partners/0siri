@@ -54,7 +54,7 @@ export async function createApp(
   const origins = new Set([...config.allowedOrigins, new URL(config.publicUrl).origin]);
   app.use("*", async (c, next) => {
     const origin = c.req.header("origin");
-    if (origin && !origins.has(origin)) return c.json({ error: "Origin is not allowed" }, 403);
+    if (origin && !origins.has(origin)) return c.json({ error: "허용되지 않은 출처입니다." }, 403);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
     c.header("Cache-Control", "no-store");
@@ -73,7 +73,7 @@ export async function createApp(
     "*",
     bodyLimit({
       maxSize: 12 * 1024 * 1024,
-      onError: (c) => c.json({ error: "Request is too large; PDFs must be 10 MB or smaller" }, 413),
+      onError: (c) => c.json({ error: "요청이 너무 큽니다. PDF는 10 MB 이하여야 합니다." }, 413),
     }),
   );
   app.use("/api/*", rateLimit(Boolean(config.trustProxy)));
@@ -83,7 +83,8 @@ export async function createApp(
     if (error instanceof AppError) return c.json({ error: error.message }, error.status);
     if (error.name === "PdfError" || error.name === "RecurringEventError")
       return c.json({ error: error.message }, 422);
-    if (error instanceof SyntaxError) return c.json({ error: "Invalid request data" }, 400);
+    if (error instanceof SyntaxError)
+      return c.json({ error: "요청 데이터가 올바르지 않습니다." }, 400);
     // Provider and document errors are useful, but raw stack traces and token-bearing responses are not.
     console.error(`[OpenMuse] ${error.name}`);
     return c.json(
@@ -91,7 +92,7 @@ export async function createApp(
         error:
           error.name === "PdfError" || error.name === "GoogleApiError"
             ? error.message
-            : "Request failed. Check the server setup and try again.",
+            : "요청에 실패했습니다. 서버 설정을 확인한 뒤 다시 시도하세요.",
       },
       502,
     );
@@ -112,7 +113,7 @@ export async function createApp(
       loginAttempts = 0;
     }
     if (++loginAttempts > 30)
-      throw new AppError("Too many sign-in attempts. Try again in a minute.", 429);
+      throw new AppError("로그인 시도가 너무 많습니다. 1분 뒤 다시 시도하세요.", 429);
     const body = z.object({ accessKey: z.string().optional() }).parse(await c.req.json());
     const session = await auth.session(body.accessKey);
     await workspace.ensureSample("local-user", actions);
@@ -122,13 +123,13 @@ export async function createApp(
   });
   app.get("/api/google/callback", async (c) => {
     if (c.req.query("error"))
-      return c.html("<h1>Google connection cancelled</h1><p>You can return to OpenMuse.</p>", 400);
+      return c.html("<h1>Google 연결이 취소되었습니다</h1><p>0Siri로 돌아가셔도 됩니다.</p>", 400);
     const state = c.req.query("state"),
       code = c.req.query("code");
-    if (!state || !code) throw new AppError("Google callback is incomplete");
+    if (!state || !code) throw new AppError("Google 콜백 정보가 불완전합니다.");
     await google.callback(state, code);
     return c.html(
-      "<h1>Google is connected</h1><p>Return to OpenMuse and refresh your workspace.</p>",
+      "<h1>Google이 연결되었습니다</h1><p>0Siri로 돌아가 워크스페이스를 새로고침하세요.</p>",
     );
   });
   app.use("/api/*", async (c, next) => {
@@ -196,7 +197,7 @@ export async function createApp(
     const existing = body.id
       ? await db.get<{ createdAt: string }>(c.get("owner"), "drafts", body.id)
       : null;
-    if (body.id && !existing) throw new AppError("Draft not found", 404);
+    if (body.id && !existing) throw new AppError("초안을 찾을 수 없습니다.", 404);
     return c.json(
       await db.put(c.get("owner"), "drafts", {
         ...body,
@@ -207,7 +208,7 @@ export async function createApp(
     );
   });
   app.get("/api/main-thread", async (c) => {
-    if (!intelligence) throw new AppError("Rich Threads is not configured", 404);
+    if (!intelligence) throw new AppError("Rich Threads가 설정되지 않았습니다.", 404);
     const owner = c.get("owner");
     await db.insertIfAbsent(owner, "conversation-settings", {
       id: "main",
@@ -215,7 +216,7 @@ export async function createApp(
       existing: false,
     });
     const main = await db.get<{ threadId: string }>(owner, "conversation-settings", "main");
-    if (!main) throw new AppError("Main conversation could not be loaded", 503);
+    if (!main) throw new AppError("메인 대화를 불러올 수 없습니다.", 503);
     try {
       await intelligence.getOrCreateThread({
         threadId: main.threadId,
@@ -224,7 +225,7 @@ export async function createApp(
       });
     } catch {
       throw new AppError(
-        "Main conversation is unavailable. Check the Rich Threads connection and try again.",
+        "메인 대화를 사용할 수 없습니다. Rich Threads 연결을 확인한 뒤 다시 시도하세요.",
         502,
       );
     }
@@ -243,7 +244,7 @@ export async function createApp(
   app.post("/api/files", async (c) => {
     const data = await c.req.parseBody();
     const file = data.file;
-    if (!(file instanceof File)) throw new AppError("Choose a PDF file");
+    if (!(file instanceof File)) throw new AppError("PDF 파일을 선택하세요.");
     return c.json(
       await files.import(
         c.get("owner"),
@@ -334,7 +335,7 @@ export async function createApp(
   app.all("/api/copilotkit/*", async (c) => {
     if (!agentConfigured(config))
       throw new AppError(
-        "Configure a model and provider API key, or a valid AG-UI endpoint, to start chat",
+        "채팅을 시작하려면 모델과 제공자 API 키, 또는 유효한 AG-UI 엔드포인트를 설정하세요.",
         503,
       );
     const response = await runtime.fetch(c.req.raw);

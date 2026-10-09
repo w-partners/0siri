@@ -53,7 +53,7 @@ export class ActionService {
     const parsed = proposalSchema.parse(raw);
     const connection = await this.options.connection?.(owner);
     if (this.options.connection && !connection)
-      throw new AppError("Connect Google before preparing an action", 409);
+      throw new AppError("작업을 준비하기 전에 Google을 연결하세요.", 409);
     const prepared = await this.options.prepare?.(owner, parsed, connection?.id);
     const input = proposalSchema.parse(prepared?.input ?? parsed);
     const title =
@@ -93,7 +93,7 @@ export class ActionService {
         : await this.db.insertIfAbsent(owner, "actions", proposal);
     if (!saved) {
       const existing = await this.db.get<ActionProposal>(owner, "actions", id);
-      if (!existing) throw new AppError("Prepared action could not be loaded", 409);
+      if (!existing) throw new AppError("준비된 작업을 불러올 수 없습니다.", 409);
       return existing;
     }
     await this.record(owner, saved, "Ready for your review");
@@ -106,15 +106,15 @@ export class ActionService {
     decision: "approve" | "deny",
   ): Promise<ActionProposal> {
     const proposal = await this.db.get<ActionProposal>(owner, "actions", id);
-    if (!proposal) throw new AppError("Action not found", 404);
+    if (!proposal) throw new AppError("작업을 찾을 수 없습니다.", 404);
     if (proposal.hash !== hash)
-      throw new AppError("This proposal changed. Open its latest review before deciding.", 409);
+      throw new AppError("이 제안이 변경되었습니다. 최신 검토 내용을 연 뒤 결정하세요.", 409);
     if (proposal.status !== "awaiting_review") return proposal;
     if (decision === "approve" && proposal.taskId) {
       const task = await this.db.get<{ status: string }>(owner, "tasks", proposal.taskId);
       if (!task || !["running", "waiting_approval"].includes(task.status))
         throw new AppError(
-          "Resume the task before approving this action. Cancelled tasks cannot execute.",
+          "이 작업을 승인하기 전에 태스크를 재개하세요. 취소된 태스크는 실행할 수 없습니다.",
           409,
         );
     }
@@ -128,13 +128,16 @@ export class ActionService {
       );
       if (!expired) {
         const current = await this.db.get<ActionProposal>(owner, "actions", id);
-        if (!current) throw new AppError("Action not found", 404);
+        if (!current) throw new AppError("작업을 찾을 수 없습니다.", 404);
         return current;
       }
-      throw new AppError("This review expired. Create a fresh proposal.", 409);
+      throw new AppError("이 검토는 만료되었습니다. 새 제안을 만드세요.", 409);
     }
     if (decision === "approve" && !(await this.options.connected(owner)))
-      throw new AppError("Google is disconnected. Reconnect before approving this action.", 409);
+      throw new AppError(
+        "Google 연결이 끊어졌습니다. 이 작업을 승인하기 전에 다시 연결하세요.",
+        409,
+      );
     if (decision === "approve" && this.options.connection) {
       const connection = await this.options.connection(owner);
       if (
@@ -143,7 +146,7 @@ export class ActionService {
         connection.account !== proposal.account
       )
         throw new AppError(
-          "Google account or connection changed. Prepare a new action for the connected account.",
+          "Google 계정 또는 연결이 변경되었습니다. 연결된 계정으로 새 작업을 준비하세요.",
           409,
         );
     }
@@ -155,7 +158,7 @@ export class ActionService {
     );
     if (!claimed) {
       const current = await this.db.get<ActionProposal>(owner, "actions", id);
-      if (!current) throw new AppError("Action not found", 404);
+      if (!current) throw new AppError("작업을 찾을 수 없습니다.", 404);
       return current;
     }
     await this.record(
@@ -175,7 +178,7 @@ export class ActionService {
           { status: "awaiting_review" },
         );
         throw new AppError(
-          "Resume the task before approving this action. Cancelled tasks cannot execute.",
+          "이 작업을 승인하기 전에 태스크를 재개하세요. 취소된 태스크는 실행할 수 없습니다.",
           409,
         );
       }
@@ -198,7 +201,7 @@ export class ActionService {
       finished = {
         ...claimed,
         status: unknown ? "outcome_unknown" : "failed",
-        error: error instanceof Error ? error.message : "Execution failed",
+        error: error instanceof Error ? error.message : "실행에 실패했습니다.",
       };
     }
     await this.db.put(owner, "actions", finished);

@@ -84,7 +84,7 @@ test("document job runs without a client, waits for review, and resumes from its
   await server.agent.control(owner, task.id, "pause");
   await assert.rejects(
     server.actions.decide(owner, action.id, action.hash, "approve"),
-    /Resume the task/,
+    /태스크를 재개하세요/,
   );
   await server.agent.control(owner, task.id, "resume");
   const receipt = await server.actions.decide(owner, action.id, action.hash, "approve");
@@ -462,7 +462,7 @@ test("failed, cancelled and review-blocked tasks do not complete milestones", as
   assert.ok(action);
   await assert.rejects(
     server.actions.decide(owner, action.id, action.hash, "approve"),
-    /Resume the task/,
+    /태스크를 재개하세요/,
   );
   await server.agent.control(owner, document.id, "cancel");
   await reconcile();
