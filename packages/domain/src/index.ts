@@ -2,17 +2,15 @@ import { z } from "zod";
 
 export type WorkspaceMode = "sample" | "live";
 export type Section =
-  | "today"
   | "chat"
-  | "mail"
-  | "calendar"
-  | "browser"
-  | "files"
   | "activity"
   | "connections"
-  | "ideas"
   | "goals"
-  | "apps";
+  | "apps"
+  | "rooms"
+  | "store"
+  | "inbox"
+  | "settings";
 export interface Mail {
   id: string;
   threadId: string;

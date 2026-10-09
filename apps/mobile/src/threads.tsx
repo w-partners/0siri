@@ -1,14 +1,5 @@
 import { useThreads } from "@copilotkit/react-native/headless";
-import {
-  Archive,
-  CalendarDays,
-  FileText,
-  MessageCircle,
-  Monitor,
-  Plus,
-  RefreshCw,
-  Settings2,
-} from "lucide-react-native";
+import { Archive, MessageCircle, Plus, RefreshCw, Settings2 } from "lucide-react-native";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { Button, colors, ErrorNotice, Field, LinkRow, Sheet, s } from "./ui";
@@ -126,7 +117,7 @@ export function ThreadsSheet({ onClose }: { onClose: () => void }) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  function go(section: "calendar" | "files" | "apps") {
+  function go(section: "apps") {
     onClose();
     navigate(section);
   }
@@ -307,17 +298,6 @@ export function ThreadsSheet({ onClose }: { onClose: () => void }) {
             open({ type: "delegate" });
           }}
         />
-        <LinkRow
-          icon={Monitor}
-          title="Agent computer"
-          detail="Browser, sessions and documents"
-          onPress={() => {
-            onClose();
-            open({ type: "computer" });
-          }}
-        />
-        <LinkRow icon={CalendarDays} title="Calendar" onPress={() => go("calendar")} />
-        <LinkRow icon={FileText} title="Files" onPress={() => go("files")} />
         <LinkRow icon={Settings2} title="Apps & settings" onPress={() => go("apps")} />
         <Button small icon={RefreshCw} onPress={() => void mutate(refresh)}>
           Refresh workspace

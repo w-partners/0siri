@@ -3,7 +3,6 @@ import { StatusBar } from "expo-status-bar";
 import {
   Bell,
   Check,
-  Lightbulb,
   type LucideIcon,
   Menu,
   MessageCircle,
@@ -24,20 +23,11 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { Section, Workspace } from "../../packages/domain/src";
-import {
-  AgentActivityScreen,
-  AgentStatus,
-  AppsScreen,
-  GoalsScreen,
-  IdeasScreen,
-} from "./src/agent-ui";
+import { AgentActivityScreen, AgentStatus, AppsScreen, GoalsScreen } from "./src/agent-ui";
 import { AgentWorkspaceProvider, useAgentWorkspace } from "./src/agent-workspace";
 import { API_URL, createSession, MuseApi } from "./src/api";
 import { ChatScreen, WorkspaceTools } from "./src/chat";
-import { ComputerEntry } from "./src/computer";
-import { ComputerDraftProvider } from "./src/computer-drafts";
 import { Details } from "./src/details";
-import { BrowserScreen, CalendarScreen, FilesScreen, MailScreen } from "./src/screens";
 import { ThreadsProvider, ThreadsSheet, useMuseThread } from "./src/threads";
 import { Button, Card, colors, ErrorNotice, Field, IconButton, Mascot, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
@@ -45,13 +35,11 @@ import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 const nav: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "chat", label: "Chat", icon: MessageCircle },
   { id: "activity", label: "Activity", icon: PanelsTopLeft },
-  { id: "ideas", label: "Ideas", icon: Lightbulb },
   { id: "goals", label: "Goals", icon: SquareCheck },
   { id: "apps", label: "Apps", icon: Shapes },
 ];
 const titles: Partial<Record<Section, { title: string; subtitle: string }>> = {
   activity: { title: "Activity", subtitle: "Plans, progress, decisions and results." },
-  ideas: { title: "Ideas", subtitle: "Useful next steps, grounded in your world." },
   goals: {
     title: "Goals",
     subtitle: "Longer-term goals and things to keep an eye on.",
@@ -61,10 +49,6 @@ const titles: Partial<Record<Section, { title: string; subtitle: string }>> = {
     subtitle: "Connections, capabilities and what your agent remembers.",
   },
   connections: { title: "Apps", subtitle: "Connections and capabilities." },
-  mail: { title: "Mail", subtitle: "The conversations behind your work." },
-  calendar: { title: "Calendar", subtitle: "Time for what matters." },
-  browser: { title: "Browser", subtitle: "Your connected browsing sessions." },
-  files: { title: "Files", subtitle: "Documents, forms and filled copies." },
 };
 export default function App() {
   const [token, setToken] = useState("");
@@ -169,8 +153,7 @@ function WorkspaceApp({ token }: { token: string }) {
     return () => clearTimeout(timer);
   }, [toast]);
   const navigate = useCallback(
-    (next: Section) =>
-      setSection(next === "today" ? "chat" : next === "connections" ? "apps" : next),
+    (next: Section) => setSection(next === "connections" ? "apps" : next),
     [],
   );
   const open = useCallback((next: Detail) => setDetail(next), []);
@@ -212,17 +195,15 @@ function WorkspaceApp({ token }: { token: string }) {
       value={{ workspace, api, section, navigate, refresh, open, close, notify: setToast, ask }}
     >
       <AgentWorkspaceProvider>
-        <ComputerDraftProvider key={token}>
-          <ThreadsProvider>
-            <WorkspaceShell
-              detail={detail}
-              toast={toast}
-              clearToast={() => setToast("")}
-              error={error}
-              prompt={prompt}
-            />
-          </ThreadsProvider>
-        </ComputerDraftProvider>
+        <ThreadsProvider>
+          <WorkspaceShell
+            detail={detail}
+            toast={toast}
+            clearToast={() => setToast("")}
+            error={error}
+            prompt={prompt}
+          />
+        </ThreadsProvider>
       </AgentWorkspaceProvider>
     </WorkspaceContext.Provider>
   );
@@ -273,22 +254,7 @@ function WorkspaceShell({
       : "Here when you need me";
   const title = titles[section] || titles.apps;
   const Screen =
-    section === "mail"
-      ? MailScreen
-      : section === "calendar"
-        ? CalendarScreen
-        : section === "browser"
-          ? BrowserScreen
-          : section === "files"
-            ? FilesScreen
-            : section === "activity"
-              ? AgentActivityScreen
-              : section === "ideas"
-                ? IdeasScreen
-                : section === "goals"
-                  ? GoalsScreen
-                  : AppsScreen;
-  const utility = ["mail", "calendar", "browser", "files"].includes(section);
+    section === "activity" ? AgentActivityScreen : section === "goals" ? GoalsScreen : AppsScreen;
   return (
     <>
       <WorkspaceTools />
@@ -337,7 +303,6 @@ function WorkspaceShell({
                   {status}
                 </Text>
               </Pressable>
-              {section === "chat" && <ComputerEntry />}
             </View>
             <View style={{ position: "absolute", right: 0, top: 16 }}>
               <IconButton
@@ -369,15 +334,6 @@ function WorkspaceShell({
                 contentContainerStyle={{ paddingHorizontal: desktop ? 42 : 22, paddingBottom: 28 }}
                 keyboardShouldPersistTaps="handled"
               >
-                {utility && (
-                  <Button
-                    small
-                    style={{ alignSelf: "flex-start", marginBottom: 18 }}
-                    onPress={() => navigate("apps")}
-                  >
-                    Back to Apps
-                  </Button>
-                )}
                 <Text style={[s.title, { fontSize: 25, marginBottom: 22 }]}>{title?.title}</Text>
                 <ErrorNotice error={error} />
                 <Screen />
@@ -448,7 +404,7 @@ function WorkspaceShell({
               }}
             >
               {nav.map((item) => {
-                const active = section === item.id || (item.id === "apps" && utility);
+                const active = section === item.id;
                 return (
                   <Pressable
                     key={item.id}
@@ -507,19 +463,9 @@ function WorkspaceShell({
             key={
               detail.type === "task"
                 ? detail.taskId
-                : detail.type === "file"
-                  ? detail.file.id
-                  : detail.type === "browser"
-                    ? detail.browser.id
-                    : detail.type === "mail"
-                      ? detail.mail.id
-                      : detail.type === "review"
-                        ? detail.action.id
-                        : detail.type === "email"
-                          ? JSON.stringify(detail.draft)
-                          : detail.type === "event"
-                            ? detail.event?.id || "event-new"
-                            : detail.type
+                : detail.type === "review"
+                  ? detail.action.id
+                  : detail.type
             }
             detail={detail}
           />

@@ -25,8 +25,6 @@ import { ArtifactCard } from "./agent-ui";
 import { useAgentWorkspace } from "./agent-workspace";
 import { AssistantResponse } from "./assistant-response";
 import { BackgroundUpdates } from "./background-updates";
-import { BrowserRunContext, BrowserToolCard } from "./browser-tool-card";
-import { BrowserThreadCard } from "./computer";
 import { ConversationQueue, type QueuedMessage } from "./conversation-queue";
 import {
   ConversationTurnError,
@@ -35,12 +33,8 @@ import {
   showsRunError,
   threadLocked,
 } from "./conversation-run";
-import { DesktopToolCard } from "./desktop-tool-card";
-import { confirmedJevSelection, displayJevUserMessage, latestJevPanelId } from "./jev-actions";
-import { JevInteractionContext, JevToolCard } from "./jev-tool-card";
-import { MailToolCard } from "./mail-tool-card";
 import { SearchToolCard } from "./search-tool-card";
-import { FileThreadCard, TaskThreadCard } from "./thread-artifacts";
+import { TaskThreadCard } from "./thread-artifacts";
 import { type Selection, useMuseThread } from "./threads";
 import { Button, Card, CheckRow, colors, ErrorNotice, s } from "./ui";
 import { useWorkspace } from "./workspace";
@@ -59,50 +53,12 @@ export function WorkspaceTools() {
     value: { section, mode: workspace.mode },
   });
   useRenderTool({
-    name: "search_mail",
-    description: "Show the agent checking the mailbox",
-    parameters: displayParameters,
-    render: ({ result, status }) => (
-      <MailToolCard search result={result} loading={status !== "complete"} />
-    ),
-  });
-  useRenderTool({
-    name: "read_mail_thread",
-    description: "Show the email the agent read",
-    parameters: displayParameters,
-    render: ({ result, status }) => (
-      <MailToolCard result={result} loading={status !== "complete"} />
-    ),
-  });
-  useRenderTool({
     name: "search_web",
     description: "Show public web search progress and sources",
     parameters: displayParameters,
     render: ({ result, status }) => (
       <SearchToolCard result={result} loading={status !== "complete"} />
     ),
-  });
-  useRenderTool({
-    name: "browse_web",
-    description: "Follow the agent as it reads a webpage",
-    parameters: displayParameters,
-    render: ({ args, result, status }) => (
-      <BrowserToolCard url={args.url} result={result} loading={status !== "complete"} />
-    ),
-  });
-  useRenderTool({
-    name: "use_desktop",
-    description: "Show the agent working on the computer's desktop",
-    parameters: displayParameters,
-    render: ({ toolCallId, result, status }) => (
-      <DesktopToolCard toolCallId={toolCallId} result={result} loading={status !== "complete"} />
-    ),
-  });
-  useRenderTool({
-    name: "present_choices",
-    description: "Show prepared choices for the conversation",
-    parameters: displayParameters,
-    render: ({ result, status }) => <JevToolCard result={result} loading={status !== "complete"} />,
   });
   useRenderTool({
     name: "delegate_task",
@@ -234,9 +190,6 @@ export function ChatScreen({
   const [attachments, setAttachments] = useState<string[]>([]);
   const list = useRef<ScrollView>(null);
   const [queue] = useState(() => new ConversationQueue());
-  const choiceCompletions = useRef(
-    new Map<string, { resolve: () => void; reject: (error: unknown) => void }>(),
-  );
   const outbox = useSyncExternalStore(queue.subscribe, queue.getSnapshot, queue.getSnapshot);
   const followLatest = useRef(true);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
@@ -378,17 +331,7 @@ export function ChatScreen({
   );
   const runQueued = useCallback(
     async (message: QueuedMessage) => {
-      let held = false;
-      try {
-        held = (await run(message)) === "held";
-        if (!held) choiceCompletions.current.get(message.id)?.resolve();
-      } catch (error) {
-        choiceCompletions.current.get(message.id)?.reject(error);
-        throw error;
-      } finally {
-        // A held message is sent again later; its choice settles then.
-        if (!held) choiceCompletions.current.delete(message.id);
-      }
+      await run(message);
     },
     [run],
   );
@@ -404,28 +347,6 @@ export function ChatScreen({
       flush();
     },
     [queue, flush],
-  );
-  const sendChoice = useCallback(
-    (text: string, retry = false): Promise<void> => {
-      const snapshot = queue.getSnapshot();
-      if (!loaded || !isReady || saveError || (!retry && snapshot.paused))
-        return Promise.reject(new Error("The conversation is not ready for a choice yet."));
-      if (retry) {
-        if (runLock.current || agent.isRunning || snapshot.running || snapshot.pending.length)
-          return Promise.reject(new Error("Wait for the current response before retrying."));
-        if (snapshot.paused) queue.resume();
-      }
-      const id = `choice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const completion = new Promise<void>((resolve, reject) => {
-        choiceCompletions.current.set(id, { resolve, reject });
-      });
-      queue.enqueue({ id, text });
-      followLatest.current = true;
-      setAwayFromLatest(false);
-      flush();
-      return completion;
-    },
-    [agent.isRunning, flush, isReady, loaded, queue, saveError],
   );
   useEffect(() => {
     if (!busy && !agent.isRunning && outbox.pending.length) flush();
@@ -474,20 +395,7 @@ export function ChatScreen({
     setPicking(false);
   }
   const messages = agent.messages || [];
-  const latestPanelId = latestJevPanelId(messages, threadId);
-  const latestUserIndex = messages.reduce(
-    (last, message, index) => (message.role === "user" ? index : last),
-    -1,
-  );
-  const latestUserText =
-    latestUserIndex >= 0 && typeof messages[latestUserIndex]?.content === "string"
-      ? messages[latestUserIndex].content
-      : null;
   const visible = messages.filter((m) => m.role === "user" || m.role === "assistant");
-  const latestDesktop = messages
-    .flatMap((m) => ("toolCalls" in m ? m.toolCalls || [] : []))
-    .filter((call) => call.function.name === "use_desktop")
-    .at(-1)?.id;
   const replying = busy || agent.isRunning;
   return (
     <View style={{ flex: 1 }}>
@@ -562,15 +470,7 @@ export function ChatScreen({
         ) : (
           visible.map((message) => {
             const user = message.role === "user";
-            const text =
-              typeof message.content === "string"
-                ? user
-                  ? displayJevUserMessage(
-                      message.content,
-                      messages.slice(0, messages.indexOf(message)),
-                    )
-                  : message.content
-                : "";
+            const text = typeof message.content === "string" ? message.content : "";
             const toolCalls = "toolCalls" in message ? message.toolCalls || [] : [];
             return (
               <View
@@ -602,71 +502,20 @@ export function ChatScreen({
                     )}
                   </View>
                 )}
-                <JevInteractionContext.Provider
-                  value={{
-                    threadId,
-                    busy:
-                      busy ||
-                      agent.isRunning ||
-                      !loaded ||
-                      !isReady ||
-                      !!outbox.pending.length ||
-                      outbox.paused ||
-                      !!saveError,
-                    latestPanelId,
-                    latestUserText,
-                    send: sendChoice,
-                    retry: (text) => sendChoice(text, true),
-                    canRetry:
-                      loaded &&
-                      isReady &&
-                      !busy &&
-                      !agent.isRunning &&
-                      !outbox.running &&
-                      !outbox.pending.length &&
-                      !saveError,
-                    confirmedSelection: (panelId) => confirmedJevSelection(messages, panelId),
-                  }}
-                >
-                  <BrowserRunContext
-                    value={{
-                      running: busy || agent.isRunning,
-                      active:
-                        (busy || agent.isRunning) && messages.indexOf(message) > latestUserIndex,
-                    }}
-                  >
-                    {toolCalls.map((toolCall) => {
-                      const toolMessage = messages.find(
-                        (candidate): candidate is ToolMessage =>
-                          candidate.role === "tool" && candidate.toolCallId === toolCall.id,
-                      );
-                      return (
-                        <View key={toolCall.id}>{renderToolCall({ toolCall, toolMessage })}</View>
-                      );
-                    })}
-                  </BrowserRunContext>
-                </JevInteractionContext.Provider>
+                {toolCalls.map((toolCall) => {
+                  const toolMessage = messages.find(
+                    (candidate): candidate is ToolMessage =>
+                      candidate.role === "tool" && candidate.toolCallId === toolCall.id,
+                  );
+                  return <View key={toolCall.id}>{renderToolCall({ toolCall, toolMessage })}</View>;
+                })}
               </View>
             );
           })
         )}
-        {!!latestDesktop && (
-          <DesktopToolCard
-            live
-            toolCallId={latestDesktop}
-            result={
-              messages.find(
-                (message) => message.role === "tool" && message.toolCallId === latestDesktop,
-              )?.content
-            }
-            loading={replying}
-          />
-        )}
         {!richThreads && (
           <>
-            {(w.files.some((file) => file.parentId) ||
-              w.browsers.some((browser) => browser.status === "active") ||
-              !!agentWorkspace?.artifacts.length) && (
+            {!!agentWorkspace?.artifacts.length && (
               <Button
                 small
                 style={{ alignSelf: "flex-start", marginTop: 6 }}
@@ -675,35 +524,16 @@ export function ChatScreen({
                 {showResults ? "Hide recent results" : "Recent results"}
               </Button>
             )}
-            {showResults && (
-              <>
-                {w.files
-                  .filter((file) => file.parentId)
-                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-                  .slice(0, 1)
-                  .map((file) => (
-                    <FileThreadCard key={file.id} file={file} />
-                  ))}
-                {w.browsers
-                  .filter((browser) => browser.status === "active")
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-                  .slice(0, 1)
-                  .map((browser) => (
-                    <BrowserThreadCard key={browser.id} browser={browser} />
-                  ))}
-                {[...(agentWorkspace?.artifacts || [])]
-                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-                  .filter(
-                    (artifact, index, items) =>
-                      items.findIndex((item) => item.kind === artifact.kind) === index,
-                  )
-                  .slice(0, 2)
-                  .reverse()
-                  .map((artifact) => (
-                    <ArtifactCard key={artifact.id} artifact={artifact} />
-                  ))}
-              </>
-            )}
+            {showResults &&
+              [...(agentWorkspace?.artifacts || [])]
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                .filter(
+                  (artifact, index, items) =>
+                    items.findIndex((item) => item.kind === artifact.kind) === index,
+                )
+                .slice(0, 2)
+                .reverse()
+                .map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} />)}
           </>
         )}
         {(!richThreads || selection.id === mainId) && <BackgroundUpdates />}
@@ -792,19 +622,13 @@ export function ChatScreen({
             {outbox.pending.map((message) => (
               <View key={message.id} style={[s.row, { gap: 8 }]}>
                 <Text numberOfLines={2} style={[s.muted, { flex: 1 }]}>
-                  {displayJevUserMessage(message.text, messages)}
+                  {message.text}
                 </Text>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`Remove queued message: ${displayJevUserMessage(message.text, messages)}`}
+                  accessibilityLabel={`Remove queued message: ${message.text}`}
                   hitSlop={10}
-                  onPress={() => {
-                    queue.remove(message.id);
-                    choiceCompletions.current
-                      .get(message.id)
-                      ?.reject(new Error("Choice removed from queue."));
-                    choiceCompletions.current.delete(message.id);
-                  }}
+                  onPress={() => queue.remove(message.id)}
                   style={{ padding: 8 }}
                 >
                   <X size={16} color={colors.muted} />

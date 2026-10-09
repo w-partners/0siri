@@ -1,15 +1,10 @@
 import {
   ArrowRight,
   Bell,
-  CalendarDays,
   ChevronRight,
   CircleDollarSign,
-  FileText,
-  Globe2,
   Heart,
-  Lightbulb,
   ListChecks,
-  Mail,
   Pause,
   Play,
   Plus,
@@ -20,8 +15,7 @@ import {
   X,
 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Image, Linking, Pressable, Text, View } from "react-native";
-import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
+import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
 import type { Artifact, BrowserSession } from "../../../packages/domain/src";
 import type {
   AgentArtifact,
@@ -29,7 +23,6 @@ import type {
   AgentTask,
   Evidence,
   Goal,
-  Idea,
   Monitor,
   RunEvent,
 } from "../../../packages/domain/src/agent";
@@ -44,7 +37,6 @@ import {
   Empty,
   ErrorNotice,
   Field,
-  LinkRow,
   Mascot,
   resultSummary,
   SectionHeading,
@@ -214,7 +206,6 @@ export function AgentActivityScreen() {
   );
 }
 export function EvidenceList({ items }: { items: Evidence[] }) {
-  const { workspace, open } = useWorkspace();
   const [error, setError] = useState("");
   return (
     <View style={{ gap: 10 }}>
@@ -235,28 +226,6 @@ export function EvidenceList({ items }: { items: Evidence[] }) {
               }
             >
               Open source
-            </Button>
-          )}
-          {item.kind === "mail" && workspace.mail.some((mail) => mail.id === item.id) && (
-            <Button
-              small
-              onPress={() => {
-                const mail = workspace.mail.find((m) => m.id === item.id);
-                if (mail) open({ type: "mail", mail });
-              }}
-            >
-              View email
-            </Button>
-          )}
-          {item.kind === "file" && workspace.files.some((file) => file.id === item.id) && (
-            <Button
-              small
-              onPress={() => {
-                const file = workspace.files.find((f) => f.id === item.id);
-                if (file) open({ type: "file", file });
-              }}
-            >
-              View file
             </Button>
           )}
         </View>
@@ -541,50 +510,6 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             </Card>
           )}
           <ErrorNotice error={task.error ?? undefined} />
-          {detail?.browsers?.map((browser) => (
-            <Card key={browser.id} style={{ gap: 10 }}>
-              <Text style={s.heading}>{browser.title || "Agent browser"}</Text>
-              <Text style={s.small}>{browser.url}</Text>
-              {browser.status === "active" && browser.previewUrl && (
-                <Image
-                  accessibilityLabel="Agent browser preview"
-                  source={{ uri: api.url(browser.previewUrl) }}
-                  style={{ width: "100%", aspectRatio: 1.6, borderRadius: 12 }}
-                />
-              )}
-              <Button
-                small
-                busy={busy}
-                onPress={() => {
-                  setBusy(true);
-                  void (async () => {
-                    try {
-                      if (["running", "scheduled", "queued"].includes(task.status))
-                        await mutate(`/tasks/${taskId}/control`, { action: "pause" });
-                      open({ type: "browser", browser });
-                    } catch (error) {
-                      setError(errorText(error));
-                    } finally {
-                      setBusy(false);
-                    }
-                  })();
-                }}
-              >
-                {["running", "scheduled", "queued"].includes(task.status)
-                  ? "Pause and open browser"
-                  : "Open browser"}
-              </Button>
-            </Card>
-          ))}
-          {detail?.files?.map((file) => (
-            <LinkRow
-              key={file.id}
-              title={file.name}
-              detail={`${file.pageCount} pages · PDF`}
-              icon={FileText}
-              onPress={() => open({ type: "file", file })}
-            />
-          ))}
           {(
             data?.artifacts.filter((artifact) => artifact.taskId === taskId) ||
             detail?.artifacts ||
@@ -637,7 +562,6 @@ function display(value: unknown): string {
 }
 export function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
   const [expanded, setExpanded] = useState(false);
-  if (artifact.kind === "finance") return <FinanceArtifact artifact={artifact} />;
   const rows = Object.entries(artifact.data);
   return (
     <Card style={{ gap: 13, backgroundColor: colors.card }}>
@@ -692,195 +616,6 @@ export function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
       <Button small onPress={() => setExpanded(!expanded)}>
         {expanded ? "Show summary" : "Explore full result"}
       </Button>
-    </Card>
-  );
-}
-function FinanceArtifact({ artifact }: { artifact: AgentArtifact }) {
-  const [details, setDetails] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const { mutate } = useAgentWorkspace();
-  const [goalTitle, setGoalTitle] = useState("");
-  const [goalSaved, setGoalSaved] = useState(false);
-  const [goalBusy, setGoalBusy] = useState(false);
-  const [goalError, setGoalError] = useState("");
-  const saveGoal = async () => {
-    setGoalBusy(true);
-    setGoalError("");
-    try {
-      await mutate("/goals", {
-        title: goalTitle.trim(),
-        category: "Finances",
-        description: `Inspired by ${artifact.title}: ${artifact.summary}`,
-        milestones: ["Choose a savings target", "Review spending each week"],
-      });
-      setGoalSaved(true);
-    } catch (error) {
-      setGoalError(errorText(error));
-    } finally {
-      setGoalBusy(false);
-    }
-  };
-  const amount = (value: unknown) =>
-    Number(value ?? 0).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-  const categories = Array.isArray(artifact.data.categories) ? artifact.data.categories : [];
-  const transactions = Array.isArray(artifact.data.transactions) ? artifact.data.transactions : [];
-  const spending = Number(artifact.data.spending) || 1;
-  const period = record(artifact.data.period);
-  return (
-    <Card
-      style={{ gap: 12, padding: 10, backgroundColor: "#EEEEF0", maxWidth: 440, width: "100%" }}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Open finance tracker: ${artifact.title}`}
-        accessibilityState={{ expanded: details }}
-        onPress={() => setDetails(!details)}
-      >
-        <View
-          style={{
-            minHeight: 200,
-            borderRadius: 16,
-            overflow: "hidden",
-            backgroundColor: "#080B10",
-            padding: 20,
-          }}
-        >
-          <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 142 }}>
-            <Svg width="100%" height="100%">
-              <Defs>
-                <LinearGradient id="finance" x1="0" y1="0" x2="0.5" y2="1">
-                  <Stop offset="0" stopColor="#281066" />
-                  <Stop offset="0.5" stopColor="#163BBF" />
-                  <Stop offset="1" stopColor="#148CE8" />
-                </LinearGradient>
-              </Defs>
-              <Rect width="100%" height="100%" fill="url(#finance)" />
-            </Svg>
-          </View>
-          <Text style={{ color: "#D4DCFC", fontSize: 11, lineHeight: 18, marginBottom: 20 }}>
-            Read from your imported transactions.{"\n"}
-            {String(period?.from ?? "")} — {String(period?.to ?? "")}
-            {"\n"}
-            {transactions.length} transactions, categorized and summarized.
-          </Text>
-          <View style={[s.row, { gap: 7 }]}>
-            {(
-              [
-                ["Income", "income"],
-                ["Spending", "spending"],
-                ["Remaining", "saved"],
-              ] as const
-            ).map(([label, key]) => (
-              <View
-                key={key}
-                style={{ flex: 1, padding: 11, borderRadius: 12, backgroundColor: "#1D2025" }}
-              >
-                <Text style={{ color: "#A4A7AD", fontSize: 9 }}>{label}</Text>
-                <Text
-                  selectable
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.65}
-                  style={{
-                    fontSize: 17,
-                    fontWeight: "600",
-                    color: key === "saved" ? "#58D3AE" : "#FFF",
-                    marginTop: 5,
-                  }}
-                >
-                  {amount(artifact.data[key])}
-                </Text>
-                <Text style={{ color: "#7E8289", fontSize: 8, marginTop: 4 }}>source currency</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-        <View style={[s.row, { gap: 11, paddingHorizontal: 8, paddingTop: 13, paddingBottom: 4 }]}>
-          <Text style={{ fontSize: 25 }}>💸</Text>
-          <View style={{ flex: 1, gap: 2 }}>
-            <Text style={[s.text, { fontWeight: "600" }]}>Finance tracker</Text>
-            <Text style={s.small}>Spending, savings, and a plan for what’s next.</Text>
-          </View>
-          <ChevronRight size={17} color={colors.muted} />
-        </View>
-      </Pressable>
-      {details && (
-        <View style={{ gap: 16, padding: 10 }}>
-          <Text style={s.label}>Where your money went</Text>
-          {categories.map((category) => {
-            const row = record(category);
-            if (!row) return null;
-            return (
-              <View key={String(row.name)} style={{ gap: 8 }}>
-                <View style={s.between}>
-                  <Text style={s.text}>{String(row.name)}</Text>
-                  <Text style={s.text}>{amount(row.amount)}</Text>
-                </View>
-                <View style={{ height: 7, backgroundColor: "#DFE8EB", borderRadius: 8 }}>
-                  <View
-                    style={{
-                      width: `${Math.min(100, (Number(row.amount) / spending) * 100)}%`,
-                      height: 7,
-                      backgroundColor: colors.blueDark,
-                      borderRadius: 8,
-                    }}
-                  />
-                </View>
-              </View>
-            );
-          })}
-          <Text style={s.small}>
-            Amounts use your source currency. This summary covers the imported dates.
-          </Text>
-          {goalSaved ? (
-            <Text style={s.text}>Your savings goal is saved in Goals.</Text>
-          ) : (
-            <View style={{ gap: 10 }}>
-              <Field
-                label="Turn this into a savings goal"
-                value={goalTitle}
-                onChangeText={setGoalTitle}
-                placeholder="What would you like to save for?"
-              />
-              <ErrorNotice error={goalError} />
-              <Button
-                small
-                busy={goalBusy}
-                disabled={!goalTitle.trim()}
-                onPress={() => void saveGoal()}
-              >
-                Create savings goal
-              </Button>
-            </View>
-          )}
-          <Button small onPress={() => setExpanded(!expanded)}>
-            {expanded ? "Hide transactions" : "View transactions"}
-          </Button>
-          {expanded &&
-            transactions.slice(0, 100).map((transaction) => {
-              const row = record(transaction);
-              return row ? (
-                <View key={String(row.id ?? display(row))} style={s.between}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.text}>{String(row.description)}</Text>
-                    <Text style={s.small}>
-                      {String(row.date)} · {String(row.category)}
-                    </Text>
-                  </View>
-                  <Text style={s.text}>{amount(row.amount)}</Text>
-                </View>
-              ) : null;
-            })}
-          {expanded && transactions.length > 100 && (
-            <Text style={s.small}>
-              Showing the first 100 transactions. The totals include every row.
-            </Text>
-          )}
-        </View>
-      )}
     </Card>
   );
 }
@@ -1034,54 +769,6 @@ export function DelegateSheet({ goalId, milestoneId }: { goalId?: string; milest
     </Sheet>
   );
 }
-export function IdeasScreen() {
-  const { data, mutate } = useAgentWorkspace();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function refreshIdeas() {
-    setBusy(true);
-    setError("");
-    try {
-      await mutate("/ideas/refresh", {});
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  const ideas = data?.ideas.filter((idea) => idea.status === "new") || [];
-  return (
-    <View style={{ gap: 20 }}>
-      <AgentStatus />
-      <View style={s.between}>
-        <Text style={s.small}>Inspired by your connected apps</Text>
-        <Button small icon={RefreshCw} busy={busy} onPress={() => void refreshIdeas()}>
-          Find ideas
-        </Button>
-      </View>
-      <ErrorNotice error={error} />
-      {ideas.map((idea) => (
-        <IdeaCard key={idea.id} idea={idea} />
-      ))}
-      {!ideas.length && (
-        <Empty
-          icon={Lightbulb}
-          title="Room for a good idea"
-          detail="Find ideas from the sources you have granted access to. Each suggestion includes its evidence."
-        />
-      )}
-      {(data?.ideas || [])
-        .filter((idea) => idea.status === "accepted")
-        .map((idea) => (
-          <Card key={idea.id} style={{ gap: 7 }}>
-            <Text style={s.heading}>{idea.title}</Text>
-            <Chip tint={colors.green}>Started</Chip>
-            {!!idea.taskId && <TaskLink taskId={idea.taskId} />}
-          </Card>
-        ))}
-    </View>
-  );
-}
 function TaskLink({ taskId, onOpen }: { taskId: string; onOpen?: () => void }) {
   const { open } = useWorkspace();
   return (
@@ -1095,84 +782,6 @@ function TaskLink({ taskId, onOpen }: { taskId: string; onOpen?: () => void }) {
     >
       View task
     </Button>
-  );
-}
-function IdeaCard({ idea }: { idea: Idea }) {
-  const { mutate } = useAgentWorkspace();
-  const { open } = useWorkspace();
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [prompt, setPrompt] = useState(idea.prompt);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function act(action: "accept" | "dismiss") {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await mutate<Idea>(`/ideas/${idea.id}`, { action, prompt });
-      if (result.taskId && action === "accept") open({ type: "task", taskId: result.taskId });
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <View style={{ paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: colors.line }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`View idea: ${idea.title}`}
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded(!expanded)}
-        style={{ flexDirection: "row", gap: 14 }}
-      >
-        <Text style={{ fontSize: 27, width: 34, paddingTop: 3 }}>
-          {/document|permission|form/i.test(idea.title)
-            ? "📋"
-            : /money|spend|saving/i.test(idea.title)
-              ? "💸"
-              : /goal|plan|training/i.test(idea.title)
-                ? "👟"
-                : /dinner|table/i.test(idea.title)
-                  ? "🍽️"
-                  : "💡"}
-        </Text>
-        <View style={{ flex: 1, gap: 5 }}>
-          <Text style={[s.heading, { fontSize: 16, lineHeight: 23 }]}>{idea.title}</Text>
-          <Text style={s.muted}>{idea.reason}</Text>
-        </View>
-      </Pressable>
-      {expanded && (
-        <View style={{ gap: 15, marginTop: 18, paddingLeft: 48 }}>
-          <EvidenceList items={idea.evidence} />
-          {editing && (
-            <Field
-              label="What should OpenMuse do?"
-              value={prompt}
-              onChangeText={setPrompt}
-              multiline
-            />
-          )}
-          <ErrorNotice error={error} />
-          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-            <Button
-              primary
-              busy={busy}
-              disabled={!prompt.trim()}
-              onPress={() => void act("accept")}
-            >
-              Start this
-            </Button>
-            <Button disabled={busy} onPress={() => setEditing(!editing)}>
-              {editing ? "Keep edits" : "Edit"}
-            </Button>
-            <Button disabled={busy} onPress={() => void act("dismiss")}>
-              Dismiss
-            </Button>
-          </View>
-        </View>
-      )}
-    </View>
   );
 }
 export function GoalsScreen() {
@@ -1719,7 +1328,6 @@ export function NotificationsSheet() {
   );
 }
 export function AppsScreen() {
-  const { navigate, open } = useWorkspace();
   const { data, mutate } = useAgentWorkspace();
   const [query, setQuery] = useState("");
   const [settings, setSettings] = useState(false);
@@ -1755,32 +1363,6 @@ export function AppsScreen() {
       setBusy(false);
     }
   }
-  const shortcuts = [
-    {
-      section: "mail" as const,
-      title: "Mail",
-      detail: "Read messages and prepare replies",
-      icon: Mail,
-    },
-    {
-      section: "calendar" as const,
-      title: "Calendar",
-      detail: "Events and reviewed invitations",
-      icon: CalendarDays,
-    },
-    {
-      section: "browser" as const,
-      title: "Agent computer",
-      detail: "Persistent browser sessions",
-      icon: Globe2,
-    },
-    {
-      section: "files" as const,
-      title: "Files",
-      detail: "PDFs, forms and filled copies",
-      icon: FileText,
-    },
-  ];
   return (
     <View style={{ gap: 22 }}>
       <AgentStatus />
@@ -1791,24 +1373,6 @@ export function AppsScreen() {
         placeholder="Search connectors"
       />
       <ConnectionsScreen query={query} />
-      <Text style={s.heading}>On your computer</Text>
-      <Card style={{ paddingVertical: 3, backgroundColor: "#F4F5F6" }}>
-        {shortcuts
-          .filter((item) =>
-            `${item.title} ${item.detail}`.toLowerCase().includes(query.toLowerCase()),
-          )
-          .map((item) => (
-            <LinkRow
-              key={item.section}
-              icon={item.icon}
-              title={item.title}
-              detail={item.detail}
-              onPress={() =>
-                item.section === "browser" ? open({ type: "computer" }) : navigate(item.section)
-              }
-            />
-          ))}
-      </Card>
       <Button onPress={() => setSettings(!settings)}>
         {settings ? "Close agent settings" : "Personality & memory"}
       </Button>

@@ -1,8 +1,7 @@
 import { Search } from "lucide-react-native";
-import { useContext, useState } from "react";
+import { useState } from "react";
 import { ActivityIndicator, Linking, Text, View } from "react-native";
 import { z } from "zod";
-import { BrowserRunContext } from "./browser-tool-card";
 import { Card, colors, ErrorNotice, s } from "./ui";
 
 const resultSchema = z.object({
@@ -12,7 +11,6 @@ const resultSchema = z.object({
 });
 
 export function SearchToolCard({ result, loading }: { result: unknown; loading: boolean }) {
-  const { active } = useContext(BrowserRunContext);
   const [linkError, setLinkError] = useState("");
   let value = result;
   if (typeof value === "string") {
@@ -24,7 +22,7 @@ export function SearchToolCard({ result, loading }: { result: unknown; loading: 
   }
   const error = z.object({ error: z.string() }).safeParse(value);
   const parsed = resultSchema.safeParse(value);
-  const working = loading && active;
+  const working = loading;
   const failure = error.success
     ? error.data.error
     : !loading && !parsed.success

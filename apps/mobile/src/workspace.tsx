@@ -1,27 +1,11 @@
 import { createContext, useContext } from "react";
-import type {
-  ActionProposal,
-  Artifact,
-  BrowserSession,
-  CalendarEvent,
-  EmailDraft,
-  EventDraft,
-  Mail,
-  Section,
-  Workspace,
-} from "../../../packages/domain/src";
+import type { ActionProposal, Section, Workspace } from "../../../packages/domain/src";
 import type { MuseApi } from "./api";
 export type Detail =
-  | { type: "mail"; mail: Mail }
-  | { type: "email"; draft?: Partial<EmailDraft> & { id?: string } }
-  | { type: "event"; event?: CalendarEvent; draft?: EventDraft; neighbors?: CalendarEvent[] }
-  | { type: "file"; file: Artifact }
-  | { type: "browser"; browser: BrowserSession }
   | { type: "review"; action: ActionProposal }
   | { type: "task"; taskId: string }
   | { type: "delegate"; goalId?: string; milestoneId?: string }
   | { type: "notifications" }
-  | { type: "computer" }
   | { type: "menu" };
 export interface WorkspaceContextValue {
   workspace: Workspace;
