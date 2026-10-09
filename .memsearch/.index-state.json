@@ -3,9 +3,9 @@
   "failed_files": [],
   "indexed_chunks": 0,
   "indexed_files": 1,
-  "last_completed_at": "2026-10-09T12:35:36.174587Z",
-  "last_started_at": "2026-10-09T12:35:30.594437Z",
-  "last_success_at": "2026-10-09T12:35:36.174587Z",
+  "last_completed_at": "2026-10-09T13:22:30.690689Z",
+  "last_started_at": "2026-10-09T13:22:27.043664Z",
+  "last_success_at": "2026-10-09T13:22:30.690689Z",
   "milvus_uri": "~/.memsearch/milvus.db",
   "operation": "index",
   "paths": [
@@ -14,5 +14,5 @@
   "schema_version": 1,
   "status": "ok",
   "total_files": 1,
-  "updated_at": "2026-10-09T12:35:36.174587Z"
+  "updated_at": "2026-10-09T13:22:30.690689Z"
 }

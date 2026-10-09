@@ -36,6 +36,9 @@ export interface Config {
   databaseUrl?: string;
   accessKey?: string;
   encryptionKey?: string;
+  /** 0Siri 관리자 시드 (ADMIN_PHONE/ADMIN_PASSWORD). 둘 다 있을 때만 만든다 */
+  adminPhone?: string;
+  adminPassword?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -142,6 +145,8 @@ export function readConfig(): Config {
     databaseUrl: process.env.DATABASE_URL,
     accessKey: process.env.OPENMUSE_ACCESS_KEY,
     encryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
+    adminPhone: process.env.ADMIN_PHONE?.trim() || undefined,
+    adminPassword: process.env.ADMIN_PASSWORD || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

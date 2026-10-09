@@ -24,6 +24,16 @@ import { AgentService } from "./engine/service.ts";
 import { AppError } from "./errors.ts";
 import { Files } from "./files.ts";
 import { GoogleAuth } from "./google-auth.ts";
+import { privateAccountRoutes, publicAccountRoutes } from "./osiri/account-routes.ts";
+import { Accounts } from "./osiri/accounts.ts";
+import { Approvals } from "./osiri/approvals.ts";
+import { EventBus } from "./osiri/events.ts";
+import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
+import { Memories, memoryRoutes } from "./osiri/memories.ts";
+import { roomRoutes, workerRoutes } from "./osiri/room-routes.ts";
+import { Rooms } from "./osiri/rooms.ts";
+import { Routing, routingRoutes } from "./osiri/routing.ts";
+import { Catalog, storeRoutes } from "./osiri/store.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { WorkspaceService } from "./workspace.ts";
 
@@ -50,6 +60,17 @@ export async function createApp(
     ? new CopilotKitIntelligence({ apiKey: config.intelligenceApiKey })
     : undefined;
   const runtime = makeRuntime(config, agent, auth, intelligence);
+  // 0Siri 서비스 (0SIRI-SPEC §21). 전부 records 저장소 위, 기억만 pgvector.
+  const accounts = new Accounts(db);
+  const bus = new EventBus();
+  const rooms = new Rooms(db, bus);
+  const approvals = new Approvals(db, rooms, bus);
+  const mcp = new Mcp(db, rooms, approvals);
+  const memories = new Memories(db);
+  const catalog = new Catalog(db, rooms);
+  const routing = new Routing(db, rooms);
+  const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing };
+  await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   const app = new Hono<{ Variables: { owner: string } }>();
   const origins = new Set([...config.allowedOrigins, new URL(config.publicUrl).origin]);
   app.use("*", async (c, next) => {
@@ -132,6 +153,9 @@ export async function createApp(
       "<h1>Google이 연결되었습니다</h1><p>0Siri로 돌아가 워크스페이스를 새로고침하세요.</p>",
     );
   });
+  // 공개: 전화번호 로그인·초대 수락 (S1). 워커: 워커 토큰으로 인증 — 사용자 인증 미들웨어 앞에 둔다.
+  app.route("/api/auth", publicAccountRoutes(accounts));
+  app.route("/api/worker", workerRoutes(osiri));
   app.use("/api/*", async (c, next) => {
     const signedRoute =
       /^\/api\/files\/[^/]+\/content$|^\/api\/browsers\/[^/]+\/(?:preview|console)$/.test(
@@ -160,6 +184,13 @@ export async function createApp(
   });
   app.route("/api/agent", agentRoutes(agent));
   app.route("/api/computer", computerRoutes(computer, files));
+  // 0Siri 사용자 라우트 (S2~S11)
+  app.route("/api", privateAccountRoutes(accounts, config.publicUrl));
+  app.route("/api", roomRoutes(osiri));
+  app.route("/api", memoryRoutes(memories));
+  app.route("/api", mcpRoutes(mcp));
+  app.route("/api", storeRoutes(catalog, accounts));
+  app.route("/api", routingRoutes(routing));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));
   app.get("/api/calendar/events", async (c) => {
     const query = z
@@ -353,5 +384,5 @@ export async function createApp(
   app.get("/", (c) =>
     c.json({ name: "OpenMuse", app: "http://localhost:8081", health: "/api/health" }),
   );
-  return { app, auth, files, actions, workspace, agent, computer };
+  return { app, auth, files, actions, workspace, agent, computer, osiri };
 }

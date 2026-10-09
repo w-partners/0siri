@@ -293,7 +293,7 @@ export function routingRoutes(routing: Routing, env: NodeJS.ProcessEnv = process
     await routing.disconnectAccount(c.get("owner"), providerSchema.parse(c.req.param("provider")));
     return c.json({ ok: true });
   });
-  app.post("/connections/model-account/oauth", async (c) => {
+  app.post("/connections/model-account/oauth", async () => {
     if (env.BYOK_OAUTH_ENABLED !== "true")
       throw new AppError("구독 OAuth 연결은 아직 열려 있지 않습니다", 403);
     throw new AppError("구독 OAuth 연결은 제공자 공식 지원 후 구현됩니다", 503);
