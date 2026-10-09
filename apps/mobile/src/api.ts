@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { readApiPayload } from "./api-response";
+import { t } from "./strings";
 
 export const API_URL = (
   process.env.EXPO_PUBLIC_API_URL ||
@@ -37,7 +38,7 @@ export async function createSession(
   });
   const payload = await readApiPayload<{ token: string; mode: "sample" | "live" }>(
     response,
-    "Could not open your workspace.",
+    t.app.api.openFailed,
   );
   return payload;
 }

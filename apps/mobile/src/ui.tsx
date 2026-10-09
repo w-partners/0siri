@@ -15,6 +15,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { t } from "./strings";
 export const colors = {
   canvas: "#FCFCFC",
   card: "#FFFFFF",
@@ -297,7 +298,7 @@ export function Sheet({
               <Text style={s.title}>{title}</Text>
               {!!subtitle && <Text style={s.muted}>{subtitle}</Text>}
             </View>
-            <IconButton icon={X} label="Close details" onPress={onClose} />
+            <IconButton icon={X} label={t.common.close} onPress={onClose} />
           </View>
           <ScrollView
             keyboardShouldPersistTaps="handled"
@@ -399,7 +400,7 @@ export function LinkRow({
     </Pressable>
   );
 }
-/** OpenMuse's original capybara, shared by every assistant surface. */
+/** 0Siri's capybara mascot, shared by every assistant surface. */
 export function Mascot({
   size = 42,
   variant = "sky",
@@ -413,7 +414,7 @@ export function Mascot({
     lilac: "#F1ECF9",
   }[variant];
   return (
-    <View accessibilityLabel="OpenMuse capybara" style={{ width: size, height: size }}>
+    <View accessibilityLabel={t.ui.mascot.label} style={{ width: size, height: size }}>
       <View
         style={{
           position: "absolute",
@@ -438,18 +439,18 @@ export function dateLabel(value: string, options?: Intl.DateTimeFormatOptions) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleDateString("en-US", options || { month: "short", day: "numeric" });
+    : date.toLocaleDateString("ko-KR", options || { month: "short", day: "numeric" });
 }
 export function timeLabel(value: string, timeZone?: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+    : date.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit", timeZone });
 }
 export { relativeDate } from "./relative-date";
 
 export function resultSummary(value: string) {
   return /^Saved to (?:sample|local) sent mail(?: · .+)?$/.test(value)
-    ? "Reply saved in your local Sent mail."
+    ? t.ui.result.replySaved
     : value;
 }

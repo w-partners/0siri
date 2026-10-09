@@ -22,7 +22,7 @@ test("plain-text and HTML failures stay readable instead of a JSON parse error",
   ] as const) {
     const error = await readApiPayload(new Response(body, { status })).catch((e: unknown) => e);
     assert.ok(error instanceof Error);
-    assert.equal(error.message, `Request failed (${status})`);
+    assert.equal(error.message, `요청에 실패했습니다 (${status})`);
     assert.equal(error instanceof SyntaxError, false);
     assert.doesNotMatch(error.message, /Unexpected|JSON/i);
   }
@@ -48,7 +48,7 @@ test("a caller fallback covers error bodies without a message", async () => {
 test("successful responses without a readable body fail clearly", async () => {
   await assert.rejects(
     readApiPayload(new Response(null, { status: 204 })),
-    /unreadable response \(204\)/,
+    /읽을 수 없습니다 \(204\)/,
   );
-  await assert.rejects(readApiPayload(new Response("OK", { status: 200 })), /unreadable response/);
+  await assert.rejects(readApiPayload(new Response("OK", { status: 200 })), /읽을 수 없습니다/);
 });

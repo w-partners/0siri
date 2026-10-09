@@ -28,6 +28,7 @@ import type {
 } from "../../../packages/domain/src/agent";
 import { useAgentWorkspace } from "./agent-workspace";
 import { ActivityScreen, ConnectionsScreen } from "./screens";
+import { t } from "./strings";
 import {
   Button,
   Card,
@@ -45,18 +46,19 @@ import {
 } from "./ui";
 import { useWorkspace } from "./workspace";
 
+const statusLabels: Record<string, string> = t.agent.status;
 export function statusLabel(value: string) {
-  return value.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  return statusLabels[value] ?? value.replace(/_/g, " ");
 }
 function stamp(value?: string) {
   return value
-    ? new Date(value).toLocaleString(undefined, {
+    ? new Date(value).toLocaleString("ko-KR", {
         month: "short",
         day: "numeric",
         hour: "numeric",
         minute: "2-digit",
       })
-    : "Not checked yet";
+    : t.agent.notCheckedYet;
 }
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -69,16 +71,14 @@ export function AgentStatus() {
   if (data?.worker.running && !error) return null;
   return (
     <View style={{ gap: 8 }}>
-      <ErrorNotice error={error ? `Agent updates unavailable. ${error}` : ""} />
+      <ErrorNotice error={error ? t.agent.worker.unavailable(error) : ""} />
       {!!error && (
         <Button small onPress={() => void refresh().catch(() => {})}>
-          Reconnect agent
+          {t.agent.worker.reconnect}
         </Button>
       )}
       {!data && !error && <ActivityIndicator color={colors.blueDark} />}
-      {data && !data.worker.running && (
-        <Text style={s.small}>Worker is offline. Saved work will continue when it reconnects.</Text>
-      )}
+      {data && !data.worker.running && <Text style={s.small}>{t.agent.worker.offline}</Text>}
     </View>
   );
 }
@@ -98,7 +98,7 @@ export function TaskCard({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open task: ${task.title}`}
+      accessibilityLabel={t.agent.taskCard.open(task.title)}
       onPress={() => {
         onOpen?.();
         open({ type: "task", taskId: task.id });
@@ -125,7 +125,7 @@ export function TaskCard({
             <Text style={s.heading}>{task.title}</Text>
             <Text style={s.small}>
               {statusLabel(task.status)}
-              {task.plan.length ? ` · ${done}/${task.plan.length} steps` : ""}
+              {task.plan.length ? ` · ${t.agent.taskCard.stepsDone(done, task.plan.length)}` : ""}
             </Text>
           </View>
           <ChevronRight size={17} color={colors.muted} />
@@ -149,7 +149,9 @@ export function TaskCard({
         )}
         {waiting && (
           <Text style={[s.small, { color: colors.blueDark, fontWeight: "600" }]}>
-            {task.status === "waiting_approval" ? "Review requested" : "Your input is needed"}
+            {task.status === "waiting_approval"
+              ? t.agent.taskCard.reviewRequested
+              : t.agent.taskCard.inputNeeded}
           </Text>
         )}
       </Card>
@@ -173,20 +175,19 @@ export function ChatWork() {
 }
 export function AgentActivityScreen() {
   const { data } = useAgentWorkspace();
-  const [filter, setFilter] = useState("All");
+  const [filter, setFilter] = useState<keyof typeof t.agent.activity.filters>("all");
   const tasks = [...(data?.tasks || [])]
     .filter(
-      (task) =>
-        filter === "All" || (filter === "In progress" ? activeTask(task) : !activeTask(task)),
+      (task) => filter === "all" || (filter === "active" ? activeTask(task) : !activeTask(task)),
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return (
     <View style={{ gap: 20 }}>
       <AgentStatus />
       <View style={[s.row, { gap: 8 }]}>
-        {["All", "In progress", "Finished"].map((item) => (
+        {(["all", "active", "finished"] as const).map((item) => (
           <Button key={item} small primary={filter === item} onPress={() => setFilter(item)}>
-            {item}
+            {t.agent.activity.filters[item]}
           </Button>
         ))}
       </View>
@@ -196,11 +197,11 @@ export function AgentActivityScreen() {
       {!tasks.length && (
         <Empty
           icon={ListChecks}
-          title="A place for the work"
-          detail="Delegate a task in Chat. Its plan, progress and results stay here."
+          title={t.agent.activity.emptyTitle}
+          detail={t.agent.activity.emptyDetail}
         />
       )}
-      <SectionHeading title="Reviews & receipts" />
+      <SectionHeading title={t.agent.activity.reviewsHeading} />
       <ActivityScreen />
     </View>
   );
@@ -225,7 +226,7 @@ export function EvidenceList({ items }: { items: Evidence[] }) {
                 void Linking.openURL(item.url || "").catch((e) => setError(errorText(e)))
               }
             >
-              Open source
+              {t.agent.evidence.openSource}
             </Button>
           )}
         </View>
@@ -305,11 +306,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             (value) => typeof value !== "string" && typeof value !== "boolean",
           )
         )
-          throw new Error("Form fields must be a JSON object with text or true/false values.");
+          throw new Error(t.agent.taskDetail.fieldsJsonInvalid);
         parsed = raw as Record<string, string | boolean>;
       }
       await act("input", {
-        answer: answer.trim() || "Provided the requested fields.",
+        answer: answer.trim() || t.agent.taskDetail.fieldsProvided,
         fields: parsed,
       });
     } catch (e) {
@@ -323,7 +324,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       await refreshWorkspace();
       const snapshot = await api.request<typeof workspace>("/api/workspace");
       const action = snapshot.actions.find((item) => item.id === task?.actionId);
-      if (!action) throw new Error("This review is not available yet. Refresh and try again.");
+      if (!action) throw new Error(t.agent.taskDetail.reviewUnavailable);
       open({ type: "review", action });
     } catch (e) {
       setError(errorText(e));
@@ -343,9 +344,9 @@ export function TaskDetail({ taskId }: { taskId: string }) {
     .filter(Boolean);
   return (
     <Sheet
-      title={task?.title || "Task"}
+      title={task?.title || t.agent.taskDetail.fallbackTitle}
       subtitle={
-        task ? `${statusLabel(task.status)} · ${stamp(task.updatedAt)}` : "Loading saved progress…"
+        task ? `${statusLabel(task.status)} · ${stamp(task.updatedAt)}` : t.agent.taskDetail.loading
       }
       onClose={close}
     >
@@ -360,8 +361,8 @@ export function TaskDetail({ taskId }: { taskId: string }) {
           {task.milestoneId && data && (
             <Text style={s.muted}>
               {milestone?.title
-                ? `Milestone: ${milestone.title}. Completion is tracked manually in Goals.`
-                : "The linked milestone is no longer available. This task and its results are still accessible."}
+                ? t.agent.taskDetail.milestone(milestone.title)
+                : t.agent.taskDetail.milestoneMissing}
             </Text>
           )}
           <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
@@ -374,7 +375,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 busy={busy}
                 onPress={() => void act("control", { action: "pause" })}
               >
-                Pause
+                {t.agent.taskDetail.pause}
               </Button>
             )}
             {task.status === "paused" && (
@@ -384,7 +385,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 busy={busy}
                 onPress={() => void act("control", { action: "resume" })}
               >
-                Resume
+                {t.agent.taskDetail.resume}
               </Button>
             )}
             {task.status === "failed" && (
@@ -394,7 +395,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 busy={busy}
                 onPress={() => void act("control", { action: "retry" })}
               >
-                Retry task
+                {t.agent.taskDetail.retry}
               </Button>
             )}
             {activeTask(task) && (
@@ -405,22 +406,22 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 busy={busy}
                 onPress={() => void act("control", { action: "cancel" })}
               >
-                Cancel task
+                {t.agent.taskDetail.cancel}
               </Button>
             )}
           </View>
           {task.status === "waiting_approval" && (
             <Card style={{ backgroundColor: colors.lavender, gap: 12 }}>
-              <Text style={s.heading}>Ready for your review</Text>
-              <Text style={s.muted}>Review the exact action and account before it proceeds.</Text>
+              <Text style={s.heading}>{t.agent.taskDetail.reviewTitle}</Text>
+              <Text style={s.muted}>{t.agent.taskDetail.reviewDetail}</Text>
               <Button primary busy={busy} onPress={() => void review()}>
-                Review action
+                {t.agent.taskDetail.reviewAction}
               </Button>
             </Card>
           )}
           {task.status === "waiting_input" && (
             <Card style={{ backgroundColor: colors.sky, gap: 10 }}>
-              <Text style={s.heading}>{task.question || "A detail from you will help"}</Text>
+              <Text style={s.heading}>{task.question || t.agent.taskDetail.inputTitle}</Text>
               {fieldNames.map((name) =>
                 missing.some(
                   (f) => typeof f === "object" && f && f.name === name && f.type === "checkbox",
@@ -444,26 +445,26 @@ export function TaskDetail({ taskId }: { taskId: string }) {
               )}
               {!fieldNames.length && (
                 <Field
-                  label="Your answer"
+                  label={t.agent.taskDetail.answerLabel}
                   value={answer}
                   onChangeText={setAnswer}
                   multiline
-                  placeholder="Add the missing details…"
+                  placeholder={t.agent.taskDetail.answerPlaceholder}
                 />
               )}
               {task.kind === "document" && !fieldNames.length && (
                 <>
                   <Button small onPress={() => setShowFieldJson(!showFieldJson)}>
-                    Form field values
+                    {t.agent.taskDetail.formFieldValues}
                   </Button>
                   {showFieldJson && (
                     <Field
-                      label="Fields (JSON: field name to value)"
+                      label={t.agent.taskDetail.fieldsJsonLabel}
                       value={fieldJson}
                       onChangeText={setFieldJson}
                       multiline
                       autoCapitalize="none"
-                      placeholder={'{"full_name":"Your name","consent":true}'}
+                      placeholder={t.agent.taskDetail.fieldsJsonPlaceholder}
                     />
                   )}
                 </>
@@ -474,13 +475,13 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 disabled={!answer.trim() && !Object.keys(fields).length && !fieldJson.trim()}
                 onPress={() => void submitInput()}
               >
-                Continue task
+                {t.agent.taskDetail.continueTask}
               </Button>
             </Card>
           )}
           {!!task.plan.length && (
             <Card style={{ gap: 15 }}>
-              <Text style={s.heading}>Plan</Text>
+              <Text style={s.heading}>{t.agent.taskDetail.plan}</Text>
               {task.plan.map((step, index) => (
                 <View key={step.id} style={[s.row, { gap: 10, alignItems: "flex-start" }]}>
                   <Text
@@ -519,11 +520,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
           ))}
           {!!task.evidence.length && (
             <View style={{ gap: 14 }}>
-              <Text style={s.heading}>Sources</Text>
+              <Text style={s.heading}>{t.agent.taskDetail.sources}</Text>
               <EvidenceList items={task.evidence} />
             </View>
           )}
-          <Text style={s.heading}>Timeline</Text>
+          <Text style={s.heading}>{t.agent.taskDetail.timeline}</Text>
           {detail?.events.map((event) => (
             <View
               key={event.id}
@@ -539,7 +540,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             </View>
           ))}
           {!detail?.events.length && (
-            <Text style={s.muted}>The worker will record each step here.</Text>
+            <Text style={s.muted}>{t.agent.taskDetail.timelineEmpty}</Text>
           )}
         </View>
       )}
@@ -614,7 +615,7 @@ export function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
         </View>
       ))}
       <Button small onPress={() => setExpanded(!expanded)}>
-        {expanded ? "Show summary" : "Explore full result"}
+        {expanded ? t.agent.artifact.showSummary : t.agent.artifact.exploreFull}
       </Button>
     </Card>
   );
@@ -630,7 +631,7 @@ export function DelegateSheet({ goalId, milestoneId }: { goalId?: string; milest
   const [title] = useState(milestone?.title);
   const [prompt, setPrompt] = useState(
     milestone && goal
-      ? `Help with this milestone: ${milestone.title}\nGoal: ${goal.title}\n${goal.description}`
+      ? t.agent.delegate.milestonePrompt(milestone.title, goal.title, goal.description)
       : "",
   );
   const [messageId, setMessageId] = useState("");
@@ -668,40 +669,40 @@ export function DelegateSheet({ goalId, milestoneId }: { goalId?: string; milest
   }
   return (
     <Sheet
-      title="Hand over an outcome"
-      subtitle="OpenMuse saves a plan and keeps working on the server."
+      title={t.agent.delegate.title}
+      subtitle={t.agent.delegate.subtitle(t.common.product)}
       onClose={close}
     >
       {milestoneId && (
         <Text style={[s.muted, { marginBottom: 16 }]}>
           {milestone
-            ? `${goal?.title} · ${milestone.title}. Mark this milestone complete when you are satisfied with the result.`
-            : "This milestone is no longer available."}
+            ? t.agent.delegate.milestoneNote(goal?.title || "", milestone.title)
+            : t.agent.delegate.milestoneMissing}
         </Text>
       )}
       <View style={[s.row, { flexWrap: "wrap", gap: 8, marginBottom: 20 }]}>
         {(["plan", "document", "finance", "agent"] as const).map((item) => (
           <Button small primary={kind === item} key={item} onPress={() => setKind(item)}>
-            {item === "agent" ? "General task" : statusLabel(item)}
+            {statusLabel(item)}
           </Button>
         ))}
       </View>
       <Field
-        label="What would you like done?"
+        label={t.agent.delegate.promptLabel}
         value={prompt}
         onChangeText={setPrompt}
         multiline
         placeholder={
           kind === "document"
-            ? "Fill the attached form and prepare a reply for my review"
+            ? t.agent.delegate.placeholderDocument
             : kind === "finance"
-              ? "Summarize my spending and suggest a savings plan"
-              : "Make a practical plan for my week"
+              ? t.agent.delegate.placeholderFinance
+              : t.agent.delegate.placeholderPlan
         }
       />
       {kind === "document" && (
         <View style={{ gap: 8, marginBottom: 18 }}>
-          <Text style={s.heading}>Choose the email with the PDF</Text>
+          <Text style={s.heading}>{t.agent.delegate.chooseMail}</Text>
           {workspace.mail
             .filter((mail) => mail.attachments.length)
             .map((mail) => (
@@ -713,44 +714,30 @@ export function DelegateSheet({ goalId, milestoneId }: { goalId?: string; milest
               />
             ))}
           {!workspace.mail.some((mail) => mail.attachments.length) && (
-            <Text style={s.muted}>
-              Connect mail in Apps and select a message with a PDF attachment.
-            </Text>
+            <Text style={s.muted}>{t.agent.delegate.mailMissing}</Text>
           )}
         </View>
       )}
       {kind === "finance" && (
         <>
           <Field
-            label="Transaction CSV"
+            label={t.agent.delegate.csvLabel}
             value={csv}
             onChangeText={setCsv}
             multiline
             autoCapitalize="none"
-            placeholder={"date,description,amount,category\n2026-09-01,Groceries,54.20,Food"}
+            placeholder={t.agent.delegate.csvPlaceholder}
           />
           {workspace.mode === "sample" && (
-            <Button
-              onPress={() =>
-                setCsv(
-                  "date,description,amount,category\n2026-09-01,Salary,-4200,Income\n2026-09-02,Groceries,84.50,Food\n2026-09-03,Subscription,19.99,Subscriptions\n2026-09-04,Coffee,6.50,Food",
-                )
-              }
-            >
-              Try example transactions
+            <Button onPress={() => setCsv(t.agent.delegate.csvSample)}>
+              {t.agent.delegate.trySample}
             </Button>
           )}
-          <Text style={[s.small, { marginVertical: 12 }]}>
-            Positive amounts are expenses; negative amounts are income. Imported data only. No bank
-            connection is implied.
-          </Text>
+          <Text style={[s.small, { marginVertical: 12 }]}>{t.agent.delegate.csvHint}</Text>
         </>
       )}
       {kind === "agent" && !workspace.runtime.configured && (
-        <Text style={[s.muted, { marginBottom: 16 }]}>
-          General tasks and plans require a configured model. Document jobs, page watches and
-          spending summaries have guided workflows.
-        </Text>
+        <Text style={[s.muted, { marginBottom: 16 }]}>{t.agent.delegate.modelRequired}</Text>
       )}
       <ErrorNotice error={error} />
       <Button
@@ -764,7 +751,7 @@ export function DelegateSheet({ goalId, milestoneId }: { goalId?: string; milest
         }
         onPress={() => void submit()}
       >
-        Delegate task
+        {t.agent.delegate.submit}
       </Button>
     </Sheet>
   );
@@ -780,13 +767,20 @@ function TaskLink({ taskId, onOpen }: { taskId: string; onOpen?: () => void }) {
         open({ type: "task", taskId });
       }}
     >
-      View task
+      {t.agent.taskLink.view}
     </Button>
   );
 }
+type GoalCategory = keyof typeof t.agent.goals.categories;
+const goalCategories: { id: GoalCategory; icon: typeof Heart }[] = [
+  { id: "health", icon: Heart },
+  { id: "relationships", icon: Users },
+  { id: "finances", icon: CircleDollarSign },
+  { id: "other", icon: Target },
+];
 export function GoalsScreen() {
   const { data } = useAgentWorkspace();
-  const [adding, setAdding] = useState<string>();
+  const [adding, setAdding] = useState<GoalCategory | "tracking">();
   const [selectedGoal, setSelectedGoal] = useState<string>();
   const [selectedMonitor, setSelectedMonitor] = useState<string>();
   const [showAll, setShowAll] = useState(false);
@@ -809,17 +803,17 @@ export function GoalsScreen() {
                 backgroundColor: "#24A46B",
               }}
             />
-            <Text style={[s.heading, { color: "#189A58" }]}>Tracking</Text>
+            <Text style={[s.heading, { color: "#189A58" }]}>{t.agent.goals.trackingHeading}</Text>
           </View>
-          <Button small icon={Plus} onPress={() => setAdding("Tracking")}>
-            Track
+          <Button small icon={Plus} onPress={() => setAdding("tracking")}>
+            {t.agent.goals.track}
           </Button>
         </View>
         {(showAll ? monitors : monitors.slice(0, 3)).map((item) => (
           <Pressable
             key={item.id}
             accessibilityRole="button"
-            accessibilityLabel={`Open tracking: ${item.title}`}
+            accessibilityLabel={t.agent.goals.openTracking(item.title)}
             onPress={() => setSelectedMonitor(item.id)}
             style={[s.row, { gap: 12, paddingVertical: 13 }]}
           >
@@ -828,7 +822,7 @@ export function GoalsScreen() {
               <Text style={s.text}>{item.title}</Text>
               <Text numberOfLines={1} style={s.muted}>
                 {item.status === "active"
-                  ? `Checking every ${item.intervalMinutes} minutes`
+                  ? t.agent.goals.checkingEvery(item.intervalMinutes)
                   : statusLabel(item.status)}
               </Text>
             </View>
@@ -836,13 +830,11 @@ export function GoalsScreen() {
           </Pressable>
         ))}
         {!monitors.length && (
-          <Text style={[s.muted, { paddingVertical: 10 }]}>
-            Ticket prices, a reservation, a page you’re watching.
-          </Text>
+          <Text style={[s.muted, { paddingVertical: 10 }]}>{t.agent.goals.trackingEmpty}</Text>
         )}
         {monitors.length > 3 && (
           <Button small onPress={() => setShowAll(!showAll)}>
-            {showAll ? "Show less" : `Show ${monitors.length - 3} more`}
+            {showAll ? t.agent.goals.showLess : t.agent.goals.showMore(monitors.length - 3)}
           </Button>
         )}
       </View>
@@ -859,13 +851,13 @@ export function GoalsScreen() {
               backgroundColor: "#3D9BDE",
             }}
           />
-          <Text style={[s.heading, { color: colors.blueDark }]}>Goals</Text>
+          <Text style={[s.heading, { color: colors.blueDark }]}>{t.agent.goals.goalsHeading}</Text>
         </View>
         {data?.goals.map((item) => (
           <Pressable
             key={item.id}
             accessibilityRole="button"
-            accessibilityLabel={`Open goal: ${item.title}`}
+            accessibilityLabel={t.agent.goals.openGoal(item.title)}
             onPress={() => setSelectedGoal(item.id)}
             style={[s.row, { gap: 12, paddingVertical: 13 }]}
           >
@@ -884,37 +876,32 @@ export function GoalsScreen() {
           </Pressable>
         ))}
         {!data?.goals.length && (
-          <Text style={[s.muted, { paddingVertical: 10 }]}>
-            Big plans start with one small step.
-          </Text>
+          <Text style={[s.muted, { paddingVertical: 10 }]}>{t.agent.goals.goalsEmpty}</Text>
         )}
       </View>
       <View style={{ height: 1, backgroundColor: colors.line }} />
-      <Text style={s.heading}>Create a goal</Text>
-      {[
-        { name: "Health", icon: Heart },
-        { name: "Relationships", icon: Users },
-        { name: "Finances", icon: CircleDollarSign },
-        { name: "Something else", icon: Target },
-      ].map((item) => (
+      <Text style={s.heading}>{t.agent.goals.createHeading}</Text>
+      {goalCategories.map((item) => (
         <Pressable
-          key={item.name}
+          key={item.id}
           accessibilityRole="button"
-          accessibilityLabel={`Create ${item.name.toLowerCase()} goal`}
-          onPress={() => setAdding(item.name)}
+          accessibilityLabel={t.agent.goals.createCategory(t.agent.goals.categories[item.id])}
+          onPress={() => setAdding(item.id)}
           style={[s.row, { gap: 12, minHeight: 38 }]}
         >
           <item.icon size={23} color="#989C9F" />
-          <Text style={[s.text, { flex: 1, color: "#666A6D" }]}>{item.name}</Text>
+          <Text style={[s.text, { flex: 1, color: "#666A6D" }]}>
+            {t.agent.goals.categories[item.id]}
+          </Text>
           <Plus size={18} color="#989C9F" />
         </Pressable>
       ))}
       {adding && (
         <Sheet
-          title={adding === "Tracking" ? "Track something" : "Create a goal"}
+          title={adding === "tracking" ? t.agent.goals.trackSheet : t.agent.goals.createSheet}
           onClose={() => setAdding(undefined)}
         >
-          {adding === "Tracking" ? (
+          {adding === "tracking" ? (
             <MonitorForm onDone={() => setAdding(undefined)} />
           ) : (
             <GoalForm category={adding} onDone={() => setAdding(undefined)} />
@@ -964,26 +951,26 @@ function GoalForm({ onDone, category }: { onDone: () => void; category?: string 
   return (
     <Card>
       <Field
-        label="Your goal"
+        label={t.agent.goals.form.titleLabel}
         value={title}
         onChangeText={setTitle}
-        placeholder="Build a three-month emergency fund"
+        placeholder={t.agent.goals.form.titlePlaceholder}
       />
       <Field
-        label="What does success look like?"
+        label={t.agent.goals.form.descriptionLabel}
         value={description}
         onChangeText={setDescription}
         multiline
       />
       <Field
-        label="Milestones (one per line)"
+        label={t.agent.goals.form.milestonesLabel}
         value={milestones}
         onChangeText={setMilestones}
         multiline
       />
       <ErrorNotice error={error} />
       <Button primary disabled={!title.trim()} busy={busy} onPress={() => void save()}>
-        Create goal
+        {t.agent.goals.form.submit}
       </Button>
     </Card>
   );
@@ -1010,8 +997,8 @@ function GoalCard({ goal, onOpenTask }: { goal: Goal; onOpenTask?: () => void })
     setError("");
     try {
       const task = await delegate({
-        title: `Plan: ${goal.title}`,
-        prompt: `Create a practical plan for this goal: ${goal.title}. ${goal.description}`,
+        title: t.agent.goals.card.planTitle(goal.title),
+        prompt: t.agent.goals.card.planPrompt(goal.title, goal.description),
         kind: "plan",
         goalId: goal.id,
         input: {},
@@ -1033,9 +1020,7 @@ function GoalCard({ goal, onOpenTask }: { goal: Goal; onOpenTask?: () => void })
         </Chip>
       </View>
       <Text style={s.muted}>{goal.description}</Text>
-      <Text style={s.small}>
-        {done} of {goal.milestones.length} milestones
-      </Text>
+      <Text style={s.small}>{t.agent.goals.card.milestones(done, goal.milestones.length)}</Text>
       {goal.milestones.map((milestone) => (
         <View key={milestone.id} style={{ gap: 8 }}>
           <CheckRow
@@ -1054,7 +1039,7 @@ function GoalCard({ goal, onOpenTask }: { goal: Goal; onOpenTask?: () => void })
                 open({ type: "delegate", goalId: goal.id, milestoneId: milestone.id });
               }}
             >
-              Delegate
+              {t.agent.goals.card.delegate}
             </Button>
           )}
           {data?.tasks
@@ -1071,15 +1056,15 @@ function GoalCard({ goal, onOpenTask }: { goal: Goal; onOpenTask?: () => void })
           busy={busy}
           onPress={() => void update({ status: goal.status === "active" ? "paused" : "active" })}
         >
-          {goal.status === "active" ? "Pause" : "Resume"}
+          {goal.status === "active" ? t.agent.goals.card.pause : t.agent.goals.card.resume}
         </Button>
         {goal.status !== "completed" && (
           <Button small busy={busy} onPress={() => void update({ status: "completed" })}>
-            Complete goal
+            {t.agent.goals.card.complete}
           </Button>
         )}
         <Button small primary busy={busy} onPress={() => void plan()}>
-          Plan next steps
+          {t.agent.goals.card.planNext}
         </Button>
       </View>
       {data?.tasks
@@ -1111,9 +1096,9 @@ function MonitorForm({ onDone }: { onDone: () => void }) {
     try {
       const minutes = Number(interval);
       if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080)
-        throw new Error("Use a check interval from 1 to 10080 minutes.");
+        throw new Error(t.agent.monitors.form.intervalInvalid);
       if (!sample && !/^https?:\/\//i.test(url.trim()))
-        throw new Error("Enter an http or https address for a public page.");
+        throw new Error(t.agent.monitors.form.urlInvalid);
       await mutate("/monitors", {
         title: title.trim(),
         url: sample ? "sample://availability" : url.trim(),
@@ -1131,56 +1116,60 @@ function MonitorForm({ onDone }: { onDone: () => void }) {
   return (
     <Card>
       <Field
-        label="What are you watching?"
+        label={t.agent.monitors.form.titleLabel}
         value={title}
         onChangeText={setTitle}
-        placeholder="A table at my favorite restaurant"
+        placeholder={t.agent.monitors.form.titlePlaceholder}
       />
       {workspace.mode === "sample" && (
         <CheckRow
           checked={sample}
-          label="Try the built-in availability page"
+          label={t.agent.monitors.form.sampleToggle}
           onPress={() => setSample(!sample)}
         />
       )}
       {!sample && (
         <Field
-          label="Public page URL"
+          label={t.agent.monitors.form.urlLabel}
           value={url}
           onChangeText={setUrl}
           autoCapitalize="none"
-          placeholder="https://example.com/product"
+          placeholder={t.agent.monitors.form.urlPlaceholder}
         />
       )}
-      <Text style={[s.small, { marginBottom: 10 }]}>Notify me when</Text>
+      <Text style={[s.small, { marginBottom: 10 }]}>{t.agent.monitors.form.notifyWhen}</Text>
       <View style={[s.row, { gap: 7, flexWrap: "wrap", marginBottom: 16 }]}>
         {(["change", "contains", "price_below"] as const).map((item) => (
           <Button small primary={condition === item} key={item} onPress={() => setCondition(item)}>
             {item === "change"
-              ? "Page changes"
+              ? t.agent.monitors.form.conditionChange
               : item === "contains"
-                ? "Text appears"
-                : "Price drops below"}
+                ? t.agent.monitors.form.conditionContains
+                : t.agent.monitors.form.conditionPriceBelow}
           </Button>
         ))}
       </View>
       {condition !== "change" && (
         <Field
-          label={condition === "contains" ? "Text to look for" : "Target price"}
+          label={
+            condition === "contains"
+              ? t.agent.monitors.form.textLabel
+              : t.agent.monitors.form.priceLabel
+          }
           value={value}
           onChangeText={setValue}
         />
       )}
       <Field
-        label="Check every (minutes)"
+        label={t.agent.monitors.form.intervalLabel}
         value={interval}
         onChangeText={setInterval}
         keyboardType="number-pad"
       />
       <Text style={[s.small, { marginBottom: 14 }]}>
         {sample
-          ? "Changes to this built-in page stay in your workspace."
-          : "OpenMuse checks this public page on the server and saves meaningful changes in Notifications."}
+          ? t.agent.monitors.form.sampleHint
+          : t.agent.monitors.form.serverHint(t.common.product)}
       </Text>
       <ErrorNotice error={error} />
       <Button
@@ -1191,7 +1180,7 @@ function MonitorForm({ onDone }: { onDone: () => void }) {
         }
         onPress={() => void save()}
       >
-        Start tracking
+        {t.agent.monitors.form.submit}
       </Button>
     </Card>
   );
@@ -1216,7 +1205,7 @@ function MonitorCard({ monitor, onOpenTask }: { monitor: Monitor; onOpenTask?: (
     setError("");
     try {
       await mutate("/sample-page", {
-        text: `Availability: a table is available. Updated ${new Date().toISOString()}`,
+        text: t.agent.monitors.card.sampleText(new Date().toISOString()),
       });
       await mutate(`/monitors/${monitor.id}/control`, { action: "check" });
     } catch (e) {
@@ -1232,21 +1221,23 @@ function MonitorCard({ monitor, onOpenTask }: { monitor: Monitor; onOpenTask?: (
         <Chip tint={colors.sky}>{statusLabel(monitor.status)}</Chip>
       </View>
       <Text selectable style={s.small}>
-        {monitor.url.startsWith("sample:") ? "Built-in availability page" : monitor.url}
+        {monitor.url.startsWith("sample:") ? t.agent.monitors.card.samplePage : monitor.url}
       </Text>
       <Text style={s.text}>
         {monitor.condition === "change"
-          ? "Watch for a page change"
+          ? t.agent.monitors.card.watchChange
           : monitor.condition === "contains"
-            ? `Watch for “${monitor.value}”`
-            : `Price below ${monitor.value}`}
+            ? t.agent.monitors.card.watchContains(monitor.value)
+            : t.agent.monitors.card.priceBelow(monitor.value)}
       </Text>
       <Text style={s.small}>
-        Every {monitor.intervalMinutes} min · {monitor.checks} checks
+        {t.agent.monitors.card.schedule(monitor.intervalMinutes, monitor.checks)}
       </Text>
       <Text style={s.small}>
-        Last check: {stamp(monitor.lastCheckedAt)}
-        {monitor.status === "active" ? `\nNext check: ${stamp(monitor.nextCheckAt)}` : ""}
+        {t.agent.monitors.card.lastCheck(stamp(monitor.lastCheckedAt))}
+        {monitor.status === "active"
+          ? `\n${t.agent.monitors.card.nextCheck(stamp(monitor.nextCheckAt))}`
+          : ""}
       </Text>
       {!!monitor.lastValue && (
         <Text selectable numberOfLines={5} style={s.muted}>
@@ -1261,19 +1252,21 @@ function MonitorCard({ monitor, onOpenTask }: { monitor: Monitor; onOpenTask?: (
             busy={busy}
             onPress={() => void act(monitor.status === "active" ? "pause" : "resume")}
           >
-            {monitor.status === "active" ? "Pause" : "Resume"}
+            {monitor.status === "active"
+              ? t.agent.monitors.card.pause
+              : t.agent.monitors.card.resume}
           </Button>
           <Button small busy={busy} onPress={() => void act("check")}>
-            Check now
+            {t.agent.monitors.card.checkNow}
           </Button>
           <Button small danger busy={busy} onPress={() => void act("stop")}>
-            Stop tracking
+            {t.agent.monitors.card.stop}
           </Button>
         </View>
       )}
       {monitor.url.startsWith("sample:") && monitor.status !== "stopped" && (
         <Button small busy={busy} onPress={() => void changeSample()}>
-          Change availability
+          {t.agent.monitors.card.changeSample}
         </Button>
       )}
       <TaskLink taskId={monitor.taskId} onOpen={onOpenTask} />
@@ -1294,8 +1287,8 @@ export function NotificationsSheet() {
   }
   return (
     <Sheet
-      title="Notifications"
-      subtitle="Results and decisions that need your attention."
+      title={t.agent.notifications.title}
+      subtitle={t.agent.notifications.subtitle}
       onClose={close}
     >
       <View style={{ gap: 14 }}>
@@ -1307,20 +1300,24 @@ export function NotificationsSheet() {
           >
             <View style={s.between}>
               <Text style={s.heading}>{item.title}</Text>
-              {!item.read && <Chip>New</Chip>}
+              {!item.read && <Chip>{t.agent.notifications.newChip}</Chip>}
             </View>
             <Text style={s.muted}>{item.body}</Text>
             <Text style={s.small}>{stamp(item.createdAt)}</Text>
             <Button small onPress={() => void read(item.id, item.taskId)}>
-              {item.taskId ? "View task" : item.read ? "Read" : "Mark read"}
+              {item.taskId
+                ? t.agent.notifications.viewTask
+                : item.read
+                  ? t.agent.notifications.read
+                  : t.agent.notifications.markRead}
             </Button>
           </Card>
         ))}
         {!data?.notifications.length && (
           <Empty
             icon={Bell}
-            title="You're all caught up"
-            detail="Results, meaningful changes and requests for your input will appear here."
+            title={t.agent.notifications.emptyTitle}
+            detail={t.agent.notifications.emptyDetail}
           />
         )}
       </View>
@@ -1331,7 +1328,7 @@ export function AppsScreen() {
   const { data, mutate } = useAgentWorkspace();
   const [query, setQuery] = useState("");
   const [settings, setSettings] = useState(false);
-  const [name, setName] = useState(data?.identity.name || "OpenMuse");
+  const [name, setName] = useState(data?.identity.name || t.common.agentName);
   const [tone, setTone] = useState(data?.identity.tone || "warm");
   const [avatar, setAvatar] = useState(data?.identity.avatar || "sky");
   const [showChatUpdates, setShowChatUpdates] = useState(data?.identity.showChatUpdates !== false);
@@ -1367,25 +1364,25 @@ export function AppsScreen() {
     <View style={{ gap: 22 }}>
       <AgentStatus />
       <Field
-        label="Search apps"
+        label={t.agent.apps.searchLabel}
         value={query}
         onChangeText={setQuery}
-        placeholder="Search connectors"
+        placeholder={t.agent.apps.searchPlaceholder}
       />
       <ConnectionsScreen query={query} />
       <Button onPress={() => setSettings(!settings)}>
-        {settings ? "Close agent settings" : "Personality & memory"}
+        {settings ? t.agent.apps.closeSettings : t.agent.apps.personality}
       </Button>
       {settings && (
         <>
           <Card style={{ gap: 10 }}>
-            <SectionHeading title="Your agent" />
+            <SectionHeading title={t.agent.apps.yourAgent} />
             <View style={[s.row, { gap: 16, justifyContent: "center", marginBottom: 12 }]}>
               {(["sky", "sand", "lilac"] as const).map((item) => (
                 <Pressable
                   key={item}
                   accessibilityRole="radio"
-                  accessibilityLabel={`${statusLabel(item)} avatar`}
+                  accessibilityLabel={t.agent.apps.avatarLabel(t.agent.apps.avatars[item])}
                   accessibilityState={{ checked: avatar === item }}
                   onPress={() => setAvatar(item)}
                   style={{
@@ -1398,23 +1395,20 @@ export function AppsScreen() {
                 </Pressable>
               ))}
             </View>
-            <Field label="Name" value={name} onChangeText={setName} />
+            <Field label={t.agent.apps.nameLabel} value={name} onChangeText={setName} />
             <View style={[s.row, { gap: 8 }]}>
               {(["warm", "concise", "thoughtful"] as const).map((item) => (
                 <Button key={item} small primary={tone === item} onPress={() => setTone(item)}>
-                  {statusLabel(item)}
+                  {t.agent.apps.tones[item]}
                 </Button>
               ))}
             </View>
             <CheckRow
-              label="Show background updates in chat"
+              label={t.agent.apps.showChatUpdates}
               checked={showChatUpdates}
               onPress={() => setShowChatUpdates(!showChatUpdates)}
             />
-            <Text style={s.small}>
-              Activity and notifications always keep the full record, including requests for
-              approval.
-            </Text>
+            <Text style={s.small}>{t.agent.apps.recordHint}</Text>
             <Button
               busy={busy}
               disabled={!name.trim()}
@@ -1422,29 +1416,29 @@ export function AppsScreen() {
                 void save("/identity", { name: name.trim(), tone, avatar, showChatUpdates })
               }
             >
-              Save preferences
+              {t.agent.apps.savePreferences}
             </Button>
           </Card>
           <Card style={{ gap: 12 }}>
-            <SectionHeading title="Memory" />
-            <Text style={s.muted}>Context you can inspect, correct or forget.</Text>
+            <SectionHeading title={t.agent.apps.memoryHeading} />
+            <Text style={s.muted}>{t.agent.apps.memoryHint}</Text>
             {data?.memories.map((item) => (
               <MemoryRow key={item.id} memory={item} />
             ))}
             <Field
-              label="Remember something about me"
+              label={t.agent.apps.rememberLabel}
               value={memory}
               onChangeText={setMemory}
-              placeholder="I prefer morning meetings"
+              placeholder={t.agent.apps.rememberPlaceholder}
             />
             <Button
               busy={busy}
               disabled={!memory.trim()}
               onPress={() =>
-                void save("/memories", { text: memory.trim(), source: "User added in Apps" })
+                void save("/memories", { text: memory.trim(), source: t.agent.apps.memorySource })
               }
             >
-              Remember
+              {t.agent.apps.remember}
             </Button>
           </Card>
         </>
@@ -1476,7 +1470,7 @@ function MemoryRow({ memory }: { memory: AgentMemory }) {
       style={{ gap: 8, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}
     >
       {editing ? (
-        <Field label="Memory" value={text} onChangeText={setText} />
+        <Field label={t.agent.memoryRow.label} value={text} onChangeText={setText} />
       ) : (
         <Text style={s.text}>{memory.text}</Text>
       )}
@@ -1486,15 +1480,15 @@ function MemoryRow({ memory }: { memory: AgentMemory }) {
       <View style={[s.row, { gap: 8 }]}>
         {editing ? (
           <Button small busy={busy} disabled={!text.trim()} onPress={() => void act(false)}>
-            Save correction
+            {t.agent.memoryRow.saveCorrection}
           </Button>
         ) : (
           <Button small onPress={() => setEditing(true)}>
-            Edit
+            {t.common.edit}
           </Button>
         )}
         <Button small danger busy={busy} onPress={() => void act(true)}>
-          Forget
+          {t.agent.memoryRow.forget}
         </Button>
       </View>
       <ErrorNotice error={error} />

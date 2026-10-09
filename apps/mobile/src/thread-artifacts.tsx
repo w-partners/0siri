@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { View } from "react-native";
 import type { AgentArtifact, AgentTask } from "../../../packages/domain/src/agent";
 import { ArtifactCard, TaskCard } from "./agent-ui";
+import { t } from "./strings";
 import { Button, ErrorNotice } from "./ui";
 import { useWorkspace } from "./workspace";
 
@@ -37,7 +38,7 @@ export function TaskThreadCard({ task }: { task: AgentTask }) {
       <ErrorNotice error={error} />
       {!!error && (
         <Button small onPress={() => setAttempt((value) => value + 1)}>
-          Reload task results
+          {t.tools.taskThread.reload}
         </Button>
       )}
     </View>

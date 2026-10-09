@@ -12,6 +12,7 @@ import {
 } from "lucide-react-native";
 import { useState } from "react";
 import { Linking, Pressable, Text, View } from "react-native";
+import { t } from "./strings";
 import {
   Button,
   Card,
@@ -38,15 +39,15 @@ export function ActivityScreen() {
     <View style={{ gap: 20 }}>
       <View style={[s.row, { gap: 10 }]}>
         <Button small primary={filter === "all"} onPress={() => setFilter("all")}>
-          All activity
+          {t.screens.activity.allActivity}
         </Button>
         <Button small primary={filter === "review"} onPress={() => setFilter("review")}>
-          Needs review · {pending.length}
+          {t.screens.activity.needsReview(pending.length)}
         </Button>
       </View>
       {actions.length > 0 && (
         <Card>
-          <SectionHeading title="Your actions" />
+          <SectionHeading title={t.screens.activity.yourActions} />
           {actions.map((a) => (
             <Pressable
               key={a.id}
@@ -84,7 +85,7 @@ export function ActivityScreen() {
                       : colors.canvas
                 }
               >
-                {a.status.replace(/_/g, " ")}
+                {t.details.statusLabel(a.status)}
               </Chip>
               <ChevronRight size={16} color={colors.muted} />
             </Pressable>
@@ -93,7 +94,7 @@ export function ActivityScreen() {
       )}
       {filter === "all" && (
         <Card>
-          <SectionHeading title="Workspace timeline" />
+          <SectionHeading title={t.screens.activity.timeline} />
           {w.activity.length ? (
             w.activity.map((a, i) => (
               <View
@@ -121,14 +122,14 @@ export function ActivityScreen() {
                     {dateLabel(a.date)} · {timeLabel(a.date)}
                   </Text>
                 </View>
-                <Chip>{a.status}</Chip>
+                <Chip>{t.details.statusLabel(a.status)}</Chip>
               </View>
             ))
           ) : (
             <Empty
               icon={Clock3}
-              title="The beginning of something lighter"
-              detail="Your actions and their results will be recorded here."
+              title={t.screens.activity.emptyTitle}
+              detail={t.screens.activity.emptyDetail}
             />
           )}
         </Card>
@@ -137,8 +138,8 @@ export function ActivityScreen() {
         <Card>
           <Empty
             icon={ShieldCheck}
-            title="You’re all caught up"
-            detail="When an email or calendar change needs your approval, it will appear here."
+            title={t.screens.activity.caughtUpTitle}
+            detail={t.screens.activity.caughtUpDetail}
           />
         </Card>
       )}
@@ -160,10 +161,10 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
       );
       if (result.url) {
         await Linking.openURL(result.url);
-        notify("Finish connecting in your browser, then refresh your workspace.");
+        notify(t.screens.connections.finishInBrowser);
       } else {
         await refresh();
-        notify("Local Google data is ready.");
+        notify(t.screens.connections.localGoogleReady);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -177,7 +178,7 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
     try {
       await api.request("/api/google/disconnect", {});
       await refresh();
-      notify("Google disconnected.");
+      notify(t.screens.connections.googleDisconnected);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -198,7 +199,7 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
     },
     {
       id: "browser",
-      name: "Agent computer",
+      name: t.screens.connections.agentComputer,
       icon: Globe2,
       color: "#1987CF",
       connected: w.connections.some((c) => c.id === "browser" && c.status === "connected"),
@@ -223,16 +224,16 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
             <Text style={[s.small, { marginLeft: 12 }]}>
               {isConnected
                 ? w.mode === "sample"
-                  ? "Your connections"
-                  : "Connected"
-                : "Available integrations"}
+                  ? t.screens.connections.yourConnections
+                  : t.screens.connections.connected
+                : t.screens.connections.available}
             </Text>
             <View style={{ paddingHorizontal: 16, borderRadius: 23, backgroundColor: "#F3F4F5" }}>
               {group.map((row, index) => (
                 <Pressable
                   key={row.id}
                   accessibilityRole="button"
-                  accessibilityLabel={`Manage ${row.name}`}
+                  accessibilityLabel={t.screens.connections.manage(row.name)}
                   onPress={() => setSelected(row.group)}
                   style={[
                     s.row,
@@ -258,7 +259,7 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
                   </View>
                   <Text style={[s.text, { flex: 1 }]}>{row.name}</Text>
                   {row.connected && row.group === "google" && w.mode === "sample" && (
-                    <Text style={s.small}>Local data</Text>
+                    <Text style={s.small}>{t.screens.connections.localData}</Text>
                   )}
                   {row.connected ? (
                     <ChevronRight size={18} color="#A4A7AA" />
@@ -269,7 +270,9 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
                         color: row.group === "google" ? colors.blueDark : colors.muted,
                       }}
                     >
-                      {row.group === "google" ? "Connect" : "Setup"}
+                      {row.group === "google"
+                        ? t.screens.connections.connect
+                        : t.screens.connections.setup}
                     </Text>
                   )}
                 </Pressable>
@@ -278,19 +281,16 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
           </View>
         );
       })}
-      {!rows.length && <Text style={s.muted}>No matching connectors.</Text>}
+      {!rows.length && <Text style={s.muted}>{t.screens.connections.noMatch}</Text>}
       {selected && (
         <Sheet
-          title={selected === "google" ? "Google connections" : "OpenBot"}
-          subtitle={selected === "google" ? google?.account : "A computer for your agent"}
+          title={selected === "google" ? t.screens.connections.googleTitle : "OpenBot"}
+          subtitle={selected === "google" ? google?.account : t.screens.connections.openBotSubtitle}
           onClose={() => setSelected(undefined)}
         >
           {selected === "google" ? (
             <View style={{ gap: 18 }}>
-              <Text style={s.muted}>
-                Bring Gmail and Google Calendar into your conversations. Choose read access, then
-                enable sending and editing when you need it.
-              </Text>
+              <Text style={s.muted}>{t.screens.connections.googleIntro}</Text>
               <View style={[s.row, { gap: 7, flexWrap: "wrap" }]}>
                 {google?.capabilities.map((cap) => (
                   <Chip key={cap}>{capabilityLabel(cap)}</Chip>
@@ -298,52 +298,54 @@ export function ConnectionsScreen({ query = "" }: { query?: string }) {
               </View>
               <ErrorNotice error={error} />
               <Button busy={busy} primary icon={Link2} onPress={() => void connect("read")}>
-                Connect Google
+                {t.screens.connections.connectGoogle}
               </Button>
               <Button busy={busy} onPress={() => void connect("write")}>
-                Enable sending & editing
+                {t.screens.connections.enableWrite}
               </Button>
               {connected && (
                 <Button busy={busy} danger onPress={() => void disconnect()}>
-                  Disconnect Google
+                  {t.screens.connections.disconnectGoogle}
                 </Button>
               )}
               <SettingsLine
-                label="Environment"
-                value={w.mode === "sample" ? "Local · example data" : "Live workspace"}
-              />
-              <SettingsLine
-                label="Assistant"
+                label={t.screens.connections.environment}
                 value={
-                  w.runtime.provider === "sample"
-                    ? "Guided workflows"
-                    : w.runtime.configured
-                      ? "Model connected"
-                      : "Model not configured"
+                  w.mode === "sample"
+                    ? t.screens.connections.envSample
+                    : t.screens.connections.envLive
                 }
               />
               <SettingsLine
-                label="Rich Threads"
-                value={w.runtime.richThreads ? "CopilotKit Intelligence" : "Not connected"}
+                label={t.screens.connections.assistant}
+                value={
+                  w.runtime.provider === "sample"
+                    ? t.screens.connections.assistantGuided
+                    : w.runtime.configured
+                      ? t.screens.connections.assistantConnected
+                      : t.screens.connections.assistantMissing
+                }
+              />
+              <SettingsLine
+                label={t.screens.connections.richThreads}
+                value={
+                  w.runtime.richThreads
+                    ? t.screens.connections.richThreadsOn
+                    : t.screens.connections.richThreadsOff
+                }
               />
               <Button
                 small
                 icon={ArrowDownToLine}
                 onPress={() => void refresh().catch((e) => setError(String(e)))}
               >
-                Refresh connections
+                {t.screens.connections.refresh}
               </Button>
             </View>
           ) : (
             <View style={{ gap: 14 }}>
-              <Text style={s.text}>
-                The OpenBot adapter is available in this open-source project. A live OpenBot backend
-                has not been configured.
-              </Text>
-              <Text style={s.muted}>
-                Your current computer uses OpenMuse’s persistent Chromium worker. OpenBot
-                integration will expand the execution backend while keeping this interface.
-              </Text>
+              <Text style={s.text}>{t.screens.connections.openBotNotice}</Text>
+              <Text style={s.muted}>{t.screens.connections.openBotDetail}</Text>
             </View>
           )}
         </Sheet>
@@ -367,13 +369,6 @@ function SettingsLine({ label, value }: { label: string; value: string }) {
 
 function capabilityLabel(value: string) {
   const scope = value.split("/").at(-1) || value;
-  const names: Record<string, string> = {
-    "gmail.readonly": "Read Gmail",
-    "gmail.send": "Send Gmail",
-    "calendar.events.readonly": "Read calendar events",
-    "calendar.calendarlist.readonly": "Read calendar list",
-    "calendar.events": "Manage calendar events",
-    "calendar.readonly": "Read calendars",
-  };
+  const names: Record<string, string> = t.screens.capability;
   return names[scope] || scope;
 }

@@ -28,28 +28,18 @@ import { AgentWorkspaceProvider, useAgentWorkspace } from "./src/agent-workspace
 import { API_URL, createSession, MuseApi } from "./src/api";
 import { ChatScreen, WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
+import { t } from "./src/strings";
 import { ThreadsProvider, ThreadsSheet, useMuseThread } from "./src/threads";
 import { Button, Card, colors, ErrorNotice, Field, IconButton, Mascot, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
 const nav: { id: Section; label: string; icon: LucideIcon }[] = [
-  { id: "chat", label: "Chat", icon: MessageCircle },
-  { id: "activity", label: "Activity", icon: PanelsTopLeft },
-  { id: "goals", label: "Goals", icon: SquareCheck },
-  { id: "apps", label: "Apps", icon: Shapes },
+  { id: "chat", label: t.app.nav.chat, icon: MessageCircle },
+  { id: "activity", label: t.app.nav.activity, icon: PanelsTopLeft },
+  { id: "goals", label: t.app.nav.goals, icon: SquareCheck },
+  { id: "apps", label: t.app.nav.apps, icon: Shapes },
 ];
-const titles: Partial<Record<Section, { title: string; subtitle: string }>> = {
-  activity: { title: "Activity", subtitle: "Plans, progress, decisions and results." },
-  goals: {
-    title: "Goals",
-    subtitle: "Longer-term goals and things to keep an eye on.",
-  },
-  apps: {
-    title: "Apps",
-    subtitle: "Connections, capabilities and what your agent remembers.",
-  },
-  connections: { title: "Apps", subtitle: "Connections and capabilities." },
-};
+const titles: Partial<Record<Section, { title: string; subtitle: string }>> = t.app.titles;
 export default function App() {
   const [token, setToken] = useState("");
   const [accessKey, setAccessKey] = useState("");
@@ -95,28 +85,25 @@ export default function App() {
             <Text
               style={{ fontSize: 32, color: colors.text, letterSpacing: -1, fontWeight: "500" }}
             >
-              Welcome to OpenMuse.
+              {t.app.login.welcome}
             </Text>
-            <Text style={[s.muted, { textAlign: "center" }]}>A little room for your day.</Text>
+            <Text style={[s.muted, { textAlign: "center" }]}>{t.app.login.tagline}</Text>
             {busy ? (
               <ActivityIndicator color={colors.blueDark} />
             ) : (
               <Card style={{ width: "100%" }}>
                 <ErrorNotice error={error} />
                 <Field
-                  label="Workspace access key"
+                  label={t.app.login.accessKey}
                   value={accessKey}
                   onChangeText={setAccessKey}
                   secureTextEntry
-                  placeholder="Required for a live workspace"
+                  placeholder={t.app.login.accessKeyPlaceholder}
                 />
                 <Button primary onPress={() => void connect(accessKey || undefined)}>
-                  Open workspace
+                  {t.app.login.open}
                 </Button>
-                <Text style={[s.small, { marginTop: 15 }]}>
-                  Local workspaces open without a key. Make sure your OpenMuse server is running at{" "}
-                  {API_URL}.
-                </Text>
+                <Text style={[s.small, { marginTop: 15 }]}>{t.app.login.hint(API_URL)}</Text>
               </Card>
             )}
           </View>
@@ -179,13 +166,13 @@ function WorkspaceApp({ token }: { token: string }) {
           <>
             <ErrorNotice error={error} />
             <Button onPress={() => void refresh().catch((e) => setError(String(e)))}>
-              Try again
+              {t.common.retry}
             </Button>
           </>
         ) : (
           <>
             <ActivityIndicator color={colors.blueDark} />
-            <Text style={s.muted}>Opening your workspace…</Text>
+            <Text style={s.muted}>{t.app.loading.opening}</Text>
           </>
         )}
       </SafeAreaView>
@@ -242,16 +229,16 @@ function WorkspaceShell({
     data?.tasks.find(
       (task) => task.status === "waiting_approval" || task.status === "waiting_input",
     ) || data?.tasks.find((task) => task.status === "running");
-  const agentName = data?.identity.name || "OpenMuse";
+  const agentName = data?.identity.name || t.common.agentName;
   const status = activeTask
     ? activeTask.status === "waiting_approval"
-      ? `Ready to review · ${activeTask.title}`
+      ? t.app.status.readyToReview(activeTask.title)
       : activeTask.status === "waiting_input"
-        ? `Needs your input · ${activeTask.title}`
+        ? t.app.status.needsInput(activeTask.title)
         : activeTask.plan.find((step) => step.status === "running")?.title || activeTask.title
     : data?.tasks.some((task) => task.status === "queued")
-      ? "Picking up your next task…"
-      : "Here when you need me";
+      ? t.app.status.pickingUp
+      : t.app.status.idle;
   const title = titles[section] || titles.apps;
   const Screen =
     section === "activity" ? AgentActivityScreen : section === "goals" ? GoalsScreen : AppsScreen;
@@ -270,14 +257,14 @@ function WorkspaceShell({
             <View style={{ position: "absolute", left: 0, top: 16 }}>
               <IconButton
                 icon={Menu}
-                label="Open conversations and menu"
+                label={t.app.a11y.openMenu}
                 onPress={() => setThreadsOpen(true)}
               />
             </View>
             <View pointerEvents="box-none" style={{ alignItems: "center", gap: 1 }}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Open ${agentName} activity and approvals`}
+                accessibilityLabel={t.app.a11y.openActivity(agentName)}
                 onPress={() => navigate("activity")}
                 style={({ pressed }) => ({
                   alignItems: "center",
@@ -307,7 +294,7 @@ function WorkspaceShell({
             <View style={{ position: "absolute", right: 0, top: 16 }}>
               <IconButton
                 icon={Bell}
-                label={`Notifications, ${pending} unread or pending`}
+                label={t.app.a11y.notifications(pending)}
                 onPress={() => open({ type: "notifications" })}
               />
               {pending > 0 && (
@@ -351,13 +338,13 @@ function WorkspaceShell({
                 <>
                   <ErrorNotice error={threadsError} />
                   {threadsError ? (
-                    <Button onPress={retryThreads}>Retry main chat</Button>
+                    <Button onPress={retryThreads}>{t.threads.sheet.retryMain}</Button>
                   ) : threadsLoading ? (
                     <ActivityIndicator color={colors.blueDark} />
                   ) : null}
                   {!threadsLoading && selection.id !== mainId && (
                     <Text style={[s.small, { textAlign: "center", marginBottom: 8 }]}>
-                      Side chat
+                      {t.app.chat.sideChat}
                     </Text>
                   )}
                   {visited.map((thread) => (
@@ -449,7 +436,7 @@ function WorkspaceShell({
               <Text style={{ color: "#FFF", fontSize: 13, flexShrink: 1 }}>{toast}</Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Dismiss notification"
+                accessibilityLabel={t.app.a11y.dismissToast}
                 onPress={clearToast}
               >
                 <X size={16} color="#FFF" />

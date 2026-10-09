@@ -2,6 +2,7 @@ import { Search } from "lucide-react-native";
 import { useState } from "react";
 import { ActivityIndicator, Linking, Text, View } from "react-native";
 import { z } from "zod";
+import { t } from "./strings";
 import { Card, colors, ErrorNotice, s } from "./ui";
 
 const resultSchema = z.object({
@@ -26,7 +27,7 @@ export function SearchToolCard({ result, loading }: { result: unknown; loading: 
   const failure = error.success
     ? error.data.error
     : !loading && !parsed.success
-      ? "Search did not return readable results."
+      ? t.tools.search.unreadable
       : "";
   const sources = parsed.success
     ? [...new Map(parsed.data.results.map((source) => [source.url, source])).values()]
@@ -44,14 +45,14 @@ export function SearchToolCard({ result, loading }: { result: unknown; loading: 
         )}
         <Text style={s.text}>
           {failure
-            ? "Search failed"
+            ? t.tools.search.failed
             : working
-              ? "Searching the web…"
+              ? t.tools.search.searching
               : loading
-                ? "Search stopped"
+                ? t.tools.search.stopped
                 : count
-                  ? `Found ${count} ${count === 1 ? "source" : "sources"}`
-                  : "No sources found"}
+                  ? t.tools.search.found(count)
+                  : t.tools.search.none}
         </Text>
       </View>
       {!loading && parsed.success && (
@@ -64,16 +65,14 @@ export function SearchToolCard({ result, loading }: { result: unknown; loading: 
               onPress={() => {
                 setLinkError("");
                 void Linking.openURL(source.url).catch(() =>
-                  setLinkError("Could not open this source."),
+                  setLinkError(t.tools.search.openFailed),
                 );
               }}
             >
               {source.title || source.url}
             </Text>
           ))}
-          {parsed.data.truncated && (
-            <Text style={s.small}>Some search results or excerpts were omitted.</Text>
-          )}
+          {parsed.data.truncated && <Text style={s.small}>{t.tools.search.truncated}</Text>}
           {[...new Set(parsed.data.warnings)].map((warning) => (
             <Text key={warning} style={s.small}>
               {warning}

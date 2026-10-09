@@ -1,3 +1,5 @@
+import { t } from "./strings";
+
 /**
  * Read an API response without assuming every route answers with JSON.
  * Plain-text 404s, proxy HTML pages and empty bodies must not surface as
@@ -15,10 +17,9 @@ export async function readApiPayload<T>(response: Response, fallback?: string): 
     const error =
       payload && typeof payload === "object" ? (payload as { error?: unknown }).error : undefined;
     throw new Error(
-      typeof error === "string" ? error : (fallback ?? `Request failed (${response.status})`),
+      typeof error === "string" ? error : (fallback ?? t.app.api.requestFailed(response.status)),
     );
   }
-  if (payload === undefined)
-    throw new Error(`The server returned an unreadable response (${response.status}).`);
+  if (payload === undefined) throw new Error(t.app.api.unreadable(response.status));
   return payload as T;
 }

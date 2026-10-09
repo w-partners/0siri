@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import type { ActionProposal } from "../../../packages/domain/src";
 import { DelegateSheet, NotificationsSheet, TaskDetail } from "./agent-ui";
+import { t } from "./strings";
 import { Button, Card, Chip, colors, ErrorNotice, LinkRow, resultSummary, Sheet, s } from "./ui";
 import { type Detail, useWorkspace } from "./workspace";
 export function Details({ detail }: { detail: Detail }) {
@@ -19,10 +20,10 @@ export function Details({ detail }: { detail: Detail }) {
   if (detail.type === "notifications") return <NotificationsSheet />;
   if (detail.type === "review") return <ReviewDetail initial={detail.action} />;
   return (
-    <Sheet title="Your workspace" subtitle="A little room for everything." onClose={close}>
+    <Sheet title={t.details.menu.title} subtitle={t.details.menu.subtitle} onClose={close}>
       {[
-        { section: "activity" as const, title: "Activity", icon: Clock3 },
-        { section: "connections" as const, title: "Connections", icon: ShieldCheck },
+        { section: "activity" as const, title: t.details.menu.activity, icon: Clock3 },
+        { section: "connections" as const, title: t.details.menu.connections, icon: ShieldCheck },
       ].map((item) => (
         <LinkRow
           key={item.section}
@@ -65,11 +66,9 @@ function ReviewDetail({ initial }: { initial: ActionProposal }) {
   const rows = Object.entries(d).filter(([, value]) => value !== undefined && value !== null);
   return (
     <Sheet
-      title={pending ? "One last look" : action.title}
+      title={pending ? t.details.review.title : action.title}
       subtitle={
-        w.mode === "sample"
-          ? "This action stays in your local workspace."
-          : "Review this exact action before it changes your connected account."
+        w.mode === "sample" ? t.details.review.subtitleSample : t.details.review.subtitleLive
       }
       onClose={close}
     >
@@ -82,15 +81,15 @@ function ReviewDetail({ initial }: { initial: ActionProposal }) {
           <Text style={s.small}>{action.kind.replace(".", " · ")}</Text>
         </View>
         <Chip tint={pending ? colors.lavender : colors.green}>
-          {action.status.replace(/_/g, " ")}
+          {t.details.statusLabel(action.status)}
         </Chip>
       </View>
       <Card style={{ gap: 13 }}>
-        <ReviewLine label="Account" value={action.account || w.profile.email} />
+        <ReviewLine label={t.details.review.account} value={action.account || w.profile.email} />
         {rows.map(([key, value]) => (
           <ReviewLine key={key} label={key.replace(/_/g, " ")} value={valueText(value)} />
         ))}
-        {!rows.length && <Text style={s.muted}>No details</Text>}
+        {!rows.length && <Text style={s.muted}>{t.details.review.noDetails}</Text>}
       </Card>
       <ErrorNotice error={error || action.error} />
       {!!action.result && (
@@ -103,29 +102,29 @@ function ReviewDetail({ initial }: { initial: ActionProposal }) {
       {pending ? (
         <>
           <Text style={[s.small, { marginVertical: 17 }]}>
-            Review expires{" "}
-            {new Date(action.expiresAt).toLocaleString(undefined, {
-              year: "numeric",
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-              timeZoneName: "short",
-            })}
-            . Your approval applies only to the details shown above.
+            {t.details.review.expires(
+              new Date(action.expiresAt).toLocaleString("ko-KR", {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                timeZoneName: "short",
+              }),
+            )}
           </Text>
           <View style={[s.row, { gap: 10, flexWrap: "wrap" }]}>
             <Button primary icon={Check} busy={busy} onPress={() => void decide("approve")}>
-              {w.mode === "sample" ? "Approve locally" : "Approve"}
+              {w.mode === "sample" ? t.details.review.approveLocally : t.details.review.approve}
             </Button>
             <Button icon={X} disabled={busy} onPress={() => void decide("deny")}>
-              Don’t proceed
+              {t.details.review.deny}
             </Button>
           </View>
         </>
       ) : (
         <Button style={{ alignSelf: "flex-start", marginTop: 19 }} onPress={close}>
-          Done
+          {t.common.done}
         </Button>
       )}
     </Sheet>
@@ -134,7 +133,7 @@ function ReviewDetail({ initial }: { initial: ActionProposal }) {
 function valueText(value: unknown): string {
   if (Array.isArray(value)) return value.map(valueText).join(", ");
   if (value && typeof value === "object") return JSON.stringify(value);
-  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "boolean") return value ? t.common.yes : t.common.no;
   return String(value ?? "");
 }
 function ReviewLine({ label, value }: { label: string; value: string }) {
