@@ -63,6 +63,11 @@ export interface OperatorMetrics {
   approvalRate: number | null; // 0~100
   topRejectReason: string | null;
   citations: number | null;
+  /** 카나리 배포 중인 버전이 올라온 뒤의 승인율이 그 전보다 낮다 — 확대 중단·롤백을 권한다. 견줄 자료가 없으면 false */
+  degraded: boolean;
+  /** `degraded` 의 근거: 카나리 시작 뒤 / 그 전 승인율(0~100). 결재가 없던 쪽은 null */
+  canaryApprovalRate: number | null;
+  previousApprovalRate: number | null;
 }
 interface PackageOperators {
   id: string; // packageId
@@ -423,15 +428,31 @@ export class Operator {
     let rejected = 0;
     let citations: number | null = null;
     const reasons = new Map<RejectReasonKind, number>();
+    // 카나리 배포 중인 버전(가장 최신)이 올라온 시각으로 결재를 앞뒤로 가른다
+    const canarySince = (await this.versionsStored(packageId))
+      .filter((v) => v.status === "canary" && v.canary.stage !== "stopped")
+      .sort(byVersionDesc)[0]?.createdAt;
+    const split = { before: { approved: 0, decided: 0 }, after: { approved: 0, decided: 0 } };
+    const tally = (approval: Approval, ok: boolean) => {
+      if (!canarySince || !approval.decidedAt) return;
+      const side = approval.decidedAt >= canarySince ? split.after : split.before;
+      side.decided++;
+      if (ok) side.approved++;
+    };
+    const rate = (side: { approved: number; decided: number }) =>
+      side.decided ? Math.round((side.approved / side.decided) * 100) : null;
     for (const { owner, roomId } of await this.subscribers(packageId)) {
       const [approvals, goals] = await Promise.all([
         this.db.listByField<Approval>(owner, "approvals", "roomId", roomId),
         this.rooms.goals(owner, roomId),
       ]);
       for (const approval of approvals) {
-        if (approval.status === "approved" || approval.status === "consumed") approved++;
-        else if (approval.status === "rejected") {
+        if (approval.status === "approved" || approval.status === "consumed") {
+          approved++;
+          tally(approval, true);
+        } else if (approval.status === "rejected") {
           rejected++;
+          tally(approval, false);
           // 사유는 종류(톤·사실·주제)로만 센다 — 사용자가 쓴 반려 문장은 운영자에게 가지 않는다
           if (approval.reasonKind)
             reasons.set(approval.reasonKind, (reasons.get(approval.reasonKind) ?? 0) + 1);
@@ -444,10 +465,18 @@ export class Operator {
     }
     const decided = approved + rejected;
     const top = [...reasons].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+    const canaryApprovalRate = rate(split.after);
+    const previousApprovalRate = rate(split.before);
     return {
       approvalRate: decided ? Math.round((approved / decided) * 100) : null,
       topRejectReason: top ? REJECT_REASON_LABELS[top[0]] : null,
       citations,
+      degraded:
+        canaryApprovalRate !== null &&
+        previousApprovalRate !== null &&
+        canaryApprovalRate < previousApprovalRate,
+      canaryApprovalRate,
+      previousApprovalRate,
     };
   }
 

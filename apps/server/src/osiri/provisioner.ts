@@ -179,6 +179,8 @@ export class Provisioner {
     for (const { value: worker } of await this.db.scan<Worker>("workers")) {
       let room: Pick<Room, "archived">;
       try {
+        // 해지 예약의 기간 말이 지났으면 여기서 구독을 닫고 방을 잠근다 — 사용자가 앱을 열지 않아도 워커가 내려가게
+        await this.catalog.mine(worker.userId);
         room = await this.rooms.get(worker.userId, worker.id);
       } catch (error) {
         // 방이 정말 없을 때(404)만 워커를 내린다. DB 오류 같은 다른 실패로 컨테이너를 지우지 않는다

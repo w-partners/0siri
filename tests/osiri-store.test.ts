@@ -189,7 +189,7 @@ test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·�
     0,
   );
 
-  // 해지 → 방 읽기 전용 + 30일 보존 고지
+  // 해지(예약) → 30일 보존 고지. 방은 기간 말까지 그대로 쓴다
   const cancelled = (await (
     await call(`/api/subscriptions/${subscription.id}/cancel`, "user-1", {})
   ).json()) as {
@@ -198,7 +198,8 @@ test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·�
   };
   assert.equal(cancelled.status, "cancelled");
   assert.ok(Date.parse(cancelled.dataRetainedUntil) > Date.now() + 29 * 24 * 3600 * 1000);
-  assert.equal((await rooms.get("user-1", roomId)).archived, true);
-  // 해지 후 재구독 가능
+  assert.notEqual((await rooms.get("user-1", roomId)).archived, true);
+  // 해지 후 재구독 가능 — 새로 시작하면 옛 방은 그때 읽기 전용이 된다
   assert.equal((await call("/api/subscriptions", "user-1", { packageId: detail.id })).status, 200);
+  assert.equal((await rooms.get("user-1", roomId)).archived, true);
 });

@@ -2,9 +2,14 @@
 // 결정(마스터): 로그인은 전화번호 + 비밀번호다 — 카카오·이메일 버튼은 두지 않는다. 캐릭터도 이 화면에는 두지 않는다(첫 팀 고용 뒤부터 등장).
 import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { PASSWORD_MIN } from "../../../../packages/domain/src/osiri";
+import {
+  LOGIN_FAILS_BEFORE_RESET_HINT,
+  PASSWORD_MIN,
+  PASSWORD_RESET_HINT,
+  PERSONAL_TIER_LABEL,
+} from "../../../../packages/domain/src/osiri";
 import type { Accounts, Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
 import type { Room } from "../../../server/src/osiri/rooms.ts";
 import { API_URL, apiBase, type MuseApi, setApiBase } from "../api";
@@ -16,11 +21,12 @@ const text = {
   welcome: "0Siri",
   tagline: "에이전트 팀을 고용하는 플랫폼",
   tiersTitle: "등급 안내",
-  tiers: [
-    { name: "일반 등급", unit: "개인 에이전트", count: 1 },
-    { name: "법률 패키지", unit: "팀", count: 8 },
-  ],
+  // 팀 패키지 줄은 두지 않는다 — 스토어에 입점한 팀이 생기면 그 목록(스토어)이 말한다. 없는 패키지를 여기서 단정하지 않는다
+  tiers: [{ name: PERSONAL_TIER_LABEL, unit: "개인 에이전트", count: 1 }],
   people: "명",
+  inviteLinkFailed: (reason: string) =>
+    `앱을 연 초대 링크를 읽지 못했습니다. 초대 코드를 직접 입력해 주세요: ${reason}`,
+  continue: "계속하기",
   inviteToken: "초대 코드",
   inviteTokenPlaceholder: "초대 링크의 마지막 부분",
   inviteHint: "초대 링크로 열면 자동으로 입력됩니다.",
@@ -97,6 +103,11 @@ const report = (issue: string) => {
   startupIssues.push(issue);
   console.warn(`[osiri/auth] ${issue}`);
 };
+/**
+ * 쌓인 경고를 꺼내 화면에 보인다(꺼내면 비워진다). 로그인 화면이 뜨면 거기서, 로그인한 채로 켜졌으면 설정 화면이 보인다 —
+ * 어느 쪽이든 사용자가 보게 되고 콘솔에만 남지 않는다.
+ */
+export const takeAuthIssues = () => startupIssues.splice(0).join("\n");
 export async function loadToken(): Promise<string> {
   try {
     if (webStorage) return localStorage.getItem(TOKEN_KEY) ?? "";
@@ -155,7 +166,7 @@ export async function logout(api: MuseApi): Promise<string> {
     await api.request("/api/auth/logout", {});
   } catch (e) {
     warning = text.serverLogoutFailed(message(e));
-    console.warn(`[osiri/auth] ${warning}`);
+    report(warning); // 로그아웃 뒤에 뜨는 로그인 화면이 이 경고를 보인다
   }
   await clearToken();
   return warning;
@@ -259,28 +270,51 @@ async function publicPost<T>(path: string, body: unknown) {
   });
   return readApiPayload<T>(response);
 }
-/** 초대 링크 `…/?invite=<code>` (계약). 서버가 지금 내는 `/invite/<code>` 꼴도 같이 읽는다. */
-function inviteFromUrl() {
-  if (Platform.OS !== "web" || typeof location === "undefined") return "";
-  const fromQuery = new URLSearchParams(location.search).get("invite");
-  if (fromQuery) return fromQuery.trim();
-  return /\/invite\/([^/?#]+)/.exec(location.pathname)?.[1] ?? "";
+/** 초대 링크 `…/?invite=<code>` (계약). 서버가 지금 내는 `/invite/<code>` 꼴도 같이 읽는다 (앱 링크 `osiri://invite/<code>` 포함). */
+function inviteFromUrl(url: string) {
+  const code = /[?&]invite=([^&#]+)/.exec(url)?.[1] ?? /\/invite\/([^/?#]+)/.exec(url)?.[1] ?? "";
+  try {
+    return decodeURIComponent(code).trim();
+  } catch {
+    // ponytail: %-인코딩이 깨진 링크 — 받은 글자 그대로 입력란에 넣는다. 틀린 코드면 가입 때 서버가 사유를 말한다
+    return code.trim();
+  }
 }
+/** 웹은 주소창에서 바로 읽는다. 네이티브는 앱을 연 링크를 비동기로 받아야 해서 LoginScreen 의 effect 가 읽는다. */
+const inviteFromLocation = () =>
+  Platform.OS === "web" && typeof location !== "undefined" ? inviteFromUrl(location.href) : "";
 
 type Intent = "login" | "signup" | "waitlist";
 
 export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
   const wide = useWide();
-  const [linkInvite] = useState(inviteFromUrl);
+  const [linkInvite, setLinkInvite] = useState(inviteFromLocation);
   const [inviteToken, setInviteToken] = useState(linkInvite);
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<Intent | "">("");
-  const [error, setError] = useState(() => startupIssues.splice(0).join("\n"));
+  const [error, setError] = useState(takeAuthIssues);
   const [notice, setNotice] = useState("");
   const [inviteRejected, setInviteRejected] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [server, setServer] = useState(apiBase() === API_URL ? "" : apiBase());
+  const [loginFails, setLoginFails] = useState(0);
+  // 로그인은 됐는데 토큰을 기기에 저장하지 못한 경우 — 사유를 읽고 [계속하기] 를 눌러야 넘어간다
+  const [unsavedToken, setUnsavedToken] = useState("");
+
+  // 네이티브 앱: 초대 링크로 앱이 열렸으면 그 코드를 채운다 (웹은 위에서 주소창을 읽었다)
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    Linking.getInitialURL().then(
+      (url) => {
+        const code = url ? inviteFromUrl(url) : "";
+        if (!code) return;
+        setLinkInvite(code);
+        setInviteToken((typed) => typed || code); // 이미 입력한 것이 있으면 덮지 않는다
+      },
+      (e) => setError(text.inviteLinkFailed(message(e))),
+    );
+  }, []);
 
   const token = inviteToken.trim();
   const submit = async (intent: Intent) => {
@@ -309,13 +343,18 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
       try {
         await saveToken(result.token);
       } catch (e) {
-        // 로그인은 됐다 — 이번 실행은 메모리의 토큰으로 계속하고, 다음 실행에 다시 로그인해야 함을 남긴다.
-        // 이 화면은 곧 사라지므로 화면 대신 로그에 남긴다(보여 줄 자리는 App 쪽 — 보고서 참조).
-        console.warn(`[osiri/auth] ${text.tokenSaveFailed(message(e))}`);
+        // 로그인은 됐다 — 이번 실행은 메모리의 토큰으로 계속할 수 있다. 다음 실행에 다시 로그인해야 함을
+        // 이 화면에 보이고, 사용자가 [계속하기] 를 누르면 넘어간다(바로 넘기면 이 화면이 사라져 아무도 못 본다).
+        setError(text.tokenSaveFailed(message(e)));
+        setUnsavedToken(result.token);
+        return;
       }
       onToken(result.token);
     } catch (e) {
       if (intent === "signup") setInviteRejected(e instanceof ApiError && e.status === 400);
+      // 비밀번호가 틀린 것(401)만 센다 — 네트워크·서버 오류는 비밀번호 문제가 아니다
+      if (intent === "login" && e instanceof ApiError && e.status === 401)
+        setLoginFails((n) => n + 1);
       setError(message(e));
     } finally {
       setBusy("");
@@ -342,6 +381,18 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
       <TierCard />
       <Card style={{ width: "100%" }}>
         <ErrorNotice error={error} />
+        {unsavedToken ? (
+          <View style={{ marginBottom: 12 }}>
+            <Button primary onPress={() => onToken(unsavedToken)}>
+              {text.continue}
+            </Button>
+          </View>
+        ) : null}
+        {loginFails >= LOGIN_FAILS_BEFORE_RESET_HINT ? (
+          <Text accessibilityRole="alert" style={[s.text, { marginBottom: 12 }]}>
+            {PASSWORD_RESET_HINT}
+          </Text>
+        ) : null}
         {inviteRejected ? (
           <Text style={[s.muted, { marginBottom: 12 }]}>{text.reapply}</Text>
         ) : null}
@@ -433,6 +484,123 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
 const PROFILE_STEP = 1;
 const GOAL_STEP = 2;
 const FINISHED = text.steps.length;
+/** 단계 제목 — 스토어의 구독 뒤 온보딩(화면 6)이 같은 문구를 쓴다 */
+export const ONBOARDING_TITLES = {
+  profile: text.steps[PROFILE_STEP].title,
+  goal: text.steps[GOAL_STEP].title,
+};
+export const profileComplete = (profile: Profile) =>
+  !!(profile.displayName && profile.specialty && profile.region);
+
+/** 2/3 사무소 프로필 — 저장해 둔 값을 채워 보이고 `PATCH /me/profile` 로 저장한다. 화면 1 과 화면 6(구독 뒤)이 같이 쓴다. */
+export function ProfileStep({
+  api,
+  profile,
+  onSaved,
+}: {
+  api: MuseApi;
+  profile: Profile;
+  onSaved: () => void;
+}) {
+  const [displayName, setDisplayName] = useState(profile.displayName ?? "");
+  const [specialty, setSpecialty] = useState(profile.specialty ?? "");
+  const [region, setRegion] = useState(profile.region ?? "");
+  const [invalid, setInvalid] = useState("");
+  const act = useAction();
+  const save = () => {
+    const body = {
+      displayName: displayName.trim(),
+      specialty: specialty.trim(),
+      region: region.trim(),
+    };
+    if (!body.displayName || !body.specialty || !body.region)
+      return setInvalid(text.profileRequired);
+    setInvalid("");
+    void act.run(async () => {
+      await api.request("/api/me/profile", body, "PATCH");
+      onSaved();
+    });
+  };
+  return (
+    <View style={{ gap: 12 }}>
+      <ErrorNotice error={invalid || act.error} />
+      <View>
+        <Field
+          label={text.displayName}
+          value={displayName}
+          onChangeText={setDisplayName}
+          placeholder={text.displayNamePlaceholder}
+        />
+        <Field
+          label={text.specialty}
+          value={specialty}
+          onChangeText={setSpecialty}
+          placeholder={text.specialtyPlaceholder}
+        />
+        <Field
+          label={text.region}
+          value={region}
+          onChangeText={setRegion}
+          placeholder={text.regionPlaceholder}
+          onSubmitEditing={save}
+        />
+      </View>
+      <Button primary busy={act.busy} onPress={save}>
+        {act.error ? text.retry : text.next}
+      </Button>
+    </View>
+  );
+}
+
+/** 3/3 첫 목표 한 줄 → `POST /goals`(제안 상태). 어느 방의 목표인지는 부르는 쪽이 정한다(개인 방 / 방금 구독한 팀 방). */
+export function GoalStep({
+  api,
+  roomId,
+  after,
+  onSaved,
+}: {
+  api: MuseApi;
+  roomId: () => Promise<string> | string;
+  /** 목표 저장 뒤에 이어서 할 일. 여기서 실패하면 [다시 시도] 가 목표를 또 만들지 않고 이 일부터 잇는다 */
+  after?: () => Promise<void>;
+  onSaved: () => void;
+}) {
+  const [goal, setGoal] = useState("");
+  const [invalid, setInvalid] = useState("");
+  const act = useAction();
+  const goalSaved = useRef(false);
+  const save = () => {
+    const title = goal.trim();
+    if (!title) return setInvalid(text.goalRequired);
+    setInvalid("");
+    void act.run(async () => {
+      if (!goalSaved.current) {
+        await api.request("/api/goals", { roomId: await roomId(), title });
+        goalSaved.current = true;
+      }
+      await after?.();
+      onSaved();
+    });
+  };
+  return (
+    <View style={{ gap: 12 }}>
+      <ErrorNotice error={invalid || act.error} />
+      <View>
+        <Field
+          label={text.goal}
+          value={goal}
+          onChangeText={setGoal}
+          placeholder={text.goalPlaceholder}
+          onSubmitEditing={save}
+        />
+        <Text style={[s.small, { marginTop: -8 }]}>{text.goalHint}</Text>
+      </View>
+      <Button primary busy={act.busy} onPress={save}>
+        {act.error ? text.retry : text.saveGoal}
+      </Button>
+    </View>
+  );
+}
 
 export function Onboarding({
   api,
@@ -446,58 +614,29 @@ export function Onboarding({
   const wide = useWide();
   const { me, loading, error: meError, reload } = useMe(api);
   const [step, setStep] = useState(PROFILE_STEP);
-  const [displayName, setDisplayName] = useState("");
-  const [specialty, setSpecialty] = useState("");
-  const [region, setRegion] = useState("");
-  const [goal, setGoal] = useState("");
-  const [invalid, setInvalid] = useState("");
-  const act = useAction();
-  const goalSaved = useRef(false); // 목표는 저장됐는데 완료 표시만 실패했을 때, 재시도가 목표를 또 만들지 않게
+  const [hasTeam, setHasTeam] = useState(false);
   const seeded = useRef(false);
 
-  // 중간에 나갔다 돌아오면 저장해 둔 프로필을 채우고, 다 채워져 있으면 3/3 부터 잇는다.
+  // 중간에 나갔다 돌아왔는데 프로필이 다 채워져 있으면 3/3 부터 잇는다.
   useEffect(() => {
     if (!me || seeded.current) return;
     seeded.current = true;
-    const { profile } = me;
-    setDisplayName(profile.displayName ?? "");
-    setSpecialty(profile.specialty ?? "");
-    setRegion(profile.region ?? "");
-    if (profile.displayName && profile.specialty && profile.region) setStep(GOAL_STEP);
+    if (profileComplete(me.profile)) setStep(GOAL_STEP);
   }, [me]);
 
-  const saveProfile = () => {
-    const body = {
-      displayName: displayName.trim(),
-      specialty: specialty.trim(),
-      region: region.trim(),
-    };
-    if (!body.displayName || !body.specialty || !body.region)
-      return setInvalid(text.profileRequired);
-    setInvalid("");
-    void act.run(async () => {
-      await api.request("/api/me/profile", body, "PATCH");
-      setStep(GOAL_STEP);
-    });
+  const personalRoom = async () => {
+    const rooms = await api.request<Room[]>("/api/rooms");
+    const personal = rooms.find((room) => room.packageId === null);
+    if (!personal) throw new Error(text.noPersonalRoom);
+    return personal.id;
   };
   // onboardedAt 은 마지막 단계에서만 찍는다 — 중간에 나가면 다음 실행 때 온보딩이 다시 뜬다.
-  const saveGoal = () => {
-    const title = goal.trim();
-    if (!title) return setInvalid(text.goalRequired);
-    setInvalid("");
-    void act.run(async () => {
-      if (!goalSaved.current) {
-        const rooms = await api.request<Room[]>("/api/rooms");
-        const personal = rooms.find((room) => room.packageId === null);
-        if (!personal) throw new Error(text.noPersonalRoom);
-        await api.request("/api/goals", { roomId: personal.id, title });
-        goalSaved.current = true;
-      }
-      await api.request("/api/me/profile", { onboardedAt: new Date().toISOString() }, "PATCH");
-      setStep(FINISHED);
-    });
+  const finish = async () => {
+    await api.request("/api/me/profile", { onboardedAt: new Date().toISOString() }, "PATCH");
+    // 끝 화면의 갈림: 이미 고용한 팀 방이 있으면 [시작하기] 만, 없으면 스토어가 주 버튼이다
+    const rooms = await api.request<Room[]>("/api/rooms");
+    setHasTeam(rooms.some((room) => room.packageId !== null && !room.archived));
   };
-  const failed = invalid || act.error;
 
   const form = loading ? (
     <Skeleton rows={3} height={56} />
@@ -510,17 +649,24 @@ export function Onboarding({
     <View style={{ gap: 12 }}>
       <Text style={s.title}>{text.finishedTitle}</Text>
       <Text style={s.muted}>{text.finishedBody}</Text>
-      <Button primary onPress={onDone}>
-        {text.start}
-      </Button>
-      <Button
-        onPress={() => {
-          onGoStore();
-          onDone();
-        }}
-      >
-        {text.goStore}
-      </Button>
+      {hasTeam ? (
+        <Button primary onPress={onDone}>
+          {text.start}
+        </Button>
+      ) : (
+        <>
+          <Button
+            primary
+            onPress={() => {
+              onGoStore();
+              onDone();
+            }}
+          >
+            {text.goStore}
+          </Button>
+          <Button onPress={onDone}>{text.start}</Button>
+        </>
+      )}
     </View>
   ) : (
     <View style={{ gap: 12 }}>
@@ -528,44 +674,16 @@ export function Onboarding({
         {text.stepOf(step + 1, text.steps.length)}
       </Text>
       <Text style={s.title}>{text.steps[step].title}</Text>
-      <ErrorNotice error={failed} />
       {step === PROFILE_STEP ? (
-        <View>
-          <Field
-            label={text.displayName}
-            value={displayName}
-            onChangeText={setDisplayName}
-            placeholder={text.displayNamePlaceholder}
-          />
-          <Field
-            label={text.specialty}
-            value={specialty}
-            onChangeText={setSpecialty}
-            placeholder={text.specialtyPlaceholder}
-          />
-          <Field
-            label={text.region}
-            value={region}
-            onChangeText={setRegion}
-            placeholder={text.regionPlaceholder}
-            onSubmitEditing={saveProfile}
-          />
-        </View>
+        <ProfileStep api={api} profile={me.profile} onSaved={() => setStep(GOAL_STEP)} />
       ) : (
-        <View>
-          <Field
-            label={text.goal}
-            value={goal}
-            onChangeText={setGoal}
-            placeholder={text.goalPlaceholder}
-            onSubmitEditing={saveGoal}
-          />
-          <Text style={[s.small, { marginTop: -8 }]}>{text.goalHint}</Text>
-        </View>
+        <GoalStep
+          api={api}
+          roomId={personalRoom}
+          after={finish}
+          onSaved={() => setStep(FINISHED)}
+        />
       )}
-      <Button primary busy={act.busy} onPress={step === PROFILE_STEP ? saveProfile : saveGoal}>
-        {act.error ? text.retry : step === PROFILE_STEP ? text.next : text.saveGoal}
-      </Button>
     </View>
   );
 

@@ -355,6 +355,9 @@ test("지표 — 구독자 방 집계만, 자료가 없으면 null", async () =>
     approvalRate: null,
     topRejectReason: null,
     citations: null,
+    degraded: false,
+    canaryApprovalRate: null,
+    previousApprovalRate: null,
   });
   const approval = (roomId: string, id: string, status: string, extra: object = {}) => ({
     id,
@@ -402,6 +405,10 @@ test("지표 — 구독자 방 집계만, 자료가 없으면 null", async () =>
     approvalRate: 40, // 승인 2(approved+consumed) / 결정 5 — 대기·만료는 분모에 넣지 않는다
     topRejectReason: "톤",
     citations: 7,
+    // 카나리 배포 중인 버전이 없으면 견줄 것이 없다
+    degraded: false,
+    canaryApprovalRate: null,
+    previousApprovalRate: null,
   });
   assert.equal(body.includes("김OO"), false, "사용자가 쓴 반려 문장은 운영자에게 가지 않는다");
   assert.equal(body.includes(subscriberA) || body.includes(roomA), false);

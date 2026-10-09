@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   ACCOUNT_TIERS,
   type AccountTier,
+  DEFAULT_TEAM_GREETING,
   missingTeamRoles,
   PLATFORM_DATA_HANDLING,
   REPORT_CADENCE_LABELS,
@@ -49,6 +50,10 @@ export interface TeamPackage {
   dataHandling?: string;
   /** 이 등급(`users.tier`)이어야 구독할 수 있다. 없으면 누구나 */
   requiredTier?: AccountTier;
+  /** 운영자가 플랫폼이 아닌 팀 («타사 입점») */
+  thirdParty?: boolean;
+  /** 구독 직후 팀장이 새 방에 건네는 첫 인사. 없으면 DEFAULT_TEAM_GREETING */
+  greeting?: string;
   /** 비공개: 팀 YAML 경로·실행 이미지. 응답에 내보내지 않는다. */
   runtime: { teamYaml: string; image: string };
   createdAt: string;
@@ -104,6 +109,7 @@ export const publicPackage = (
   roleCount: pkg.roles.length,
   ...mine,
   reviewing: pkg.reviewing === true,
+  thirdParty: pkg.thirdParty === true,
   reportCadence: REPORT_CADENCE_LABELS[pkg.reportCadence] as string,
   dataHandling: pkg.dataHandling ?? PLATFORM_DATA_HANDLING,
   conversionRate: conversionRate(pkg.metrics),
@@ -260,6 +266,10 @@ export class Catalog {
       : undefined;
     if (options.restore && !prior)
       throw new AppError("복원할 이전 구독이 없습니다. 새로 시작을 고르세요", 409);
+    // 복원이 실패하면 방을 원래 상태로 돌려놓는다 (기간 말 전 해지 예약이면 아직 읽기 전용이 아니다)
+    const wasArchived = prior
+      ? (await this.rooms.get(owner, prior.roomId)).archived === true
+      : false;
     const room = prior
       ? await this.rooms.patch(owner, prior.roomId, { archived: false })
       : await this.rooms.create(owner, {
@@ -289,18 +299,21 @@ export class Catalog {
     } catch (error) {
       // ponytail: 문서 저장소라 DB 트랜잭션 대신 보상 롤백. 다중 인스턴스가 되면 Postgres 트랜잭션으로.
       await this.db.remove(owner, "subscriptions", subscription.id);
-      // 복원한 방은 지우지 않고 다시 읽기 전용으로 돌려놓는다
-      if (prior) await this.rooms.patch(owner, room.id, { archived: true });
+      // 복원한 방은 지우지 않고 복원 전 상태(읽기 전용 여부)로 돌려놓는다
+      if (prior) await this.rooms.patch(owner, room.id, { archived: wasArchived });
       else await this.db.remove(owner, "rooms", room.id);
       throw new AppError(`구독에 실패해 되돌렸습니다: ${(error as Error).message}`, 502);
     }
-    // 복원한 방을 가리키던 옛 구독은 끝난 것으로 닫는다 — 한 방에 되살릴 수 있는 구독이 둘이 되지 않게
-    if (prior && prior.status !== "ended")
+    // 같은 팀의 해지 예약(기간 말 전)은 여기서 끝낸다 — 한 팀에 되살릴 수 있는 구독이 둘이 되지 않게.
+    // 복원이면 그 방을 새 구독이 이어 쓰고, 새로 시작이면 옛 방은 읽기 전용으로 남는다
+    for (const old of subs.filter((s) => s.status === "cancelled")) {
+      await this.archiveRoom(owner, old);
       await this.db.put<Subscription>(owner, "subscriptions", {
-        ...prior,
+        ...old,
         status: "ended",
         endsAt: subscription.startedAt,
       });
+    }
     await this.rooms.post(owner, room.id, {
       role: "system",
       kind: "text",
@@ -308,26 +321,65 @@ export class Catalog {
         ? `${pkg.name} 구독을 다시 시작했습니다. 이전 방과 기록을 이어서 씁니다.`
         : `${pkg.name} 구독이 시작되었습니다. 팀이 준비되면 여기로 보고합니다.`,
     });
+    // 새 방은 팀장의 첫 인사로 연다 — 첫 목표를 말해 달라는 초대까지 (복원한 방은 이미 대화가 있다)
+    if (!prior)
+      await this.rooms.post(owner, room.id, {
+        role: "assistant",
+        kind: "text",
+        text: pkg.greeting ?? DEFAULT_TEAM_GREETING,
+        payload: { actor: "root", greeting: true },
+      });
     return { subscription: subscriptionView(subscription), roomId: room.id };
   }
-  /** 내 구독 전부. 해지 예약의 기간 말(`endsAt`)이 지났으면 여기서 ended 로 닫는다 (읽는 곳마다 따로 판정하지 않게). */
+  /**
+   * 내 구독 전부. 해지 예약의 기간 말(`endsAt`)이 지났으면 여기서 ended 로 닫고 그 방을 읽기 전용(archived)으로 둔다
+   * (읽는 곳마다 따로 판정하지 않게). 방을 먼저 잠근 뒤 구독을 닫는다 — 잠그다 실패하면 다음 읽기가 다시 시도한다.
+   */
   async mine(owner: string): Promise<Subscription[]> {
     const subs = await this.db.list<Subscription>(owner, "subscriptions");
     const now = Date.now();
-    return Promise.all(
-      subs.map(async (s) =>
-        s.status === "cancelled" && s.endsAt !== undefined && Date.parse(s.endsAt) <= now
-          ? this.db.put<Subscription>(owner, "subscriptions", { ...s, status: "ended" })
-          : s,
-      ),
-    );
+    const closed: Subscription[] = [];
+    // 차례로 닫는다 — 한 방을 두 구독이 가리킬 때(복원) 종료 안내가 겹치지 않게
+    for (const s of subs) {
+      if (!(s.status === "cancelled" && s.endsAt !== undefined && Date.parse(s.endsAt) <= now)) {
+        closed.push(s);
+        continue;
+      }
+      await this.archiveRoom(owner, s);
+      closed.push(await this.db.put<Subscription>(owner, "subscriptions", { ...s, status: "ended" }));
+    }
+    return closed;
+  }
+  /** 기간이 끝난 구독의 방을 읽기 전용으로. 같은 방을 지금 구독 중인 다른 구독(복원)이 있으면 잠그지 않는다. */
+  private async archiveRoom(owner: string, ended: Subscription) {
+    const subs = await this.db.list<Subscription>(owner, "subscriptions");
+    if (subs.some((s) => s.id !== ended.id && s.roomId === ended.roomId && s.status === "active"))
+      return;
+    let room: Awaited<ReturnType<Rooms["get"]>>;
+    try {
+      room = await this.rooms.get(owner, ended.roomId);
+    } catch (error) {
+      if (!(error instanceof AppError && error.status === 404)) throw error;
+      console.error(`[osiri] 종료된 구독 ${ended.id} 의 방 ${ended.roomId} 이 없어 잠그지 못했습니다`);
+      return;
+    }
+    if (room.archived) return;
+    await this.rooms.post(owner, room.id, {
+      role: "system",
+      kind: "text",
+      text: "구독이 끝났습니다. 이 방은 읽기 전용으로 남습니다.",
+    });
+    await this.rooms.patch(owner, room.id, { archived: true });
   }
   private async own(owner: string, id: string): Promise<Subscription> {
     const subscription = (await this.mine(owner)).find((s) => s.id === id);
     if (!subscription) throw new AppError("구독을 찾을 수 없습니다", 404);
     return subscription;
   }
-  /** 해지(예약): 방은 읽기 전용(archived)으로 남고 30일 뒤 삭제 대상. 기간 말(`endsAt`)까지는 되돌릴 수 있다 */
+  /**
+   * 해지(예약): 기간 말(`endsAt`)까지는 방을 그대로 쓰고 되돌릴 수 있다.
+   * 기간이 끝나면 `mine()` 이 구독을 ended 로 닫으며 방을 읽기 전용(archived)으로 둔다. 데이터는 해지 30일 뒤 삭제 대상.
+   */
   async cancel(owner: string, id: string) {
     const subscription = await this.own(owner, id);
     if (subscription.status !== "active") return subscriptionView(subscription);
@@ -340,7 +392,12 @@ export class Catalog {
       endsAt: subscription.nextBillingAt,
     };
     await this.db.put(owner, "subscriptions", updated);
-    await this.rooms.patch(owner, subscription.roomId, { archived: true });
+    await this.rooms.activity(owner, {
+      roomId: subscription.roomId,
+      kind: "subscription",
+      actor: "user",
+      title: `구독 해지 예약 — ${subscription.nextBillingAt.slice(0, 10)} 까지 쓸 수 있고, 그 뒤 방은 읽기 전용이 됩니다`,
+    });
     return subscriptionView(updated);
   }
   /** 해지 예약 취소: cancelled → active, 방 읽기 전용 해제. 이미 끝난 구독은 되살리지 못한다(다시 구독). */
@@ -502,6 +559,8 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
         reviewing: z.boolean().optional(),
         dataHandling: z.string().min(1).max(500).optional(),
         requiredTier: z.enum(ACCOUNT_TIERS).optional(),
+        thirdParty: z.boolean().optional(),
+        greeting: z.string().min(1).max(500).optional(),
         runtime: z.object({ teamYaml: z.string(), image: z.string() }),
       })
       .parse(await c.req.json());

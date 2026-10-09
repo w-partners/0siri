@@ -11,6 +11,10 @@ import {
   ANSWER_SOURCE_LABELS,
   type AnswerMode,
   type AnswerSource,
+  CAP_REACHED_NOTICE,
+  CAP_WARN_NEAR_PERCENT,
+  CAP_WARN_REACHED_PERCENT,
+  type CapWarnLevel,
   CHARACTER_INTENSITIES,
   type CharacterPrefs,
   DEFAULT_CHARACTER_PREFS,
@@ -18,6 +22,7 @@ import {
   FIXED_TIERS,
   type FixedTier,
   MODEL_KEY_PROVIDERS,
+  MODEL_KEY_REMOVED_NOTICE,
   MODEL_PROVIDERS,
   type ModelKeyErrorKind,
   type ModelKeyProvider,
@@ -33,7 +38,7 @@ import { decryptSecret, encryptSecret } from "../../../../packages/integrations/
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { KindError } from "./accounts.ts";
-import type { Rooms } from "./rooms.ts";
+import type { Room, Rooms } from "./rooms.ts";
 import type { Catalog } from "./store.ts";
 
 export type { ModelTier };
@@ -298,7 +303,7 @@ export class Routing {
           roomId: entry.roomId ?? "",
           kind: "system",
           actor: "0siri",
-          title: "월 사용 상한에 도달했습니다. 이번 달은 경량 모델로만 답합니다",
+          title: CAP_REACHED_NOTICE,
         });
     }
     return usage;
@@ -363,6 +368,8 @@ export class Routing {
       const uncapped = await plan(true);
       if (uncapped.apiKey) planned = uncapped;
     }
+    // 공용 열쇠로 나가는데 월 상한에 닿았다 — 경량 모델로 몰래 이어 가지 않고 멈춘다. 본인 키(BYOK)는 위에서 이미 빠졌다
+    if (!planned.apiKey && planned.decision.capped) throw new AppError(CAP_REACHED_NOTICE, 402);
     return {
       decision: planned.decision,
       model: planned.model,
@@ -558,8 +565,22 @@ export class Routing {
     const account = await this.db.get<ModelAccount>(owner, "model-accounts", provider);
     return account ? decryptSecret(account.keyCiphertext, this.key()) : undefined;
   }
+  /** 키 삭제. 지운 키가 있었으면 팀 방마다(팀 방이 없으면 방 없이) 활동으로 알린다 — 그 뒤로는 공용 열쇠·월 상한이다. */
   async disconnectAccount(owner: string, provider: ModelKeyProvider) {
+    const existed = await this.db.get<ModelAccount>(owner, "model-accounts", provider);
     await this.db.remove(owner, "model-accounts", provider);
+    if (!existed) return;
+    const teamRooms = (await this.db.list<Room>(owner, "rooms")).filter(
+      (room) => room.packageId !== null && !room.archived,
+    );
+    for (const roomId of teamRooms.length ? teamRooms.map((room) => room.id) : [undefined])
+      await this.rooms.activity(owner, {
+        ...(roomId ? { roomId } : {}),
+        kind: "system",
+        actor: "0siri",
+        title: MODEL_KEY_REMOVED_NOTICE,
+        detail: provider,
+      });
   }
 
   // ---- 설정 화면 (화면 11) — 위 settings() 기록의 다른 모양 ----
@@ -578,12 +599,23 @@ export class Routing {
         : capKrw === 0
           ? 100
           : Math.min(100, Math.round((month.costKrw / capKrw) * 1000) / 10);
+    // 경고 단계는 잰 지출만으로 낸다 — 단가 없는 사용분이 있어도 잰 값이 이미 문턱을 넘었으면 넘은 것이다
+    const used = capKrw === null ? null : capKrw === 0 ? 100 : (month.costKrw / capKrw) * 100;
+    const warn: CapWarnLevel =
+      used === null || used < CAP_WARN_NEAR_PERCENT
+        ? "none"
+        : used < CAP_WARN_REACHED_PERCENT
+          ? "near"
+          : "reached";
     return {
       costKrw: month.costKrw,
       capKrw,
       percent,
       byok: keys.length > 0,
       savedKrw: month.savedKrw,
+      /** 단가표에 없는 모델 사용 건수 — 비용 0 으로 적재되어 상한 계산에서 빠져 있다 */
+      unpricedCalls: month.unpricedCalls,
+      warn,
     };
   }
 }
@@ -602,9 +634,15 @@ const settingsView = (
   fixedModel: settings.fixedTier === undefined ? null : String(settings.fixedTier),
   monthlyCapKrw: settings.monthlyCapKrw ?? null,
   notifications: settings.notifications ?? DEFAULT_NOTIFICATION_PREFS,
+  notificationsReady: NOTIFICATIONS_READY,
   character: settings.character ?? DEFAULT_CHARACTER_PREFS,
 });
 const FIXED_MODELS = FIXED_TIERS.map(String);
+/**
+ * 알림(푸시·배지 알림)을 보내는 발송부가 아직 없다 — 알림 설정은 저장만 되고 읽는 곳이 없다.
+ * 화면은 이 값이 false 면 토글을 «준비 중» 으로 보인다. 발송부가 notifications 를 읽게 되면 true 로 바꾼다.
+ */
+const NOTIFICATIONS_READY = false;
 
 /**
  * S7·S11 계약 라우트: /settings · /settings/model · /billing/usage · /model-keys.

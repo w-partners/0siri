@@ -7,7 +7,9 @@ import {
   STORE_CATEGORY_ALL_LABEL,
   STORE_CATEGORY_LABELS,
   type StoreCategory,
+  SUBSCRIPTION_STATUS_LABELS,
   type SubscribeErrorKind,
+  THIRD_PARTY_LABEL,
 } from "../../../../packages/domain/src/osiri";
 import type { Catalog, publicPackage } from "../../../server/src/osiri/store.ts";
 import { ApiError } from "../api-response";
@@ -27,6 +29,7 @@ import {
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
+import { GoalStep, type Me, ONBOARDING_TITLES, ProfileStep, profileComplete } from "./auth";
 import { CharacterAvatar } from "./eve";
 
 /** `GET /store/packages` 항목 — 서버 `publicPackage()` 가 만든다. */
@@ -81,14 +84,15 @@ const text = {
   pickSub: "구독을 고르면 관리 패널이 여기에 보입니다.",
   emptyExplore: "검색 결과가 없습니다",
   emptyExploreHint: "다른 단어로 검색",
+  emptyStore: "아직 입점한 팀이 없습니다",
+  emptyStoreHint: "팀이 입점하면 여기에 보입니다.",
+  onboardTitle: "팀과 시작하기",
+  onboardBody: "팀이 일을 시작할 수 있게 프로필과 첫 목표를 알려 주세요.",
+  onboardDone: "첫 목표를 팀 방에 제안으로 올렸습니다. 목표 탭에서 승인하면 시작합니다.",
   showAll: "전체 목록 보기",
   emptyMine: "아직 구독한 팀이 없습니다",
   emptyMineHint: "탐색 탭에서 팀을 구독하면 여기에 모입니다.",
   goExplore: "탐색에서 첫 팀 고르기",
-  status: { active: "구독 중", cancelled: "해지 예정", ended: "종료" } satisfies Record<
-    Sub["status"],
-    string
-  >,
   nextBilling: "다음 결제",
   until: (date: string) => `${date}까지 유지`,
   pending: "승인 대기",
@@ -202,13 +206,22 @@ export function Choice({
   label,
   selected,
   onPress,
+  disabled,
 }: {
   label: string;
   selected: boolean;
-  onPress: () => void;
+  /** disabled 면 없어도 된다 — 고를 수 없는 선택지는 흐리게 표시만 한다 */
+  onPress?: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={disabled ? { opacity: 0.5 } : null}
+    >
       <Chip tint={selected ? colors.accentSoft : undefined}>{label}</Chip>
     </Pressable>
   );
@@ -372,6 +385,7 @@ function TeamHead({ pkg, size }: { pkg: Pkg; size: number }) {
       <View style={{ flex: 1, gap: 3 }}>
         <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
           <Text style={s.heading}>{pkg.name}</Text>
+          {pkg.thirdParty && <Text style={s.small}>({THIRD_PARTY_LABEL})</Text>}
           {pkg.verified && <Chip tint={colors.okBg}>{text.verified}</Chip>}
           {pkg.reviewing && <Chip tint={colors.warnBg}>{text.reviewing}</Chip>}
         </View>
@@ -461,9 +475,14 @@ function Explore({
           empty={false}
         >
           {shown?.length === 0 ? (
-            <Empty icon={Search} title={text.emptyExplore} detail={text.emptyExploreHint}>
-              <Button onPress={showAll}>{text.showAll}</Button>
-            </Empty>
+            q.trim() || category ? (
+              <Empty icon={Search} title={text.emptyExplore} detail={text.emptyExploreHint}>
+                <Button onPress={showAll}>{text.showAll}</Button>
+              </Empty>
+            ) : (
+              // 검색어·카테고리 없이 비었으면 스토어가 통째로 빈 것이다 — 돌아갈 «전체 목록» 이 없으니 버튼을 그리지 않는다
+              <Empty icon={Store} title={text.emptyStore} detail={text.emptyStoreHint} />
+            )
           ) : (
             shown?.map((pkg) => (
               <Pressable
@@ -490,7 +509,7 @@ function Explore({
                     </Button>
                   ) : pkg.subscribed && pkg.roomId ? (
                     <Button small onPress={() => onOpenRoom(pkg.roomId as string)}>
-                      {`${text.status.active} · ${text.openRoom}`}
+                      {`${SUBSCRIPTION_STATUS_LABELS.active} · ${text.openRoom}`}
                     </Button>
                   ) : (
                     <Button
@@ -547,6 +566,8 @@ function PackageDetail({
   const [confirming, setConfirming] = useState(startConfirm);
   const [restore, setRestore] = useState<boolean>();
   const [createdRoom, setCreatedRoom] = useState<string>();
+  const [onboarding, setOnboarding] = useState(false);
+  const [onboarded, setOnboarded] = useState(false);
   const act = useAction();
   const refresh = useAction();
   // 등급이 모자라 거절된 구독(403 · kind "tier") — 오류가 아니라 안내로 따로 보인다
@@ -577,6 +598,8 @@ function PackageDetail({
         throw e;
       }
       setCreatedRoom(result.roomId);
+      // 복원한 방에는 이전 목표가 그대로 있다 — 새로 만든 방일 때만 팀별 온보딩(프로필·첫 목표)을 거친다
+      setOnboarding(!(prior && restore));
       notify(text.subscribed(pkg.name));
       void refresh.run(onSubscribed);
     });
@@ -650,9 +673,22 @@ function PackageDetail({
               {text.subscribed(pkg.name)}. {text.subscribedBody}
             </Text>
           ) : null}
-          <Button primary onPress={() => onOpenRoom(roomId)}>
-            {text.openRoom}
-          </Button>
+          {createdRoom && onboarding ? (
+            <TeamOnboarding
+              roomId={createdRoom}
+              onDone={() => {
+                setOnboarding(false);
+                setOnboarded(true);
+              }}
+            />
+          ) : (
+            <>
+              {onboarded ? <Text style={s.small}>{text.onboardDone}</Text> : null}
+              <Button primary onPress={() => onOpenRoom(roomId)}>
+                {text.openRoom}
+              </Button>
+            </>
+          )}
         </View>
       ) : pkg.subscribed ? (
         <View style={{ gap: 8 }}>
@@ -714,6 +750,35 @@ function PackageDetail({
   );
 }
 
+/** 구독 확정 뒤의 팀별 온보딩: 프로필 확인(비어 있을 때만) → 그 팀 방의 첫 목표 한 줄. 단계 조각은 화면 1(auth.tsx)의 것을 그대로 쓴다. */
+function TeamOnboarding({ roomId, onDone }: { roomId: string; onDone: () => void }) {
+  const { api } = useWorkspace();
+  const me = useLoad(() => api.request<Me>("/api/me"));
+  const [profileSaved, setProfileSaved] = useState(false);
+  return (
+    <Card style={{ gap: 12, borderColor: colors.accent }}>
+      <Text style={s.heading}>{text.onboardTitle}</Text>
+      <Text style={s.small}>{text.onboardBody}</Text>
+      <LoadState loading={me.loading} error={me.error} retry={me.retry}>
+        {me.data &&
+          (profileSaved || profileComplete(me.data.profile) ? (
+            <Block title={ONBOARDING_TITLES.goal}>
+              <GoalStep api={api} roomId={() => roomId} onSaved={onDone} />
+            </Block>
+          ) : (
+            <Block title={ONBOARDING_TITLES.profile}>
+              <ProfileStep
+                api={api}
+                profile={me.data.profile}
+                onSaved={() => setProfileSaved(true)}
+              />
+            </Block>
+          ))}
+      </LoadState>
+    </Card>
+  );
+}
+
 function Mine({
   subs,
   refreshSubs,
@@ -761,7 +826,9 @@ function Mine({
                 <View style={{ flex: 1, gap: 4 }}>
                   <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
                     <Text style={s.heading}>{sub.packageName}</Text>
-                    <Chip tint={statusTint[sub.status]}>{text.status[sub.status]}</Chip>
+                    <Chip tint={statusTint[sub.status]}>
+                      {SUBSCRIPTION_STATUS_LABELS[sub.status]}
+                    </Chip>
                   </View>
                   <SubTerm sub={sub} />
                   <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
@@ -854,7 +921,7 @@ function Manage({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<voi
           {sub.status === "active" ? (
             <Text style={[s.text, { fontFamily: fonts.mono }]}>{dateLabel(sub.nextBillingAt)}</Text>
           ) : (
-            <Chip tint={statusTint[sub.status]}>{text.status[sub.status]}</Chip>
+            <Chip tint={statusTint[sub.status]}>{SUBSCRIPTION_STATUS_LABELS[sub.status]}</Chip>
           )}
         </Row>
         <Row label={text.paymentMethod}>

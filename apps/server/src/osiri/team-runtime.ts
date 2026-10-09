@@ -195,7 +195,15 @@ export class TeamRuntime {
     );
     if (!review.pass) {
       await progress(40, "draft", { status: "active" });
-      await this.audit("reviewer", "review.reject", "error", { goal_id: goal.id });
+      const logged = (await this.audit("reviewer", "review.reject", "error", {
+        goal_id: goal.id,
+      })) as { escalated?: boolean } | undefined;
+      // 반려가 반복되면 서버가 목표를 멈추고 [확인 필요] 카드를 냈다 — «되돌립니다» 라고 말하지 않는다
+      if (logged?.escalated) {
+        this.log(`검수 반려 반복으로 목표 ${goal.id} 를 사람에게 올렸습니다`);
+        await this.presence("idle");
+        return "review_failed";
+      }
       await this.say(
         `검수 반려: ${review.reasons.join(", ")} — 초안 단계로 되돌립니다.`,
         "reviewer",

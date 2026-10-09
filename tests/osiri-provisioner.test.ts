@@ -90,10 +90,18 @@ test("구독 큐 → docker run (host 네트워크·env-file 토큰) → workers
   assert.deepEqual(await provisioner.drainOnce(), { started: 0, failed: 0, stopped: 0 });
   assert.equal(calls.length, 1);
 
-  // 해지 → 방 archived → rm -f
+  // 해지 예약 → 기간 말까지 워커는 그대로 돈다
   const mine = await catalog.mine("u1");
-  await catalog.cancel("u1", (mine[0] as { id: string }).id);
+  const subscriptionId = (mine[0] as { id: string }).id;
+  await catalog.cancel("u1", subscriptionId);
+  assert.deepEqual(await provisioner.drainOnce(), { started: 0, failed: 0, stopped: 0 });
+  // 기간 말이 지남 → 구독 종료 · 방 archived → rm -f (사용자가 앱을 열지 않아도)
+  await db.put("u1", "subscriptions", {
+    ...(await db.get<Record<string, unknown>>("u1", "subscriptions", subscriptionId)),
+    endsAt: new Date(Date.now() - 1000).toISOString(),
+  });
   assert.deepEqual(await provisioner.drainOnce(), { started: 0, failed: 0, stopped: 1 });
+  assert.equal((await rooms.get("u1", roomId)).archived, true);
   assert.deepEqual(calls[1]?.args, ["rm", "-f", "abc123containerid"]);
   assert.equal(await db.get("system", "workers", roomId), null);
 });

@@ -19,18 +19,26 @@ import {
   ANSWER_MODE_LABELS,
   ANSWER_MODES,
   type AnswerMode,
+  BIG_LAYER,
   CHARACTER_INTENSITIES,
   CHARACTER_INTENSITY_LABELS,
   type CharacterPrefs,
+  DEVICE_LAYER_STATE_LABELS,
+  type DeviceLayerState,
   EMBED_DOWNLOAD_MB,
+  EMBED_DTYPE,
   EMBED_MODEL_ID,
+  EMBED_TOKENIZER_MB,
   FIXED_TIERS,
   type FixedTier,
+  MODEL_KEY_PROVIDER_LABELS,
   MODEL_KEY_PROVIDERS,
   type ModelTier,
+  NOT_READY_LABEL,
   type NotificationPrefs,
   RETENTION_DAYS,
   TIER_LABELS,
+  USER_ROLE_LABELS,
   USER_ROLES,
   type UserRole,
 } from "../../../../packages/domain/src/osiri";
@@ -50,24 +58,20 @@ import {
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import type { Me } from "./auth";
-import {
-  Confirm,
-  ConnectionsScreen,
-  column,
-  columns,
-  Loaded,
-  mono,
-  PROVIDER_LABELS,
-} from "./connections";
+import { type Me, takeAuthIssues } from "./auth";
+import { Confirm, ConnectionsScreen, column, columns, Loaded, mono } from "./connections";
 import { deviceAvailable, embedOnDevice, measureDevice } from "./device-embed";
 import { setCharacterPref } from "./eve";
 import { MemoryScreen } from "./memory";
 import { OperatorScreen } from "./operator";
 import { SkillsScreen } from "./skills";
 import { Block, Choice, useAction, useLoad, won } from "./store";
+import { deviceSearchOff, setDeviceSearchOff } from "./tier0";
 
-/** `GET /settings` — 서버 routing.ts 의 `settingsView()` 가 만든다(내보낸 타입이 없어 여기 한 번 적는다). */
+/**
+ * `GET /settings` — 서버 routing.ts 의 `settingsView()` 가 만든다.
+ * ponytail: 서버가 그 반환 타입을 내보내지 않아(비공개 const) 여기 한 번 적는다 — 서버가 `SettingsView` 를 내보내면 이 선언을 import 로 바꾼다.
+ */
 interface AppSettings {
   tier: { label: string; subscription: string | null; nextBillingAt: string | null };
   answerMode: AnswerMode;
@@ -76,6 +80,8 @@ interface AppSettings {
   fixedModel: `${FixedTier}` | null;
   monthlyCapKrw: number | null;
   notifications: NotificationPrefs;
+  /** false = 알림 발송이 아직 없다. 토글을 켜고 꺼도 달라지는 것이 없으므로 화면은 «준비 중» 으로 잠근다 */
+  notificationsReady: boolean;
   character: CharacterPrefs;
 }
 /** `GET /billing/usage` — 서버 `Routing.billing()`. percent 는 상한 대비 0~100, null = 측정 중 */
@@ -112,19 +118,9 @@ function writeSub(sub: Sub | undefined) {
 }
 
 // ---- 기기 모델 2층 ----
-/** 큰 층 표기 — 기획 화면 11 의 값. 이 빌드에는 내려받을 실물이 없어 다른 정의처가 없다 */
-const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" };
 /** transformers.js 가 브라우저에 모델을 두는 캐시 이름 (device-embed.web.ts 가 그 라이브러리로 받는다) */
 const MODEL_CACHE = "transformers-cache";
-const LAYER_STATE_LABELS = {
-  unknown: "확인 전",
-  none: "미다운로드",
-  downloading: "다운로드 중",
-  ready: "준비됨",
-  unsupported: "미지원 기기",
-  oom: "메모리 부족",
-} as const;
-type LayerState = keyof typeof LAYER_STATE_LABELS;
+type LayerState = DeviceLayerState;
 const layerTint: Partial<Record<LayerState, string>> = {
   ready: colors.okBg,
   downloading: colors.accentSoft,
@@ -144,7 +140,6 @@ const text = {
   saved: "저장했습니다",
   add: "추가",
   cancel: "취소",
-  roles: { user: "사용자", operator: "운영자", admin: "관리자" } satisfies Record<UserRole, string>,
   tierTitle: "등급 · 구독",
   subscribed: (name: string) => `${name} 구독 중`,
   noSubscription: "구독 중인 팀이 없습니다",
@@ -159,17 +154,19 @@ const text = {
       "항상 기기: 가능한 작업은 기기에서 끝내고, 도구·웹·긴 작업은 실행 전에 서버 상향 확인을 띄웁니다",
     server: "항상 서버: 기기 답변을 쓰지 않습니다",
   } satisfies Record<AnswerMode, string>,
+  deviceModeNotReady: `${ANSWER_MODE_LABELS.device}는 ${NOT_READY_LABEL}입니다 — 기기 대화 모델(큰 층 · ${BIG_LAYER.name})이 아직 없어 고를 수 없습니다`,
   autoEconomy: "가성비 자동 라우팅",
   fixedModel: "모델 직접 고르기",
   fixedNone: "고르지 않음",
   deviceTitle: "기기 모델",
   smallLayer: "작은 층 · 임베딩젬마 2",
-  smallLayerHint: `기본 다운로드 ${EMBED_DOWNLOAD_MB}MB · 기억 검색·분류 신호`,
+  smallLayerHint: `기본 다운로드 ${EMBED_DOWNLOAD_MB}MB(${EMBED_DTYPE} 가중치) + 토크나이저 ${EMBED_TOKENIZER_MB}MB · 기억 검색·분류 신호`,
   status: "상태",
   download: "받기",
   remove: "삭제",
   removeSmall:
-    "작은 층을 지우면 기억 검색은 서버 임베딩으로 대체됩니다. 이미 올라온 모델은 이 화면을 새로 고칠 때까지 메모리에 남습니다.",
+    "작은 층을 지우면 이 기기의 기기 검색이 꺼지고, 기억 검색은 서버 임베딩으로 대체됩니다. [다시 켜기]를 누르기 전에는 모델을 다시 받지 않습니다. 이미 올라온 모델은 이 화면을 새로 고칠 때까지 메모리에 남습니다.",
+  turnBackOn: "다시 켜기",
   cacheUnreadable: "이 환경은 모델 저장소를 조회할 수 없어 내려받았는지 확인하지 못합니다",
   smallStates: {
     unknown: "아직 확인하지 않았습니다",
@@ -178,10 +175,10 @@ const text = {
     ready: "이 기기에 있습니다 — 기억 검색을 기기에서 합니다",
     unsupported: "이 기기에서는 쓸 수 없습니다 — 기억 검색은 서버 임베딩으로 합니다",
     oom: "메모리가 모자라 올리지 못했습니다 — 기억 검색은 서버 임베딩으로 합니다",
+    off: "기기 검색을 꺼 두었습니다 — 기억 검색은 서버 임베딩으로 하고, 모델을 다시 받지 않습니다",
   } satisfies Record<LayerState, string>,
   bigLayer: `큰 층 · ${BIG_LAYER.name}`,
   bigLayerHint: `${BIG_LAYER.size} · 사용자가 켜면 Wi-Fi로 다운로드 · 기기 대화 답변`,
-  turnOn: "켜기",
   bigUnavailable: "이 빌드에서는 아직 받을 수 없습니다",
   bigReason:
     "기기 LLM 런타임(LiteRT-LM)이 아직 앱에 들어 있지 않습니다. 그때까지 대화 답변은 서버가 합니다.",
@@ -193,7 +190,8 @@ const text = {
   noCap: "월 상한이 없습니다 — 상한을 정하면 사용량 비율이 보입니다",
   measuring: "측정 중",
   byokUsage: "본인 계정 청구 · 상한 제외",
-  warn80: "월 상한의 80%를 넘었습니다",
+  warnNear: "월 상한에 가까워졌습니다",
+  unpriced: (n: number) => `단가 미설정 ${n}건 — 상한 계산 제외`,
   capReached: "월 상한에 도달해 공용 경로가 멈췄습니다 — 내 API 키를 등록하거나 상한을 올려 주세요",
   cap: "월 예산 상한 (원, 비우면 없음)",
   capInvalid: "월 상한은 0 이상의 숫자여야 합니다",
@@ -208,6 +206,8 @@ const text = {
   notifyTitle: "알림",
   notifyApprovals: "승인 대기",
   notifyWeekly: "주간 보고",
+  notifyNotReady: "알림 발송이 아직 없습니다 — 준비되면 여기서 켜고 끌 수 있습니다",
+  onOff: (on: boolean) => (on ? "켜짐" : "꺼짐"),
   characterTitle: "캐릭터",
   characterOn: "캐릭터 표시",
   intensity: "반응 강도",
@@ -265,6 +265,8 @@ export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const me = useLoad(() => api.request<Me>("/api/me"));
   const [sub, setSub] = useState(readSub);
   useEffect(() => writeSub(sub), [sub]);
+  // 앱을 켤 때 쌓인 저장소 경고(auth.tsx) — 로그인 화면을 거치지 않고 들어왔으면 여기서 보인다
+  const [authIssues] = useState(takeAuthIssues);
   return (
     <ScrollView
       contentContainerStyle={{ padding: 16, gap: 20 }}
@@ -281,6 +283,7 @@ export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           <Text style={[s.text, { fontWeight: "600" }]}>{SUB_TITLES[sub]}</Text>
         </Pressable>
       )}
+      <ErrorNotice error={authIssues} />
       <Loaded state={me} rows={4} height={88}>
         {(account) =>
           sub ? (
@@ -425,11 +428,16 @@ function ModelCard({
                   key={mode}
                   label={ANSWER_MODE_LABELS[mode]}
                   selected={settings.answerMode === mode}
+                  // 기기 대화 모델(티어 1)이 아직 없다 — 고를 수 없게 두고 아래에 사유를 적는다
+                  disabled={mode === "device"}
                   onPress={() => patch({ answerMode: mode })}
                 />
               ))}
             </View>
-            <Text style={s.small}>{text.answerModeHints[settings.answerMode]}</Text>
+            {settings.answerMode !== "device" && (
+              <Text style={s.small}>{text.answerModeHints[settings.answerMode]}</Text>
+            )}
+            <Text style={s.small}>{text.deviceModeNotReady}</Text>
           </Block>
           <CheckRow
             label={text.autoEconomy}
@@ -488,17 +496,13 @@ function UsageSummary({
   openConnections: () => void;
 }) {
   const { percent } = usage;
-  const level =
-    percent === null ? undefined : percent >= 100 ? "miss" : percent >= 80 ? "warn" : undefined;
+  // 경고 단계는 서버가 정한다(문턱은 도메인 CAP_WARN_*) — 화면은 단계를 색으로 옮길 뿐이다
+  const level = usage.warn === "reached" ? "miss" : usage.warn === "near" ? "warn" : undefined;
   return (
     <>
       {usage.byok ? (
         // 자기 키 활성: 사용량 바 대신 이 한 줄
         <Chip tint={colors.okBg}>{text.byokUsage}</Chip>
-      ) : usage.capKrw === null ? (
-        <Text style={s.small}>{text.noCap}</Text>
-      ) : percent === null ? (
-        <Chip>{text.measuring}</Chip>
       ) : (
         <>
           {level && (
@@ -512,7 +516,7 @@ function UsageSummary({
               }}
             >
               <Text style={[s.text, { color: level === "miss" ? colors.miss : colors.warn }]}>
-                {level === "miss" ? text.capReached : text.warn80}
+                {level === "miss" ? text.capReached : text.warnNear}
               </Text>
               {level === "miss" && (
                 <Button small onPress={openConnections}>
@@ -521,27 +525,51 @@ function UsageSummary({
               )}
             </View>
           )}
-          <View style={s.between}>
-            <Text style={[s.text, mono, { fontWeight: "600" }]}>{text.percentOfCap(percent)}</Text>
-            <Text style={[s.small, mono]}>
-              {text.spent(text.krw(usage.costKrw), text.krw(usage.capKrw))}
-            </Text>
-          </View>
-          <View
-            accessibilityRole="progressbar"
-            accessibilityValue={{ min: 0, max: 100, now: Math.round(percent) }}
-            style={{ height: 8, borderRadius: 4, backgroundColor: colors.sunk, overflow: "hidden" }}
-          >
-            <View
-              style={{
-                width: `${Math.min(Math.max(percent, 0), 100)}%`,
-                height: 8,
-                backgroundColor:
-                  level === "miss" ? colors.miss : level === "warn" ? colors.warn : colors.accent,
-              }}
-            />
-          </View>
+          {usage.capKrw === null ? (
+            <Text style={s.small}>{text.noCap}</Text>
+          ) : percent === null ? (
+            <Chip>{text.measuring}</Chip>
+          ) : (
+            <>
+              <View style={s.between}>
+                <Text style={[s.text, mono, { fontWeight: "600" }]}>
+                  {text.percentOfCap(percent)}
+                </Text>
+                <Text style={[s.small, mono]}>
+                  {text.spent(text.krw(usage.costKrw), text.krw(usage.capKrw))}
+                </Text>
+              </View>
+              <View
+                accessibilityRole="progressbar"
+                accessibilityValue={{ min: 0, max: 100, now: Math.round(percent) }}
+                style={{
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: colors.sunk,
+                  overflow: "hidden",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${Math.min(Math.max(percent, 0), 100)}%`,
+                    height: 8,
+                    backgroundColor:
+                      level === "miss"
+                        ? colors.miss
+                        : level === "warn"
+                          ? colors.warn
+                          : colors.accent,
+                  }}
+                />
+              </View>
+            </>
+          )}
         </>
+      )}
+      {usage.unpricedCalls > 0 && (
+        <Text style={[s.small, mono, { color: colors.warn }]}>
+          {text.unpriced(usage.unpricedCalls)}
+        </Text>
       )}
       <View style={s.between}>
         <Text style={s.small}>{text.saving}</Text>
@@ -572,7 +600,7 @@ function KeysCard({ openConnections }: { openConnections: () => void }) {
             ) : (
               active.map((item) => (
                 <Text key={item.provider} style={[s.text, mono]}>
-                  {text.keyActive(PROVIDER_LABELS[item.provider], item.last4)}
+                  {text.keyActive(MODEL_KEY_PROVIDER_LABELS[item.provider], item.last4)}
                 </Text>
               ))
             );
@@ -592,22 +620,32 @@ function DeviceCard() {
   const [confirming, setConfirming] = useState(false);
   const [bigOpen, setBigOpen] = useState(false);
   const act = useAction();
-  const inspect = () =>
+  const check = async () => {
+    setDetail("");
+    if (!deviceAvailable()) {
+      const report = await measureDevice(); // 쓸 수 없는 이유를 기기 쪽에서 받아 그대로 보인다
+      setState("unsupported");
+      setDetail(report.reason ?? "");
+      return;
+    }
+    // 사용자가 지워서 꺼 둔 상태 — tier0.ts 가 같은 값을 보고 곧장 서버 검색으로 간다
+    if (deviceSearchOff()) {
+      setState("off");
+      return;
+    }
+    if (typeof caches === "undefined") {
+      setState("unknown");
+      setDetail(text.cacheUnreadable);
+      return;
+    }
+    const files = await modelCached(await caches.open(MODEL_CACHE));
+    setState(files.length > 0 ? "ready" : "none");
+  };
+  const inspect = () => act.run(check);
+  const turnBackOn = () =>
     act.run(async () => {
-      setDetail("");
-      if (!deviceAvailable()) {
-        const report = await measureDevice(); // 쓸 수 없는 이유를 기기 쪽에서 받아 그대로 보인다
-        setState("unsupported");
-        setDetail(report.reason ?? "");
-        return;
-      }
-      if (typeof caches === "undefined") {
-        setState("unknown");
-        setDetail(text.cacheUnreadable);
-        return;
-      }
-      const files = await modelCached(await caches.open(MODEL_CACHE));
-      setState(files.length > 0 ? "ready" : "none");
+      setDeviceSearchOff(false);
+      await check();
     });
   useEffect(() => {
     void inspect();
@@ -626,10 +664,12 @@ function DeviceCard() {
     });
   const remove = () =>
     act.run(async () => {
+      // 먼저 «기기 검색 끔» 을 저장한다 — 저장에 실패하면 지우지 않고 사유를 보인다(지웠는데 다음 검색이 다시 받는 일이 없게)
+      setDeviceSearchOff(true);
       const cache = await caches.open(MODEL_CACHE);
       for (const request of await modelCached(cache)) await cache.delete(request);
       setConfirming(false);
-      setState("none");
+      setState("off");
     });
   const canRemove = state === "ready" && typeof caches !== "undefined";
   return (
@@ -639,7 +679,7 @@ function DeviceCard() {
         <View style={{ gap: 6 }}>
           <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
             <Text style={[s.text, { fontWeight: "600" }]}>{text.smallLayer}</Text>
-            <Chip tint={layerTint[state]}>{LAYER_STATE_LABELS[state]}</Chip>
+            <Chip tint={layerTint[state]}>{DEVICE_LAYER_STATE_LABELS[state]}</Chip>
           </View>
           <Text style={[s.small, mono]}>{text.smallLayerHint}</Text>
           <Text style={s.small}>{text.smallStates[state]}</Text>
@@ -658,6 +698,11 @@ function DeviceCard() {
               <Button small busy={act.busy && state !== "downloading"} onPress={inspect}>
                 {text.status}
               </Button>
+              {state === "off" && (
+                <Button small primary busy={act.busy} onPress={turnBackOn}>
+                  {text.turnBackOn}
+                </Button>
+              )}
               {(state === "none" || state === "oom" || state === "downloading") && (
                 <Button small primary busy={state === "downloading"} onPress={download}>
                   {text.download}
@@ -672,7 +717,7 @@ function DeviceCard() {
         <View style={{ gap: 6, paddingTop: 14, borderTopWidth: 1, borderColor: colors.line }}>
           <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
             <Text style={[s.text, { fontWeight: "600" }]}>{text.bigLayer}</Text>
-            <Chip>{LAYER_STATE_LABELS.none}</Chip>
+            <Chip tint={colors.warnBg}>{NOT_READY_LABEL}</Chip>
           </View>
           <Text style={[s.small, mono]}>{text.bigLayerHint}</Text>
           <Text style={[s.small, { color: colors.warn }]}>{text.bigUnavailable}</Text>
@@ -682,11 +727,8 @@ function DeviceCard() {
               <Text style={s.small}>{text.bigRule}</Text>
             </>
           )}
+          {/* 받을 실물이 없다 — [켜기] 버튼을 두지 않고 «준비 중» 칩과 사유만 보인다 */}
           <View style={[s.row, { gap: 8 }]}>
-            {/* 받을 실물이 없다 — 눌리는 척하지 않는다 */}
-            <Button small disabled onPress={() => undefined}>
-              {text.turnOn}
-            </Button>
             <Button small onPress={() => setBigOpen(!bigOpen)}>
               {text.status}
             </Button>
@@ -719,22 +761,42 @@ function PreferencesCard({
       <SectionHeading title={`${text.notifyTitle} · ${text.characterTitle}`} />
       <Card style={{ gap: 10 }}>
         <Block title={text.notifyTitle}>
-          <CheckRow
-            label={text.notifyApprovals}
-            checked={notifications.approvals}
-            onPress={() =>
-              patch({ notifications: { ...notifications, approvals: !notifications.approvals } })
-            }
-          />
-          <CheckRow
-            label={text.notifyWeekly}
-            checked={notifications.weeklyReport}
-            onPress={() =>
-              patch({
-                notifications: { ...notifications, weeklyReport: !notifications.weeklyReport },
-              })
-            }
-          />
+          {settings.notificationsReady ? (
+            <>
+              <CheckRow
+                label={text.notifyApprovals}
+                checked={notifications.approvals}
+                onPress={() =>
+                  patch({
+                    notifications: { ...notifications, approvals: !notifications.approvals },
+                  })
+                }
+              />
+              <CheckRow
+                label={text.notifyWeekly}
+                checked={notifications.weeklyReport}
+                onPress={() =>
+                  patch({
+                    notifications: { ...notifications, weeklyReport: !notifications.weeklyReport },
+                  })
+                }
+              />
+            </>
+          ) : (
+            // 알림 발송이 아직 없다 — 눌러도 달라지는 것이 없는 토글을 두지 않고, 저장된 값만 흐리게 보인다
+            <>
+              <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                <Chip tint={colors.warnBg}>{NOT_READY_LABEL}</Chip>
+                <Text style={[s.small, { flex: 1 }]}>{text.notifyNotReady}</Text>
+              </View>
+              <Text style={[s.text, { opacity: 0.5 }]}>
+                {text.notifyApprovals} · {text.onOff(notifications.approvals)}
+              </Text>
+              <Text style={[s.text, { opacity: 0.5 }]}>
+                {text.notifyWeekly} · {text.onOff(notifications.weeklyReport)}
+              </Text>
+            </>
+          )}
         </Block>
         <Block title={text.characterTitle}>
           <CheckRow
@@ -845,7 +907,7 @@ function Profile({ me, onSaved }: { me: Me; onSaved: (me: Me) => void }) {
   return (
     <Card style={{ gap: 12 }}>
       <Text style={s.small}>
-        {text.phone} · <Text style={mono}>{me.user.phone}</Text> · {text.roles[me.user.role]}
+        {text.phone} · <Text style={mono}>{me.user.phone}</Text> · {USER_ROLE_LABELS[me.user.role]}
       </Text>
       <Field label={text.displayName} value={displayName} onChangeText={setDisplayName} />
       <Field
@@ -950,7 +1012,7 @@ function Admin() {
               {USER_ROLES.map((r) => (
                 <Choice
                   key={r}
-                  label={text.roles[r]}
+                  label={USER_ROLE_LABELS[r]}
                   selected={role === r}
                   onPress={() => setRole(r)}
                 />
@@ -1004,7 +1066,7 @@ function Admin() {
                   items.map((i) => (
                     <Row
                       key={i.id}
-                      label={`${i.phone ?? "—"} · ${text.roles[i.role]}`}
+                      label={`${i.phone ?? "—"} · ${USER_ROLE_LABELS[i.role]}`}
                       value={`${i.usedBy ? text.used : text.unused} · ${text.expires} ${dateLabel(new Date(i.expiresAt).toISOString())}`}
                     />
                   ))
@@ -1023,7 +1085,11 @@ function Admin() {
                   <Text style={s.small}>{text.noUsers}</Text>
                 ) : (
                   items.map((u) => (
-                    <Row key={u.id} label={u.phone} value={`${text.roles[u.role]} · ${u.tier}`} />
+                    <Row
+                      key={u.id}
+                      label={u.phone}
+                      value={`${USER_ROLE_LABELS[u.role]} · ${u.tier}`}
+                    />
                   ))
                 )
               }

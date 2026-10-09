@@ -10,6 +10,7 @@ import {
   APPROVAL_KINDS,
   answerLabel,
   BOARD_STAGES,
+  ESCALATION_LABEL,
   GOAL_LEVELS,
   GOAL_STATUSES,
   METRIC_PERIODS,
@@ -18,6 +19,7 @@ import {
   PRESENCE_LABELS,
   PROPOSAL_DECISIONS,
   REJECT_REASON_KINDS,
+  REVIEW_ESCALATION_THRESHOLD,
   WORKER_PRESENCE_STATES,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
@@ -27,6 +29,7 @@ import { type EventBus, toUserStreamEvent } from "./events.ts";
 import type { Mcp } from "./mcp.ts";
 import { assertProposed, type Room, type Rooms, type TaskStage, type TeamGoal } from "./rooms.ts";
 import type { Routing } from "./routing.ts";
+import type { Skills } from "./skills.ts";
 import type { Catalog } from "./store.ts";
 import { gatewayLlm, type Llm, loadTeam, TeamRuntime } from "./team-runtime.ts";
 
@@ -51,6 +54,8 @@ export interface RoomDeps {
   catalog?: Pick<Catalog, "packageById">;
   /** 사용량 장부 — 타임라인의 «누가 답했는지» 출처 */
   routing?: Pick<Routing, "answers">;
+  /** 스킬 — 결재함이 개인 스킬 초안을 승인 대기와 함께 낸다. 없는 구성에서는 스킬 초안이 결재함에 오지 않는다 */
+  skills?: Pick<Skills, "pendingDrafts">;
   /** 목표 분해기. 안 주면 catalog 로 `teamDecomposer` 를 만든다 */
   decomposer?: GoalDecomposer;
 }
@@ -168,6 +173,9 @@ export function roomRoutes(deps: RoomDeps) {
     deps.decomposer ?? (catalog ? teamDecomposer({ ...deps, catalog }) : undefined);
   // 현황판 역할 설명의 출처는 팀 패키지 역할표 하나다
   if (catalog) rooms.setRoleSource(async (id) => (await catalog.packageById(id)).roles);
+  // 방 항목의 «타사 입점» 표기도 같은 패키지가 출처다
+  if (catalog)
+    rooms.setThirdPartySource(async (id) => (await catalog.packageById(id)).thirdParty === true);
   const app = new Hono<Env>();
 
   // S2 방 목록 (+배지 집계)
@@ -396,10 +404,39 @@ export function roomRoutes(deps: RoomDeps) {
           roomCharacter: room.character,
         }));
     });
-    pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // 개인 스킬 초안도 사용자가 결정할 일이다 — kind "skill" 로 같은 목록에 싣는다 (결정은 `/skills/:id/decide`)
+    const drafts =
+      deps.skills && (kind === undefined || kind === "skill")
+        ? (await deps.skills.pendingDrafts(owner, roomId)).flatMap((skill) => {
+            const room = roomList.find((r) => r.id === skill.roomId);
+            if (!room) {
+              console.error(
+                `[osiri] 결재함: 스킬 초안 ${skill.id} 의 방 ${skill.roomId} 을 찾을 수 없어 싣지 못했습니다`,
+              );
+              return [];
+            }
+            return [
+              {
+                id: skill.id,
+                skillId: skill.id,
+                kind: "skill" as const,
+                roomId: room.id,
+                roomTitle: room.title,
+                roomCharacter: room.character,
+                title: `스킬 초안: ${skill.name}`,
+                summary: skill.appliesTo,
+                evidence: skill.evidence,
+                status: "pending" as const,
+                requestedBy: skill.proposedBy,
+                createdAt: skill.createdAt,
+              },
+            ];
+          })
+        : [];
+    const all = [...pending, ...drafts].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const titles = new Map(roomList.map((r) => [r.id, r.title]));
     return c.json({
-      pending,
+      pending: all,
       activities: activities
         .filter((a) => !roomId || a.roomId === roomId)
         .map((a) => ({
@@ -755,7 +792,38 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         actor: body.actor,
         title: `오류: ${body.action}`,
       });
-    return c.json({ id: entry.id });
+    // 같은 작업의 검수 반려가 쌓이면 초안으로 되돌리며 돌지 않는다 — 목표를 멈추고 [확인 필요] 카드로 사람에게 올린다
+    let escalated = false;
+    if (body.action === "review.reject" && body.goal_id) {
+      const goal = (await rooms.goals(c.get("owner"), c.get("roomId"))).find(
+        (g) => g.id === body.goal_id,
+      );
+      const rejects = (await rooms.auditLogs(c.get("owner"))).filter(
+        (log) => log.goalId === body.goal_id && log.action === "review.reject",
+      ).length;
+      if (!goal)
+        console.error(
+          `[osiri] 검수 반려 ${rejects}회째인 목표 ${body.goal_id} 를 방 ${c.get("roomId")} 에서 찾을 수 없어 에스컬레이션을 판정하지 못했습니다`,
+        );
+      else if (rejects % REVIEW_ESCALATION_THRESHOLD === 0) {
+        escalated = true;
+        await rooms.updateGoal(c.get("owner"), goal.id, { status: "blocked" }, "system");
+        await rooms.post(c.get("owner"), c.get("roomId"), {
+          role: "assistant",
+          kind: "card",
+          text: `검수에서 ${rejects}번 반려되어 멈췄습니다: ${goal.title}`,
+          payload: {
+            card: "escalation",
+            label: ESCALATION_LABEL,
+            goalId: goal.id,
+            title: goal.title,
+            rejects,
+            actor: body.actor,
+          },
+        });
+      }
+    }
+    return c.json({ id: entry.id, ...(escalated ? { escalated } : {}) });
   });
   // 주간 보고 (§15.4.3) — 최소 지표 3종
   app.post("/reports/weekly", async (c) => {

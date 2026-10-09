@@ -7,6 +7,7 @@ import {
   useRenderTool,
   useRenderToolCall,
 } from "@copilotkit/react-native/headless";
+import * as SecureStore from "expo-secure-store";
 import { ArrowDown, ArrowUp, FileText, RotateCcw, Square, X } from "lucide-react-native";
 import {
   type ReactNode,
@@ -54,6 +55,35 @@ const displayParameters = z.record(z.string(), z.unknown());
 // types omit that value, but react-native-web passes it through.
 const noFocusRing =
   Platform.OS === "web" ? ({ outlineStyle: "none" } as unknown as TextStyle) : undefined;
+
+// --- 0Siri 오프라인 큐 (기획 화면 3 «입력은 로컬 큐에 쌓고 연결 시 전송») ---
+// 아직 보내지 못한 메시지를 기기에 남겨, 앱을 닫았다 열어도 연결되면 이어서 보낸다.
+// 저장소는 auth.tsx 의 토큰 보관과 같다(웹 localStorage · 네이티브 expo-secure-store) — 이 앱에는 AsyncStorage 가 없다.
+const queueText = {
+  waiting: "보내는 중 — 연결 대기",
+  waitingDetail: "연결되면 자동으로 보내요",
+  storeFailed: (why: string) =>
+    `대기 메시지를 기기에 저장하지 못했어요 — 앱을 닫으면 사라질 수 있어요: ${why}`,
+  restoreFailed: (why: string) => `지난번에 보내지 못한 메시지를 불러오지 못했어요: ${why}`,
+  unreadable: "도구가 돌려준 결과를 읽지 못했어요",
+};
+const webStorage = Platform.OS === "web" && typeof localStorage !== "undefined";
+const outboxKey = (threadId: string) => `osiri.outbox.${threadId.replace(/[^\w.-]/g, "_")}`;
+const savedOutbox = z.array(z.object({ id: z.string(), text: z.string() }));
+async function readOutbox(threadId: string): Promise<QueuedMessage[]> {
+  const key = outboxKey(threadId);
+  const raw = webStorage ? localStorage.getItem(key) : await SecureStore.getItemAsync(key);
+  return raw ? savedOutbox.parse(JSON.parse(raw)) : [];
+}
+async function writeOutbox(threadId: string, pending: readonly QueuedMessage[]) {
+  const key = outboxKey(threadId);
+  if (!pending.length) {
+    if (webStorage) localStorage.removeItem(key);
+    else await SecureStore.deleteItemAsync(key);
+  } else if (webStorage) localStorage.setItem(key, JSON.stringify(pending));
+  else await SecureStore.setItemAsync(key, JSON.stringify(pending));
+}
+
 export function WorkspaceTools() {
   const { workspace, section } = useWorkspace();
   useAgentContext({
@@ -150,10 +180,13 @@ function ServerToolCard({
   const { data } = useAgentWorkspace();
   const { navigate } = useWorkspace();
   let value = result;
-  if (typeof value === "string") {
+  // JSON 이 아닌 결과(도구가 문장으로 답한 경우)는 «저장됨» 으로 덮지 않고 그 문장을 그대로 보인다
+  let raw = "";
+  if (typeof result === "string") {
     try {
-      value = JSON.parse(value);
+      value = JSON.parse(result);
     } catch {
+      raw = result || queueText.unreadable;
       value = undefined;
     }
   }
@@ -174,7 +207,9 @@ function ServerToolCard({
       {parsed.success && parsed.data.error ? (
         <ErrorNotice error={parsed.data.error} />
       ) : (
-        <Text style={s.muted}>{loading ? t.tools.card.waiting : t.tools.card.saved}</Text>
+        <Text style={s.muted}>
+          {loading ? t.tools.card.waiting : raw || t.tools.card.saved}
+        </Text>
       )}
       <Button small onPress={() => navigate(target)}>
         {t.tools.card.view(name)}
@@ -192,7 +227,16 @@ export function ChatScreen({
   footer,
   placeholder,
   answerLabel,
+  anchor,
+  online = true,
+  readOnly,
 }: {
+  /** 0Siri 팀 방: 이 자리로 스크롤한다. y = header 안에서의 세로 위치, "end" = 대화 끝(지금 결정할 카드). 새 객체를 줄 때마다 다시 간다. */
+  anchor?: { y: number | "end" };
+  /** 0Siri: 실시간 연결이 살아 있는가. 끊겨 있으면 입력을 큐에 쌓아 두고 «연결 대기» 로 보이며, 다시 붙으면 보낸다. */
+  online?: boolean;
+  /** 0Siri: 읽기 전용 방(해지됨)의 안내 문구. 주면 입력창 대신 이 칩만 보인다. */
+  readOnly?: string;
   prompt?: { id: number; text: string };
   thread?: Selection;
   active?: boolean;
@@ -232,6 +276,38 @@ export function ChatScreen({
   const list = useRef<ScrollView>(null);
   const [queue] = useState(() => new ConversationQueue());
   const outbox = useSyncExternalStore(queue.subscribe, queue.getSnapshot, queue.getSnapshot);
+  // 오프라인 큐: 지난번에 못 보낸 것을 먼저 되살린 뒤(restored)에만 저장한다 — 그 전에 쓰면 빈 큐로 덮어 지운다
+  const [restored, setRestored] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
+  const [outboxError, setOutboxError] = useState("");
+  useEffect(() => {
+    let live = true;
+    setRestored(false);
+    setRestoreError("");
+    readOutbox(threadId).then(
+      (saved) => {
+        if (!live) return;
+        const have = new Set(queue.getSnapshot().pending.map((m) => m.id));
+        for (const m of saved) if (!have.has(m.id)) queue.enqueue(m);
+        setRestored(true);
+      },
+      (e) => {
+        if (!live) return;
+        setRestoreError(queueText.restoreFailed(e instanceof Error ? e.message : String(e)));
+        setRestored(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [threadId, queue]);
+  useEffect(() => {
+    if (!restored) return;
+    writeOutbox(threadId, outbox.pending).then(
+      () => setOutboxError(""),
+      (e) => setOutboxError(queueText.storeFailed(e instanceof Error ? e.message : String(e))),
+    );
+  }, [threadId, restored, outbox.pending]);
   const followLatest = useRef(true);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
   const runLock = useRef(false);
@@ -306,7 +382,12 @@ export function ChatScreen({
     return () => {
       active = false;
       replay.unsubscribe();
-      if (richThreads) void agent.detachActiveRun().catch(() => {});
+      // 화면을 떠나는 중이라 알릴 자리가 없다 — 실행 중이던 답은 서버에서 이어지고 다음 진입 때 connectAgent 가 다시 붙는다.
+      // 그래도 실패는 흔적을 남긴다.
+      if (richThreads)
+        void agent
+          .detachActiveRun()
+          .catch((e) => console.warn(`[0siri] 대화 ${threadId} 의 실행 분리 실패`, e));
     };
   }, [
     agent,
@@ -318,7 +399,14 @@ export function ChatScreen({
     historyAttempt,
     richThreads,
     selection.existing,
+    threadId,
   ]);
+  // 끊긴 동안 대화 이력을 못 읽었으면, 다시 붙었을 때 스스로 한 번 더 읽는다 — 쌓아 둔 메시지는 이력이 있어야 나간다.
+  // historyError 는 일부러 의존성에서 뺀다: 붙어 있는 동안의 실패는 [다시 불러오기] 로 사람이 고른다(무한 재시도 금지).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 연결이 돌아온 순간에만 다시 읽는다
+  useEffect(() => {
+    if (online && historyError) setHistoryAttempt((attempt) => attempt + 1);
+  }, [online]);
   const saveHistory = useCallback(async () => {
     if (!richThreads) await api.request(conversationPath, { messages: agent.messages }, "PUT");
     setSaveError("");
@@ -383,9 +471,10 @@ export function ChatScreen({
     [run],
   );
   const flush = useCallback(() => {
-    if (!loaded || syncing || !isReady || runLock.current || agent.isRunning) return;
+    // 끊겨 있으면 보내지 않고 쌓아 둔다 — online 이 돌아오면 이 함수가 바뀌어 아래 effect 가 다시 보낸다
+    if (!online || !loaded || syncing || !isReady || runLock.current || agent.isRunning) return;
     void queue.flush(runQueued).catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [agent, isReady, loaded, syncing, queue, runQueued]);
+  }, [agent, isReady, loaded, syncing, queue, runQueued, online]);
   const enqueue = useCallback(
     (text: string) => {
       queue.enqueue({ id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text });
@@ -424,7 +513,8 @@ export function ChatScreen({
   }
   function send() {
     const text = draft.trim();
-    if (!text || !isReady || !loaded) return;
+    // 끊겨 있을 때는 준비가 덜 됐어도 받아서 쌓아 둔다(보내는 것은 flush 가 준비된 뒤에 한다)
+    if (!text || (online && (!isReady || !loaded))) return;
     // A new submission can continue after Stop; held follow-ups still need explicit resume.
     if (!busy && !agent.isRunning && !saveError && !queue.getSnapshot().pending.length)
       queue.resume();

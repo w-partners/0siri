@@ -1,9 +1,14 @@
 // 기기 임베딩 — 웹: transformers.js (WebGPU → WASM 폴백), EmbeddingGemma 2 q8 텍스트 전용 (0SIRI-SPEC §2.3 · §11.2).
 // 모델은 앱에 넣지 않고 첫 호출 때 HF 허브에서 받아 브라우저 캐시에 둔다. 실패하면 throw — 호출자(tier0.ts)가 서버로 넘기고 배지를 붙인다.
+import {
+  EMBED_DTYPE as DTYPE,
+  embedDocumentText,
+  embedQueryText,
+  EMBED_MODEL_ID as MODEL,
+} from "../../../../packages/domain/src/osiri";
 import type { DeviceBackend, DeviceReport } from "./device-embed.types";
 
-const MODEL = "onnx-community/embeddinggemma-2-ONNX";
-const DTYPE = "q8";
+// 모델 id·양자화·접두어는 서버(embeddings.ts)와 같은 도메인 상수다 — 어긋나면 기기 벡터와 서버 벡터가 안 맞는다.
 type Vec = number[];
 type Embedder = {
   embed: (texts: string[]) => Promise<Vec[]>;
@@ -56,8 +61,7 @@ export async function embedOnDevice(texts: string[], kind: "query" | "document")
     throw e;
   });
   const { embed } = await loader;
-  const prefix = kind === "query" ? "task: search result | query: " : "title: none | text: ";
-  return embed(texts.map((t) => prefix + t));
+  return embed(texts.map((t) => (kind === "query" ? embedQueryText(t) : embedDocumentText(t))));
 }
 
 /** 9단계 실측: 로드 시간·문장당 지연·메모리·한국어 샘플 top-1. 실패도 리포트로 남긴다. */

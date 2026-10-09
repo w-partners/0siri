@@ -6,6 +6,7 @@ import { Pressable, Text, View } from "react-native";
 import {
   EMBED_DOWNLOAD_MB,
   EMBED_DTYPE,
+  EMBED_TOKENIZER_MB,
   MEMORY_CATEGORIES,
   MEMORY_CATEGORY_LABELS,
   type MemoryCategory,
@@ -31,7 +32,16 @@ import { measureDevice } from "./device-embed";
 import type { DeviceReport } from "./device-embed.types";
 import { CharacterAvatar } from "./eve";
 import { Choice, useAction, useLoad } from "./store";
-import { type Memory, type SearchResult, searchMemories } from "./tier0";
+import {
+  DEVICE_OFF_REASON,
+  deviceSearchOff,
+  type Memory,
+  type SearchResult,
+  searchMemories,
+} from "./tier0";
+
+/** 목록 한 번에 읽는 최대 건수. 응답이 이만큼 차면 더 있을 수 있다 — «더 있음» 을 보인다 */
+const FACT_LIMIT = 200;
 
 const text = {
   title: "기억",
@@ -79,7 +89,9 @@ const text = {
   deleteRule: "삭제한 사실은 원본과 벡터 인덱스에서 함께 지워집니다.",
   diagnostics: "진단",
   deviceTitle: "기기 임베딩 실측",
-  deviceHint: `이 기기에서 EmbeddingGemma 2(${EMBED_DTYPE})를 돌려 속도·품질을 잽니다. 모델(${EMBED_DOWNLOAD_MB}MB)은 처음 한 번 내려받습니다.`,
+  deviceHint: `이 기기에서 EmbeddingGemma 2(${EMBED_DTYPE})를 돌려 속도·품질을 잽니다. 모델(${EMBED_DOWNLOAD_MB}MB)과 토크나이저(${EMBED_TOKENIZER_MB}MB)는 처음 한 번 내려받습니다.`,
+  deviceOff: `${DEVICE_OFF_REASON} — 설정 › 기기 모델에서 다시 켜면 실측할 수 있습니다`,
+  more: (n: number) => `더 있음 — 검색으로 좁히세요 (처음 ${n}건만 보입니다)`,
   deviceMeasure: "실측 시작",
   deviceUnavailable: "이 기기에서는 기기 임베딩을 쓸 수 없습니다 — 검색은 서버에서 합니다",
   deviceResult: (r: DeviceReport) =>
@@ -122,16 +134,17 @@ function Facts() {
   const [category, setCategory] = useState<MemoryCategory>();
   const query = q.trim();
   // 티어 0: 기기 임베딩으로 검색하고, 안 되면 서버로 — 어느 쪽인지와 넘어간 이유를 숨기지 않는다 (§11.1)
-  const list = useLoad<SearchResult>(
+  const list = useLoad<SearchResult & { more: boolean }>(
     async () => {
       const all = await api.request<Memory[]>(
-        `/api/memories?limit=200${category ? `&category=${category}` : ""}`,
+        `/api/memories?limit=${FACT_LIMIT}${category ? `&category=${category}` : ""}`,
       );
-      if (!query) return { items: all, servedBy: "server" };
+      const more = all.length >= FACT_LIMIT;
+      if (!query) return { items: all, servedBy: "server", more };
       const found = await searchMemories(api, query, all, 20);
       // 서버 폴백 경로(`/memories?q=`)는 카테고리를 모르니 한 번 더 거른다
       const items = found.items.filter((m) => !category || m.category === category);
-      return { ...found, items };
+      return { ...found, items, more };
     },
     `${query}|${category ?? ""}`,
   );
@@ -164,7 +177,11 @@ function Facts() {
               </Chip>
             </View>
             {list.data.servedBy === "server" && !!list.data.reason && (
-              <Text style={s.small}>{text.fallbackReason(list.data.reason)}</Text>
+              <Text style={s.small}>
+                {list.data.reason === DEVICE_OFF_REASON
+                  ? DEVICE_OFF_REASON
+                  : text.fallbackReason(list.data.reason)}
+              </Text>
             )}
           </View>
         )}
@@ -197,6 +214,10 @@ function Facts() {
             )
           }
         </Loaded>
+        {/* 기기 검색은 받은 목록 안에서만 찾는다 — 목록이 잘렸으면 검색 중에도 그 사실을 보인다 */}
+        {!list.loading && list.data?.more && (
+          <Chip tint={colors.warnBg}>{text.more(FACT_LIMIT)}</Chip>
+        )}
         <Field label={text.newFact} multiline value={draft} onChangeText={setDraft} />
         <ErrorNotice error={add.error} />
         <Button
@@ -439,7 +460,13 @@ function Diagnostics() {
           <Button
             small
             busy={act.busy}
-            onPress={() => act.run(async () => setReport(await measureDevice()))}
+            onPress={() =>
+              act.run(async () => {
+                // 꺼 둔 채로 실측하면 지운 모델을 다시 받는다 — 받지 않고 사유를 보인다
+                if (deviceSearchOff()) throw new Error(text.deviceOff);
+                setReport(await measureDevice());
+              })
+            }
           >
             {text.deviceMeasure}
           </Button>

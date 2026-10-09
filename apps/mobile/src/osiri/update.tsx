@@ -23,12 +23,15 @@ const text = {
   ready: (v: string) => `새 버전 v${v} 준비됨`,
   install: "설치",
   failed: (why: string) => `업데이트 확인 실패: ${why}`,
+  installFailed: (why: string) => `설치 화면을 열지 못했습니다: ${why}`,
+  retry: "다시 시도",
 };
 
 export function UpdateBanner() {
   const [latest, setLatest] = useState<Latest>();
   const [file, setFile] = useState<string>();
   const [status, setStatus] = useState("");
+  const [installError, setInstallError] = useState("");
 
   const check = useCallback(async () => {
     if (Platform.OS !== "android") return;
@@ -68,12 +71,18 @@ export function UpdateBanner() {
 
   const install = async () => {
     if (!file) return;
-    const uri = await FileSystem.getContentUriAsync(file);
-    await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-      data: uri,
-      flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-      type: "application/vnd.android.package-archive",
-    });
+    setInstallError("");
+    try {
+      const uri = await FileSystem.getContentUriAsync(file);
+      await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+        data: uri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+        type: "application/vnd.android.package-archive",
+      });
+    } catch (e) {
+      // 버튼은 그대로 남는다 — 사유를 보이고 같은 버튼이 «다시 시도» 가 된다
+      setInstallError(text.installFailed(e instanceof Error ? e.message : String(e)));
+    }
   };
 
   if (!latest && !status) return null;
@@ -92,10 +101,15 @@ export function UpdateBanner() {
         },
       ]}
     >
-      <Text style={[s.small, { flex: 1 }]}>
-        {status || (latest ? text.ready(latest.version) : "")}
+      <Text
+        accessibilityRole={installError ? "alert" : undefined}
+        style={[s.small, { flex: 1 }, installError ? { color: colors.miss } : null]}
+      >
+        {installError || status || (latest ? text.ready(latest.version) : "")}
       </Text>
-      {file && <Button onPress={() => void install()}>{text.install}</Button>}
+      {file && (
+        <Button onPress={() => void install()}>{installError ? text.retry : text.install}</Button>
+      )}
     </View>
   );
 }

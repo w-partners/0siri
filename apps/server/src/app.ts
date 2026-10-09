@@ -78,7 +78,7 @@ export async function createApp(
   const routing = new Routing(db, rooms);
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
-  const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing };
+  const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing, skills };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   agent.osiri = { memories, routing };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);

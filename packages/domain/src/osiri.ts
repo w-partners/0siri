@@ -341,3 +341,130 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   weeklyReport: true,
 };
 export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = { enabled: true, intensity: "motion" };
+
+// ---- 서버·앱 공용 라벨·문턱 (화면 3·4·5·6·9·11) — 서버가 쓰던 표를 여기로 올렸다 ----
+export const APPROVAL_STATUSES = ["pending", "approved", "rejected", "expired", "consumed"] as const;
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
+  pending: "대기 중",
+  approved: "승인됨",
+  rejected: "반려됨",
+  expired: "만료됨",
+  consumed: "집행됨",
+};
+export const APPROVAL_KIND_LABELS: Record<ApprovalKind, string> = {
+  publish: "발행",
+  consult: "상담",
+  skill: "스킬",
+};
+/** 현황판·목표 화면이 묶어 보이는 목표 단계 (작업(task)은 흐름 단계로 따로 센다) */
+export const GOAL_TREE_LEVELS = ["long", "mid", "short"] as const satisfies readonly GoalLevel[];
+export const GOAL_LEVEL_LABELS: Record<GoalLevel, string> = {
+  long: "장기",
+  mid: "중기",
+  short: "단기",
+  task: "작업",
+};
+export const GOAL_STATUS_LABELS: Record<GoalStatus, string> = {
+  proposed: "제안",
+  active: "진행",
+  completed: "달성",
+  paused: "일시정지",
+  blocked: "막힘",
+};
+export const GOAL_METRIC_LABELS: Record<GoalMetricKey, string> = {
+  published: "발행",
+  indexed: "색인",
+  ai_citations: "AI 인용",
+  conversions: "전환",
+};
+export const PROPOSAL_STATUS_LABELS: Record<ProposalStatus, string> = {
+  pending: "대기",
+  accepted: "채택됨",
+  held: "보류됨",
+};
+export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  active: "구독 중",
+  cancelled: "해지 예약",
+  ended: "종료",
+};
+/** 해지된(기간이 끝난) 방에 글을 쓰려 할 때의 안내 — 서버 409 문장과 화면 칩이 같은 문구를 쓴다 */
+export const ARCHIVED_ROOM_NOTICE = "해지된 방입니다 — 읽기 전용";
+/** 운영자가 플랫폼이 아닌 팀(패키지 `thirdParty`)에 붙이는 표기 */
+export const THIRD_PARTY_LABEL = "타사 입점";
+/** 패키지가 따로 적지 않았을 때 팀장이 구독 직후 건네는 첫 인사 */
+export const DEFAULT_TEAM_GREETING =
+  "안녕하세요, 팀장입니다. 이루고 싶은 첫 목표를 한 줄로 말씀해 주세요 — 팀이 나눠서 바로 시작하겠습니다.";
+/** 같은 작업의 검수 반려가 이만큼 쌓이면 초안으로 되돌리지 않고 사람에게 올린다 */
+export const REVIEW_ESCALATION_THRESHOLD = 3;
+export const ESCALATION_LABEL = "확인 필요";
+/** 월 상한 경고 단계 (`GET /billing/usage` 의 warn). 문턱은 상한 대비 사용률(%) */
+export const CAP_WARN_LEVELS = ["none", "near", "reached"] as const;
+export type CapWarnLevel = (typeof CAP_WARN_LEVELS)[number];
+export const CAP_WARN_NEAR_PERCENT = 80;
+export const CAP_WARN_REACHED_PERCENT = 100;
+export const CAP_REACHED_NOTICE =
+  "이번 달 사용 상한에 도달해 공용 열쇠로는 더 답하지 않습니다. 설정에서 월 상한을 올리거나 내 모델 키를 연결하세요";
+export const MODEL_KEY_REMOVED_NOTICE = "내 키를 지웠습니다 — 공용 열쇠로 전환, 월 상한 적용";
+/** 스킬 효과 측정은 아직 자동 수집이 아니다 — «효과 측정 중» 배지 옆에 그대로 밝힌다 */
+export const SKILL_MEASURE_NOTE =
+  "효과 지표는 팀이 보고할 때 반영됩니다 — 자동 수집 전이라 측정이 길어질 수 있습니다";
+
+// ---- 앱 화면 라벨 (화면 1·7·10·11) — 화면이 따로 들고 있던 표를 여기로 올렸다 (클라이언트 블록 시작) ----
+export const MODEL_KEY_PROVIDER_LABELS: Record<ModelKeyProvider, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  compatible: "호환 주소 (OpenAI-compatible)",
+};
+export const MCP_AUTH_LABELS: Record<McpAuthType, string> = {
+  none: "none",
+  header: "header",
+  oauth: "OAuth",
+};
+/** 서버가 아직 받지 않는 MCP 인증 방식(503). 화면은 고를 수 없게 «지원 예정» 으로만 보인다 */
+export const MCP_AUTH_UNSUPPORTED: readonly McpAuthType[] = ["oauth"];
+export const COMING_SOON_LABEL = "지원 예정";
+/** 아직 동작하지 않는 기능에 붙이는 칩 — 눌리는 척하는 버튼 대신 이것을 보인다 */
+export const NOT_READY_LABEL = "준비 중";
+export const MODEL_KEY_ERROR_LABELS: Record<ModelKeyErrorKind, string> = {
+  format: "형식 오류 — 키 모양이 맞지 않습니다",
+  auth: "권한 부족 — 이 키로는 모델 목록을 읽을 수 없습니다",
+  network: "네트워크 — 제공자에 닿지 못했습니다",
+};
+export const USER_ROLE_LABELS: Record<UserRole, string> = {
+  user: "사용자",
+  operator: "운영자",
+  admin: "관리자",
+};
+/** 기기 모델 한 층의 상태 (화면 11). "off" = 사용자가 지워서 기기 검색을 꺼 둔 상태 */
+export const DEVICE_LAYER_STATES = [
+  "unknown",
+  "none",
+  "downloading",
+  "ready",
+  "unsupported",
+  "oom",
+  "off",
+] as const;
+export type DeviceLayerState = (typeof DEVICE_LAYER_STATES)[number];
+export const DEVICE_LAYER_STATE_LABELS: Record<DeviceLayerState, string> = {
+  unknown: "확인 전",
+  none: "미다운로드",
+  downloading: "다운로드 중",
+  ready: "준비됨",
+  unsupported: "미지원 기기",
+  oom: "메모리 부족",
+  off: "꺼짐",
+};
+/** 큰 층(티어 1 기기 대화 모델) 표기 — 기획 화면 11 의 값. 아직 내려받을 실물이 없다 */
+export const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" } as const;
+/**
+ * EMBED_DOWNLOAD_MB 는 가중치 파일(onnx/model_quantized.onnx + .onnx_data = 314,220,093바이트 ≈ 299MiB)만 센 값이다.
+ * 토크나이저(tokenizer.json 32,170,510바이트 ≈ 31MiB)를 따로 받는다 — 2026-10-10 HF 허브 파일 목록 실측.
+ */
+export const EMBED_TOKENIZER_MB = 31;
+/** 로그인 실패가 이만큼 쌓이면 비밀번호 재설정 경로를 안내한다 (기획 화면 1 «3회 실패 시 우회») */
+export const LOGIN_FAILS_BEFORE_RESET_HINT = 3;
+export const PASSWORD_RESET_HINT = "비밀번호를 잊었으면 초대해 준 사람에게 재설정을 요청하세요";
+// ---- (클라이언트 블록 끝) ----

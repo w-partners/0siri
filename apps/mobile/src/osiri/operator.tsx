@@ -7,6 +7,7 @@ import {
   CANARY_ADVANCE_ORDER,
   CANARY_STAGE_LABELS,
   type CanaryAction,
+  REVIEW_MANUAL_REASON,
   VERSION_STATUS_LABELS,
 } from "../../../../packages/domain/src/osiri";
 import type {
@@ -70,15 +71,23 @@ const text = {
     string
   >,
   submit: "제출",
-  submitNote: "제출하면 심사 체크리스트 9항을 자동으로 다시 시험해요. 통과해야 카나리가 시작돼요.",
+  submitNote:
+    "제출하면 심사 체크리스트 9항을 확인해요. 서버가 자동으로 확인하지 못하는 항목은 수동 심사로 남고, 모두 통과해야 카나리가 시작돼요.",
   cancel: "취소",
   emptyVersionsDetail: "첫 버전을 제출하면 자동 심사를 거쳐 카나리 배포가 시작돼요.",
   submitFirst: "버전 제출하기",
   review: "자동 심사",
   reviewScore: (pass: number, total: number) => `${pass}/${total}항 통과`,
+  manualCount: (n: number) => `수동 심사 대기 ${n}항`,
   pass: "통과",
   fail: "실패",
+  manual: "수동 심사 대기",
   blocked: "심사에 실패해 배포가 막혔습니다. 실패한 항목을 고쳐 다시 제출해 주세요.",
+  manualBlocked:
+    "자동으로 확인하지 못한 항목이 수동 심사를 기다리고 있어 배포가 시작되지 않았습니다. 실패한 항목은 없습니다.",
+  degraded: "카나리 지표가 나빠졌습니다 — 확대를 [중단]하고 이전 버전으로 [롤백]하세요.",
+  degradedRates: (before: number | null, after: number | null) =>
+    `승인율 ${before === null ? "—" : `${before}%`} → ${after === null ? "—" : `${after}%`}`,
   canary: "카나리 배포",
   stoppedHint: "확대를 멈췄어요. 지표가 나빠졌다면 이전 버전으로 롤백하세요.",
   advance: "확대",
@@ -91,7 +100,10 @@ const text = {
     approvalRate: "승인율",
     topRejectReason: "반려 사유 1위",
     citations: "AI 인용",
-  } satisfies Record<keyof OperatorMetrics, string>,
+  } satisfies Record<
+    keyof Pick<OperatorMetrics, "approvalRate" | "topRejectReason" | "citations">,
+    string
+  >,
   measuring: "측정 중",
   metricsNote: "집계만 보여요. 사용자의 원본 데이터는 열람할 수 없어요.",
   queueEmpty: "승인할 스킬 초안이 없습니다",
@@ -371,6 +383,7 @@ function PackagePanel({
             <VersionCard
               key={v.id}
               version={v}
+              degraded={metrics.data?.degraded === true}
               busy={act.busy}
               onCanary={(action) => void canary(v, action)}
             />
@@ -388,14 +401,28 @@ function PackagePanel({
               </View>
             </Card>
           ) : (
-            <Button
-              small
-              danger
-              onPress={() => setConfirming(true)}
-              style={{ alignSelf: "flex-start" }}
-            >
-              {text.rollback}
-            </Button>
+            <>
+              {metrics.data?.degraded ? (
+                // 자동으로 멈추지는 않는다 — 운영자가 [중단]·[롤백] 을 고르게 근거와 함께 알린다
+                <View accessibilityRole="alert" style={s.error}>
+                  <Text style={[s.text, { color: colors.miss }]}>{text.degraded}</Text>
+                  <Text style={[s.small, mono, { color: colors.miss }]}>
+                    {text.degradedRates(
+                      metrics.data.previousApprovalRate,
+                      metrics.data.canaryApprovalRate,
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+              <Button
+                small
+                danger
+                onPress={() => setConfirming(true)}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {text.rollback}
+              </Button>
+            </>
           )}
         </>
       )}
@@ -497,15 +524,23 @@ function Metric({ label, value }: { label: string; value: string | null }) {
 /** 버전 한 건: 출처 · 자동 심사 체크리스트 · 카나리 단계. 심사 실패는 배포가 막혔다고 말한다. */
 function VersionCard({
   version,
+  degraded,
   busy,
   onCanary,
 }: {
   version: PackageVersion;
+  /** 카나리 지표 악화(서버 `/operator/metrics` 의 degraded) — [중단] 을 앞세운다 */
+  degraded: boolean;
   busy: boolean;
   onCanary: (action: CanaryAction) => void;
 }) {
   const failed = version.status === "review_failed";
   const passed = version.review.filter((r) => r.pass).length;
+  // 서버가 자동으로 확인하지 못한 항목 — 실패가 아니라 수동 심사 대기다(통과로 치지도 않는다)
+  const isManual = (r: PackageVersion["review"][number]) =>
+    !r.pass && r.reason === REVIEW_MANUAL_REASON;
+  const manual = version.review.filter(isManual).length;
+  const realFails = version.review.length - passed - manual;
   const { stage, percent } = version.canary;
   const at = (CANARY_ADVANCE_ORDER as readonly string[]).indexOf(stage); // "stopped" 는 -1
   const tint =
@@ -538,23 +573,39 @@ function VersionCard({
         <View style={[s.row, { gap: 8 }]}>
           <Text style={[s.small, { fontWeight: "600", color: colors.text }]}>{text.review}</Text>
           <Text style={[s.small, mono]}>{text.reviewScore(passed, version.review.length)}</Text>
+          {manual > 0 ? <Text style={[s.small, mono]}>· {text.manualCount(manual)}</Text> : null}
         </View>
         {version.review.map((r) => (
           <View key={r.id} style={[s.row, { gap: 8, alignItems: "flex-start" }]}>
-            {r.pass ? <Check size={14} color={colors.ok} /> : <X size={14} color={colors.miss} />}
+            {r.pass ? (
+              <Check size={14} color={colors.ok} />
+            ) : isManual(r) ? (
+              <Lock size={14} color={colors.warn} />
+            ) : (
+              <X size={14} color={colors.miss} />
+            )}
             <View style={{ flex: 1 }}>
               <Text style={s.muted}>
-                {r.item} · {r.pass ? text.pass : text.fail}
+                {r.item} · {r.pass ? text.pass : isManual(r) ? text.manual : text.fail}
               </Text>
               {r.reason ? (
-                <Text style={[s.small, r.pass ? null : { color: colors.miss }]}>{r.reason}</Text>
+                <Text
+                  style={[
+                    s.small,
+                    r.pass ? null : { color: isManual(r) ? colors.warn : colors.miss },
+                  ]}
+                >
+                  {r.reason}
+                </Text>
               ) : null}
             </View>
           </View>
         ))}
         {failed ? (
           <View accessibilityRole="alert" style={s.error}>
-            <Text style={[s.text, { color: colors.miss }]}>{text.blocked}</Text>
+            <Text style={[s.text, { color: colors.miss }]}>
+              {realFails === 0 && manual > 0 ? text.manualBlocked : text.blocked}
+            </Text>
           </View>
         ) : null}
       </View>
@@ -581,11 +632,16 @@ function VersionCard({
           </View>
           <Meter value={percent} tone={stage === "stopped" ? colors.miss : colors.accent} />
           {stage === "stopped" ? <Text style={s.small}>{text.stoppedHint}</Text> : null}
+          {version.status === "canary" && degraded ? (
+            <Text accessibilityRole="alert" style={[s.small, { color: colors.miss }]}>
+              {text.degraded}
+            </Text>
+          ) : null}
           {version.status === "canary" ? (
             <View style={[s.row, { gap: 8 }]}>
               <Button
                 small
-                primary
+                primary={!degraded}
                 busy={busy}
                 disabled={stage === "all" || stage === "stopped"}
                 onPress={() => onCanary("advance")}

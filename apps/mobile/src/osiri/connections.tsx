@@ -3,14 +3,18 @@
 import { type ReactNode, useState } from "react";
 import { Text, View } from "react-native";
 import {
+  COMING_SOON_LABEL,
+  MCP_AUTH_LABELS,
   MCP_AUTH_TYPES,
+  MCP_AUTH_UNSUPPORTED,
   MCP_RISKS,
   type McpAuthType,
   type McpRisk,
   MODEL_KEY_ERROR_KINDS,
+  MODEL_KEY_ERROR_LABELS,
+  MODEL_KEY_PROVIDER_LABELS,
   MODEL_KEY_PROVIDERS,
   type ModelKeyErrorKind,
-  type ModelKeyProvider,
 } from "../../../../packages/domain/src/osiri";
 import type { Mcp, McpTool } from "../../../server/src/osiri/mcp.ts";
 import type { ModelKeyRow } from "../../../server/src/osiri/routing.ts";
@@ -36,23 +40,11 @@ type McpItem = Awaited<ReturnType<Mcp["overview"]>>[number];
 /** `POST /connections/mcp/test` 의 응답 도구 — 서버 `Mcp.test()` */
 type TestedTool = Awaited<ReturnType<Mcp["test"]>>[number];
 
-// ---- 라벨 (개념마다 한 곳) ----
-export const PROVIDER_LABELS: Record<ModelKeyProvider, string> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  google: "Google",
-  compatible: "호환 주소 (OpenAI-compatible)",
-};
+// ---- 라벨은 도메인(packages/domain)이 정본 — 여기는 색만 정한다 ----
 const riskTint: Record<McpRisk, string> = {
   read: colors.okBg,
   write: colors.warnBg,
   external: colors.missBg,
-};
-const AUTH_LABELS: Record<McpAuthType, string> = { none: "none", header: "header", oauth: "OAuth" };
-const KEY_ERROR_LABELS: Record<ModelKeyErrorKind, string> = {
-  format: "형식 오류 — 키 모양이 맞지 않습니다",
-  auth: "권한 부족 — 이 키로는 모델 목록을 읽을 수 없습니다",
-  network: "네트워크 — 제공자에 닿지 못했습니다",
 };
 const text = {
   retry: "다시 시도",
@@ -400,17 +392,27 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
       />
       <Text style={[s.small, { fontWeight: "600", color: colors.text }]}>{text.auth}</Text>
       <View style={[s.row, { gap: 8, flexWrap: "wrap", marginBottom: 12 }]}>
-        {MCP_AUTH_TYPES.map((type) => (
-          <Choice
-            key={type}
-            label={AUTH_LABELS[type]}
-            selected={authType === type}
-            onPress={() => {
-              setTested(undefined);
-              setAuthType(type);
-            }}
-          />
-        ))}
+        {MCP_AUTH_TYPES.map((type) =>
+          MCP_AUTH_UNSUPPORTED.includes(type) ? (
+            // 서버가 아직 받지 않는 방식 — 고를 수 없게 표시만 한다
+            <Choice
+              key={type}
+              disabled
+              label={`${MCP_AUTH_LABELS[type]} · ${COMING_SOON_LABEL}`}
+              selected={false}
+            />
+          ) : (
+            <Choice
+              key={type}
+              label={MCP_AUTH_LABELS[type]}
+              selected={authType === type}
+              onPress={() => {
+                setTested(undefined);
+                setAuthType(type);
+              }}
+            />
+          ),
+        )}
       </View>
       {header && (
         <>
@@ -482,7 +484,6 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
                 name: name.trim(),
                 url: url.trim(),
                 ...(header ? { headers: { [headerName.trim()]: headerValue } } : {}),
-                ...(authType === "oauth" ? { auth: { type: authType } } : {}),
               });
               setHeaderValue(""); // 헤더 값은 제출 뒤 화면에 남기지 않는다
               notify(text.connected);
@@ -535,7 +536,10 @@ function ModelKeysPanel() {
                 return item ? (
                   <KeyCard key={provider} item={item} onChanged={list.retry} />
                 ) : (
-                  <ErrorNotice key={provider} error={text.missingRow(PROVIDER_LABELS[provider])} />
+                  <ErrorNotice
+                    key={provider}
+                    error={text.missingRow(MODEL_KEY_PROVIDER_LABELS[provider])}
+                  />
                 );
               })}
             </>
@@ -589,7 +593,9 @@ function KeyCard({ item, onChanged }: { item: ModelKeyRow; onChanged: () => void
   return (
     <View style={{ gap: 8, paddingBottom: 12, borderBottomWidth: 1, borderColor: colors.line }}>
       <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-        <Text style={[s.text, { fontWeight: "600" }]}>{PROVIDER_LABELS[item.provider]}</Text>
+        <Text style={[s.text, { fontWeight: "600" }]}>
+          {MODEL_KEY_PROVIDER_LABELS[item.provider]}
+        </Text>
         {active && item.last4 !== null && (
           <Text style={[s.text, mono]}>{text.masked(item.last4)}</Text>
         )}
@@ -635,7 +641,7 @@ function KeyCard({ item, onChanged }: { item: ModelKeyRow; onChanged: () => void
             <ErrorNotice
               error={[
                 text.keyFailed,
-                failure.kind ? KEY_ERROR_LABELS[failure.kind] : undefined,
+                failure.kind ? MODEL_KEY_ERROR_LABELS[failure.kind] : undefined,
                 failure.message,
               ]
                 .filter(Boolean)

@@ -49,6 +49,12 @@ export function classifyMemory(text: string, source: string): MemoryCategory {
   return "profile";
 }
 const MCP_ACCESS_ID = "memory-mcp-access";
+/**
+ * 다른 LLM 앱이 실제로 들어오는 기억 MCP 문(외부 엔드포인트)은 아직 서버에 없다 — 스위치는 저장만 된다.
+ * 열려 있지 않은 문이므로 켜도 새는 것은 없다. 화면은 ready 가 false 면 «준비 중» 으로 보인다.
+ * 문을 만들 때 그 진입점이 `mcpAccess(owner).enabled` 를 검사하게 하고 이 값을 true 로 바꾼다.
+ */
+const MCP_DOOR_READY = false;
 
 export class Memories {
   private ready: Promise<void> | undefined;
@@ -141,17 +147,20 @@ export class Memories {
     return rows.length;
   }
   // ---- 다른 LLM 앱이 읽는 기억 MCP 문 (화면 8). 켤 때만 열린다 — 기록이 없으면 닫힘 ----
-  async mcpAccess(owner: string): Promise<{ enabled: boolean }> {
+  async mcpAccess(owner: string): Promise<{ enabled: boolean; ready: boolean }> {
     const saved = await this.db.get<{ enabled: boolean }>(owner, "settings", MCP_ACCESS_ID);
-    return { enabled: saved?.enabled === true };
+    return { enabled: saved?.enabled === true, ready: MCP_DOOR_READY };
   }
-  async setMcpAccess(owner: string, enabled: boolean): Promise<{ enabled: boolean }> {
+  async setMcpAccess(
+    owner: string,
+    enabled: boolean,
+  ): Promise<{ enabled: boolean; ready: boolean }> {
     await this.db.put(owner, "settings", {
       id: MCP_ACCESS_ID,
       enabled,
       updatedAt: new Date().toISOString(),
     });
-    return { enabled };
+    return { enabled, ready: MCP_DOOR_READY };
   }
   /**
    * 프롬프트용 관련 기억 (소유자 한정). 검색이 실패하면 빈 목록으로 숨기지 않고 `error` 로 알린다 —

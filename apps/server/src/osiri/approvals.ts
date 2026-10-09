@@ -4,7 +4,9 @@
 //  - 승인본은 동결(frozenHash). 법률 패키지 발행 승인은 변호사(방 소유자) 본인만 — 운영자·관리자 대리 승인 불가.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  APPROVAL_STATUS_LABELS,
   type ApprovalKind,
+  type ApprovalStatus,
   PRESENCE_LABELS,
   type RejectReasonKind,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -13,7 +15,7 @@ import { AppError } from "../errors.ts";
 import type { EventBus } from "./events.ts";
 import type { Rooms } from "./rooms.ts";
 
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "consumed";
+export type { ApprovalStatus };
 export interface Approval {
   id: string;
   roomId: string;
@@ -54,17 +56,13 @@ export function canonical(value: unknown): string {
 export const inputHash = (toolName: string, input: unknown) =>
   sha(`${toolName}\n${canonical(input)}`);
 
-const STATUS_LABELS: Record<ApprovalStatus, string> = {
-  pending: "대기 중",
-  approved: "승인됨",
-  rejected: "반려됨",
-  expired: "만료됨",
-  consumed: "집행됨",
-};
 /** 이미 처리된 승인에 다시 결재했다 — 라우트가 409 와 함께 현재 `status` 를 돌려준다. */
 export class AlreadyDecidedError extends AppError {
   constructor(public readonly approvalStatus: ApprovalStatus) {
-    super(`이미 처리된 승인 요청입니다 (현재 상태: ${STATUS_LABELS[approvalStatus]})`, 409);
+    super(
+      `이미 처리된 승인 요청입니다 (현재 상태: ${APPROVAL_STATUS_LABELS[approvalStatus]})`,
+      409,
+    );
   }
 }
 const alreadyDecided = (status: ApprovalStatus) => new AlreadyDecidedError(status);
@@ -132,6 +130,7 @@ export class Approvals {
       approvalId: approval.id,
       result: "ok",
     });
+    await this.requeueGoal(owner, approval);
     this.bus.publish(owner, {
       type: "approval",
       roomId: approval.roomId,
@@ -141,6 +140,30 @@ export class Approvals {
     this.bus.publish(owner, { type: "board", roomId: approval.roomId });
     this.bus.publish(owner, { type: "inbox" });
     return true;
+  }
+  /**
+   * 만료된 승인이 붙잡고 있던 목표를 승인 단계에서 검수 뒤 단계로 되돌린다 — 워커의 다음 tick 이 다시 준비해 새 승인 카드를 낸다.
+   * (워커가 만료를 직접 폴링했을 때 하는 일과 같은 값이다: 진척 60 · geo.)
+   */
+  private async requeueGoal(owner: string, approval: Approval) {
+    if (!approval.goalId) return;
+    const goal = (await this.rooms.goals(owner, approval.roomId)).find(
+      (g) => g.id === approval.goalId,
+    );
+    if (!goal) {
+      console.error(
+        `[osiri] 만료된 승인 ${approval.id} 의 목표 ${approval.goalId} 를 방 ${approval.roomId} 에서 찾을 수 없어 재요청 신호를 내지 못했습니다`,
+      );
+      return;
+    }
+    if (goal.stage !== "approval" || goal.status !== "active") return;
+    await this.rooms.updateGoal(owner, goal.id, { progress: 60, stage: "geo" }, "system");
+    await this.rooms.activity(owner, {
+      roomId: approval.roomId,
+      kind: "approval",
+      actor: "system",
+      title: `승인 요청 만료: ${approval.title} — 팀이 다시 준비해 새 승인 카드를 올립니다`,
+    });
   }
 
   /** 한 목표에 걸린 승인 전부(오래된 순). 만료 시각이 지난 대기 건은 먼저 만료 처리한다. */
@@ -198,6 +221,8 @@ export class Approvals {
         summary: approval.summary,
         evidence: approval.evidence,
         toolName: approval.toolName,
+        // 카드가 그려질 때의 동결 해시 — 화면이 이 값을 decide 의 frozenHash 로 그대로 보낸다
+        inputHash: approval.inputHash,
       },
     });
     approval.messageId = card.id;
@@ -243,7 +268,10 @@ export class Approvals {
     const reasonKind = decision === "reject" ? options.reasonKind : undefined;
     const approval = await this.get(owner, id);
     if (options.frozenHash && options.frozenHash !== approval.inputHash)
-      throw new AppError("승인 대상이 바뀌었습니다. 최신 내용을 다시 확인하세요", 409);
+      throw new AppError(
+        "화면에 보인 내용과 승인 대상이 다릅니다(동결 해시 불일치). 최신 승인 카드를 다시 확인하세요",
+        409,
+      );
     // 이미 처리된 건은 무엇을 보내든 409 (현재 상태를 알려 준다)
     if (approval.status !== "pending") throw alreadyDecided(approval.status);
     // 반려는 사유 종류(톤·사실·주제)가 있어야 팀이 무엇을 고칠지 안다 — 없으면 받지 않는다
@@ -308,12 +336,12 @@ export class Approvals {
       ...(reasonKind ? { reasonKind } : {}),
     });
     const stillPending = (await this.pending(owner)).some((a) => a.roomId === approval.roomId);
-    this.bus.setPresence(
-      owner,
-      approval.roomId,
-      stillPending ? "waiting" : "done",
-      stillPending ? PRESENCE_LABELS.waiting : "결재 완료",
-    );
+    // 반려는 끝이 아니라 재작업의 시작이다 — 캐릭터를 «작업 중» 으로 돌린다 (워커가 다음 상태를 알릴 때까지)
+    if (stillPending)
+      this.bus.setPresence(owner, approval.roomId, "waiting", PRESENCE_LABELS.waiting);
+    else if (decision === "reject")
+      this.bus.setPresence(owner, approval.roomId, "working", "반려 사유를 반영해 다시 작업 중");
+    else this.bus.setPresence(owner, approval.roomId, "done", "결재 완료");
     this.bus.publish(owner, {
       type: "approval",
       roomId: approval.roomId,

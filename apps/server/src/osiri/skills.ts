@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import {
   SKILL_DECISIONS,
+  SKILL_MEASURE_NOTE,
   SKILL_SCOPES,
   SKILL_STATUSES,
   type SkillDecision,
@@ -31,6 +32,8 @@ export interface Skill {
   appliesTo: string;
   proposedBy: string;
   measuring: boolean;
+  /** `measuring` 일 때만 — 측정이 어떻게 끝나는지(자동 수집이 아니라 팀 보고) */
+  measureNote?: string;
   effect: string | null;
   enabled: boolean;
   createdAt: string;
@@ -58,7 +61,11 @@ export const publicSkill = ({
   decidedAt: _decidedAt,
   reason: _reason,
   ...skill
-}: StoredSkill): Skill => skill;
+}: StoredSkill): Skill => ({
+  ...skill,
+  // «효과 측정 중» 이 언제 끝나는지 숨기지 않는다 — 측정은 팀 보고가 와야 끝난다
+  ...(skill.measuring ? { measureNote: SKILL_MEASURE_NOTE } : {}),
+});
 
 /** 결정별 허용 출발 상태와 도착 상태. 여기 없는 조합은 409. */
 const TRANSITIONS: Record<SkillDecision, { from: SkillStatus[]; to: SkillStatus }> = {
@@ -153,10 +160,27 @@ export class Skills {
       sourceRefs: [skill.id],
       result: "ok",
     });
+    // 개인 스킬 초안은 사용자가 결정할 일이다 — 활동에 남겨 결재함·배지가 바로 갱신되게 한다(inbox 이벤트).
+    // 패키지 공통 초안은 운영자 콘솔(pendingSkills)로 간다
+    if (skill.scope === "personal")
+      await this.rooms.activity(owner, {
+        roomId: room.roomId,
+        kind: "skill",
+        actor: input.proposedBy,
+        title: `스킬 초안: ${skill.name}`,
+        detail: skill.evidence,
+      });
     return publicSkill(skill);
   }
 
   // ---- 조회 ----
+  /** 결재를 기다리는 내 개인 스킬 초안(오래된 순) — 결재함(`/inbox`)이 승인 대기와 함께 낸다. */
+  async pendingDrafts(owner: string, roomId?: string): Promise<Skill[]> {
+    return (await this.db.list<StoredSkill>(owner, PERSONAL_KIND))
+      .filter((s) => s.status === "draft" && (!roomId || s.roomId === roomId))
+      .map(publicSkill)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
   /** 내 개인 스킬 + 내가 구독한 패키지의 공통 스킬(보이기만 한다). 최신순. */
   async listForUser(
     owner: string,
@@ -183,6 +207,16 @@ export class Skills {
           (!filter.scope || s.scope === filter.scope),
       )
       .map(publicSkill)
+      .sort(newestFirst);
+  }
+  /**
+   * 워커가 읽는 그 방의 개인 스킬(최신순) — 반려 사유(`reason`)를 함께 준다.
+   * 초안을 낸 팀이 왜 반려됐는지 알고 다음 초안을 고치는 길이다 (§17 «사유와 함께 회신»).
+   */
+  async forWorker(owner: string, roomId: string): Promise<(Skill & { reason?: string })[]> {
+    return (await this.db.list<StoredSkill>(owner, PERSONAL_KIND))
+      .filter((s) => s.roomId === roomId)
+      .map((s) => ({ ...publicSkill(s), ...(s.reason ? { reason: s.reason } : {}) }))
       .sort(newestFirst);
   }
   /** 한 패키지의 공통 스킬 (운영자 콘솔). 소유 확인은 호출자(Operator)가 먼저 한다. */
@@ -331,9 +365,38 @@ export class Skills {
     return publicSkill(next);
   }
   /**
-   * 측정 결과 악화 → 폐기 제안 (§17.2-5). 결정은 여전히 사람이 한다(retire|keep).
-   * ponytail: 아직 이것을 부르는 워커 라우트가 계약에 없다 — 측정 파이프라인이 붙을 때 연결한다.
+   * 효과 측정 결과 보고 (워커 `POST /worker/skills/:id/effect`). 측정이 끝난다:
+   * 나빠졌으면 폐기 제안(`proposeRetire`), 아니면 효과 문장만 남기고 계속 장착.
+   * ponytail: 지표를 자동으로 모으는 파이프라인은 없다 — 팀이 보고할 때만 측정이 끝난다. 그 사실은 응답의 measureNote 가 밝힌다.
    */
+  async reportEffect(
+    owner: string,
+    roomId: string,
+    id: string,
+    input: { effect: string; worse: boolean },
+  ): Promise<Skill> {
+    // 한 구독자의 워커가 패키지 공통 스킬(모든 구독자 몫)을 움직이지 못한다 — 개인 스킬, 그것도 그 방 것만
+    const skill = await this.personal(owner, id, "효과 보고");
+    if (skill.roomId !== roomId) throw new AppError("다른 방의 스킬입니다", 403);
+    if (input.worse) return this.proposeRetire(owner, id, input.effect);
+    if (skill.status !== "active")
+      throw new AppError("장착된 스킬에만 효과를 보고할 수 있습니다", 409);
+    const [scopeOwner, kind] = this.place(skill, owner);
+    const updated = await this.swap(scopeOwner, kind, skill, {
+      measuring: false,
+      effect: input.effect,
+    });
+    await this.rooms.audit(owner, {
+      packageId: skill.packageId,
+      ...(skill.roomId ? { roomId: skill.roomId } : {}),
+      actor: "system",
+      action: `skill.effect:${skill.name}@v${skill.version}`,
+      sourceRefs: [skill.id],
+      result: "ok",
+    });
+    return publicSkill(updated);
+  }
+  /** 측정 결과 악화 → 폐기 제안 (§17.2-5). 결정은 여전히 사람이 한다(retire|keep). `reportEffect` 가 부른다. */
   async proposeRetire(owner: string, id: string, effect: string): Promise<Skill> {
     const skill = await this.visible(owner, id);
     if (skill.status !== "active")
@@ -352,6 +415,15 @@ export class Skills {
       sourceRefs: [skill.id],
       result: "ok",
     });
+    // 폐기 제안은 사용자가 결정해야 한다 — 개인 스킬이면 그 방 활동에 남겨 알린다
+    if (skill.scope === "personal" && skill.roomId)
+      await this.rooms.activity(owner, {
+        roomId: skill.roomId,
+        kind: "skill",
+        actor: "system",
+        title: `스킬 폐기 제안: ${skill.name}`,
+        detail: effect,
+      });
     return publicSkill(updated);
   }
 }
@@ -428,6 +500,22 @@ export function skillWorkerRoutes(skills: Skills) {
         },
       ),
     );
+  });
+  app.get("/skills", async (c) => {
+    const owner = c.get("owner");
+    const roomId = c.get("roomId");
+    if (!owner || !roomId) throw new AppError("워커 토큰이 필요합니다", 401);
+    return c.json(await skills.forWorker(owner, roomId));
+  });
+  // 효과 측정 결과 — 나빠졌으면(worse) 폐기 제안으로 넘어가고, 아니면 측정을 끝내고 효과 문장을 남긴다
+  app.post("/skills/:id/effect", async (c) => {
+    const owner = c.get("owner");
+    const roomId = c.get("roomId");
+    if (!owner || !roomId) throw new AppError("워커 토큰이 필요합니다", 401);
+    const body = z
+      .object({ effect: z.string().min(1).max(1000), worse: z.boolean() })
+      .parse(await c.req.json());
+    return c.json(await skills.reportEffect(owner, roomId, c.req.param("id"), body));
   });
   return app;
 }

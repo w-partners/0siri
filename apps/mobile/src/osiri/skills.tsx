@@ -14,7 +14,7 @@ import type { Skill } from "../../../server/src/osiri/skills.ts";
 import { Button, Card, Chip, colors, Empty, ErrorNotice, Field, fonts, Skeleton, s } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood } from "./eve";
-import type { Room } from "./rooms";
+import { refreshRooms, useRooms } from "./rooms";
 import { useAction, useLoad } from "./store";
 import { LoadError } from "./team-goals";
 
@@ -149,8 +149,8 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
   const { width } = useWindowDimensions();
   const path = `/api/skills${roomId ? `?room_id=${encodeURIComponent(roomId)}` : ""}`;
   const skills = useLoad(() => api.request<Skill[]>(path), path);
-  // 초안 카드의 미니 아바타 = 그 스킬이 속한 방의 캐릭터 (방 목록이 정본)
-  const rooms = useLoad(() => api.request<Room[]>("/api/rooms"));
+  // 초안 카드의 미니 아바타 = 그 스킬이 속한 방의 캐릭터 (방 목록의 정본은 rooms.tsx 의 공용 저장소 — 따로 읽지 않는다)
+  const rooms = useRooms();
   // 이 화면에서 결정한 초안은 목록에서 사라지지 않고 잠긴 채 남는다
   const [decided, setDecided] = useState<string[]>([]);
 
@@ -171,7 +171,7 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
       <Skeleton rows={3} height={110} />
     );
 
-  const characterOf = (skill: Skill) => rooms.data?.find((r) => r.id === skill.roomId)?.character;
+  const characterOf = (skill: Skill) => rooms.rooms?.find((r) => r.id === skill.roomId)?.character;
   const drafts = list.filter((x) => x.status === "draft" || decided.includes(x.id));
   const active = list.filter((x) => x.status === "active");
   const retiring = list.filter((x) => x.status === "retire_proposed");
@@ -240,7 +240,9 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
   return (
     <View style={{ gap: 16 }}>
       {skills.error ? <LoadError error={skills.error} onRetry={skills.retry} /> : null}
-      {rooms.error ? <LoadError error={rooms.error} onRetry={rooms.retry} /> : null}
+      {rooms.error ? (
+        <LoadError error={rooms.error} onRetry={() => void refreshRooms(api)} />
+      ) : null}
       {width >= 900 ? (
         <View style={{ flexDirection: "row", gap: 24, alignItems: "flex-start" }}>
           {draftColumn}
@@ -265,6 +267,9 @@ function ActiveRow({ skill, onRollback }: { skill: Skill; onRollback: () => Prom
         <SkillTitle skill={skill} />
         {skill.measuring ? <Chip tint={colors.warnBg}>{text.measuring}</Chip> : null}
       </View>
+      {skill.measuring && skill.measureNote ? (
+        <Text style={s.small}>{skill.measureNote}</Text>
+      ) : null}
       {skill.effect ? <Text style={s.muted}>{skill.effect}</Text> : null}
       <ErrorNotice error={act.error} />
       <Button

@@ -4,10 +4,12 @@ import { randomUUID } from "node:crypto";
 import {
   ACTIVITY_LABELS,
   type ActivityKind,
+  ARCHIVED_ROOM_NOTICE,
   BOARD_STAGES,
   CHARACTER_STATE_OF,
   type CharacterState,
   GOAL_METRIC_KEYS,
+  GOAL_TREE_LEVELS,
   type GoalLevel,
   type GoalMetricKey,
   type GoalStatus,
@@ -44,6 +46,12 @@ export interface Room {
 /** 방 목록 카드 — `GET /rooms` 항목 */
 export type RoomCard = Room & {
   muted: boolean;
+  /** 해지되어 기간이 끝난 방 — 읽기 전용 */
+  archived: boolean;
+  /** 운영자가 플랫폼이 아닌 팀의 방 («타사 입점»). 개인 방은 false */
+  thirdParty: boolean;
+  /** 마지막으로 본 뒤의 진척 한 줄 («부재 중 진척»). 그 사이 활동이 없으면 싣지 않는다 */
+  digest?: string;
   pendingApprovals: number;
   progress: number;
   presence: PresenceState;
@@ -74,6 +82,8 @@ export interface GoalMetrics {
 export type RoleSource = (
   packageId: string,
 ) => Promise<{ name: string; title: string; summary: string }[]>;
+/** 패키지가 «타사 입점» 인지. 팀 패키지가 출처다. */
+export type ThirdPartySource = (packageId: string) => Promise<boolean>;
 export type MessageKind = "text" | "card" | "widget" | "report" | "digest";
 export interface RoomMessage {
   id: string;
@@ -163,6 +173,22 @@ export class Rooms {
   setRoleSource(source: RoleSource) {
     this.roleSource = source;
   }
+  private thirdPartySource: ThirdPartySource | undefined;
+  /** 방 항목 `thirdParty` 의 출처(팀 패키지)를 잇는다. 잇지 않으면 false 로 낸다(패키지를 모르는 구성). */
+  setThirdPartySource(source: ThirdPartySource) {
+    this.thirdPartySource = source;
+  }
+  private async thirdPartyOf(room: Room): Promise<boolean> {
+    if (room.packageId === null || !this.thirdPartySource) return false;
+    try {
+      return await this.thirdPartySource(room.packageId);
+    } catch (error) {
+      console.error(
+        `[osiri] 팀 정보를 읽지 못해 방 목록에 «타사 입점» 표기를 싣지 않습니다 room=${room.id} package=${room.packageId}: ${errorText(error)}`,
+      );
+      return false;
+    }
+  }
 
   // --- 방 ---
   async create(
@@ -215,12 +241,21 @@ export class Rooms {
   }
   /** 방 항목 하나 (고정·알림 끔 응답) — 목록과 같은 모양·같은 집계. */
   async card(owner: string, roomId: string): Promise<RoomCard> {
-    return this.toCard(await this.get(owner, roomId), await this.board(owner, roomId));
+    const room = await this.get(owner, roomId);
+    return this.toCard(
+      room,
+      await this.board(owner, roomId),
+      await this.db.list<Activity>(owner, "activity"),
+    );
   }
-  private toCard(room: Room, board: RoomBoard): RoomCard {
+  private async toCard(room: Room, board: RoomBoard, activities: Activity[]): Promise<RoomCard> {
+    const digest = this.digestOf(room, activities);
     return {
       ...room,
       muted: room.muted === true,
+      archived: room.archived === true,
+      thirdParty: await this.thirdPartyOf(room),
+      ...(digest ? { digest } : {}),
       pendingApprovals: board.pendingApprovals,
       progress: board.progress,
       presence: board.presence,
@@ -234,8 +269,13 @@ export class Rooms {
    */
   async list(owner: string): Promise<RoomCard[]> {
     const rooms = await this.db.list<Room>(owner, "rooms");
-    const boards = await Promise.all(rooms.map((room) => this.board(owner, room.id)));
-    const cards = rooms.map((room, i) => this.toCard(room, boards[i] as RoomBoard));
+    const [activities, ...boards] = await Promise.all([
+      this.db.list<Activity>(owner, "activity"),
+      ...rooms.map((room) => this.board(owner, room.id)),
+    ]);
+    const cards = await Promise.all(
+      rooms.map((room, i) => this.toCard(room, boards[i] as RoomBoard, activities)),
+    );
     cards.sort(
       (a, b) =>
         Number(b.pendingApprovals > 0) - Number(a.pendingApprovals > 0) ||
@@ -305,6 +345,8 @@ export class Rooms {
     input: Omit<RoomMessage, "id" | "roomId" | "seq" | "createdAt">,
   ): Promise<RoomMessage> {
     const room = await this.get(owner, roomId);
+    // 해지되어 기간이 끝난 방은 읽기 전용 — 사용자·워커·시스템 누구의 글도 받지 않는다
+    if (room.archived) throw new AppError(ARCHIVED_ROOM_NOTICE, 409);
     const seq = Date.now(); // ponytail: 단일 서버의 ms 시각이면 순서가 보장된다. 다중 인스턴스면 시퀀스 테이블로
     const message: RoomMessage = { id: randomUUID(), roomId, seq, createdAt: now(), ...input };
     await this.db.put(owner, "messages", message);
@@ -333,12 +375,16 @@ export class Rooms {
   }
   /** 방 재진입 시 "밤새 진척" 요약 — lastSeenAt 이후 활동을 한 카드로 (§4.3 부재 중 진척). */
   async digestSince(owner: string, roomId: string): Promise<string | null> {
-    const room = await this.get(owner, roomId);
+    return this.digestOf(
+      await this.get(owner, roomId),
+      await this.db.list<Activity>(owner, "activity"),
+    );
+  }
+  /** 부재 중 요약 한 줄 — 방 타임라인(`digestSince`)과 방 목록 항목(`digest`)이 같은 문장을 쓴다. */
+  private digestOf(room: Room, all: Activity[]): string | null {
     if (!room.lastSeenAt) return null;
     const since = room.lastSeenAt;
-    const activities = (await this.db.list<Activity>(owner, "activity")).filter(
-      (a) => a.roomId === roomId && a.createdAt > since,
-    );
+    const activities = all.filter((a) => a.roomId === room.id && a.createdAt > since);
     if (activities.length === 0) return null;
     const counts = new Map<ActivityKind, number>();
     for (const a of activities) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1);
@@ -629,7 +675,7 @@ export class Rooms {
 
   // --- 현황판 집계 (§4.3, §10 — 모든 화면이 이 값을 공유) ---
   async board(owner: string, roomId: string): Promise<RoomBoard> {
-    const [room, goals, approvals, activities] = await Promise.all([
+    const [room, goals, approvals, activities, skills] = await Promise.all([
       this.get(owner, roomId),
       this.goals(owner, roomId),
       this.db.listByField<{ status: string; expiresAt?: string }>(
@@ -639,15 +685,19 @@ export class Rooms {
         roomId,
       ),
       this.db.list<Activity>(owner, "activity"),
+      // 이 방의 개인 스킬 — 초안(draft)은 사용자의 결정을 기다린다
+      this.db.listByField<{ status: string }>(owner, "skills", "roomId", roomId),
     ]);
     const flow = Object.fromEntries(BOARD_STAGES.map((s) => [s, 0])) as Record<TaskStage, number>;
     for (const goal of goals)
       if (goal.level === "task" && goal.stage && goal.status !== "completed") flow[goal.stage]++;
     // 만료 시각이 지난 승인은 아직 정리(Approvals.pending)되지 않았어도 대기로 세지 않는다
     const nowMs = Date.now();
-    const pendingApprovals = approvals.filter(
-      (a) => a.status === "pending" && !(a.expiresAt && Date.parse(a.expiresAt) <= nowMs),
-    ).length;
+    // 배지 수 = 승인 대기 + 결정을 기다리는 개인 스킬 초안 (결재함 `/inbox` 의 pending 과 같은 묶음)
+    const pendingApprovals =
+      approvals.filter(
+        (a) => a.status === "pending" && !(a.expiresAt && Date.parse(a.expiresAt) <= nowMs),
+      ).length + skills.filter((s) => s.status === "draft").length;
     const metrics = { published: 0, indexed: 0, ai_citations: 0 };
     for (const goal of goals) {
       metrics.published += goal.metrics?.published ?? 0;
@@ -662,7 +712,7 @@ export class Rooms {
         else entry.done++;
         agents.set(a.actor, entry);
       }
-    const byLevel = (["long", "mid", "short"] as GoalLevel[]).map((level) => {
+    const byLevel = GOAL_TREE_LEVELS.map((level) => {
       const items = goals.filter((g) => g.level === level);
       return {
         level,

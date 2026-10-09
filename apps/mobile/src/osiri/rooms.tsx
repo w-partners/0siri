@@ -29,14 +29,28 @@ import {
   View,
 } from "react-native";
 import {
+  type AnsweredByView,
+  APPROVAL_STATUS_LABELS,
+  type ApprovalKind,
+  ARCHIVED_ROOM_NOTICE,
+  CHARACTER_STATE_OF,
+  type CharacterState,
+  ESCALATION_LABEL,
+  GOAL_LEVEL_LABELS,
+  GOAL_METRIC_LABELS,
   PERSONAL_ROOM_TITLE,
   PRESENCE_LABELS,
   PRESENCE_STATES,
   type PresenceState,
+  PROPOSAL_DECISION_LABELS,
+  PROPOSAL_STATUS_LABELS,
   REJECT_REASON_KINDS,
   REJECT_REASON_LABELS,
   type RejectReasonKind,
+  REPORT_METRIC_KEYS,
+  SKILL_STATUS_LABELS,
   STAGE_LABELS,
+  THIRD_PARTY_LABEL,
   VISIBLE_STAGES,
 } from "../../../../packages/domain/src/osiri";
 import type { Approval } from "../../../server/src/osiri/approvals.ts";
@@ -48,14 +62,18 @@ import type {
   TaskStage,
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
+import type { Skill } from "../../../server/src/osiri/skills.ts";
 import appJson from "../../app.json";
 import { apiBase } from "../api";
+import { ApiError } from "../api-response";
 import { ChatScreen } from "../chat";
 import {
   Badge,
   Button,
   Card,
+  Chip,
   colors,
+  dateLabel,
   Empty,
   ErrorNotice,
   fonts,
@@ -68,30 +86,31 @@ import {
 } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood, selfAnimated, useStill } from "./eve";
+import { SkillsScreen } from "./skills";
 import { LoadState, useLoad } from "./store";
-import { type GoalProposal, TeamGoalsScreen } from "./team-goals";
+import { type GoalProposal, LoadError, TeamGoalsScreen } from "./team-goals";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
 /** GET /rooms 항목 — 서버 RoomCard 가 정본 */
 export type Room = RoomCard;
+/** 방을 열 때 어디를 보일지: 그 메시지, 또는 지금 결정할 승인 카드. */
+export interface RoomFocus {
+  messageId?: string;
+  approval?: boolean;
+}
 const isPresence = (v: string): v is PresenceState =>
   (PRESENCE_STATES as readonly string[]).includes(v);
-/** GET /inbox 의 pending 항목 (tokenHash 제외 + roomTitle). */
-export type PendingApproval = Omit<Approval, "tokenHash"> & { roomTitle: string };
-export type RejectKind = RejectReasonKind;
-/** 계약 «방» — 누가 답했는지 */
-export interface AnsweredBy {
-  tier: number;
-  label: string;
-  model: string;
-  source: "device" | "server" | "byok";
-  reason?: string;
-  memoryRefs?: { id: string; text: string; at: string }[];
-}
-type Board = RoomBoard & {
-  recentDone?: string[];
-  agents: (RoomBoard["agents"][number] & { role?: string; current?: string })[];
+/**
+ * GET /inbox 의 pending 항목 (tokenHash 제외 + roomTitle).
+ * kind "skill" 은 승인 요청이 아니라 스킬 초안이다 — skillId 로 `/skills/:id/decide` 에 결정한다.
+ */
+export type PendingApproval = Omit<Approval, "tokenHash" | "kind"> & {
+  roomTitle: string;
+  kind: ApprovalKind;
+  skillId?: string;
 };
+export type RejectKind = RejectReasonKind;
+type Board = RoomBoard;
 interface Presence {
   state: PresenceState;
   label: string;
@@ -111,7 +130,7 @@ interface Timeline {
   messages: RoomMessage[];
   board: Board;
   /** 채팅 답변 id → 누가 답했는지 */
-  answers?: Record<string, AnsweredBy>;
+  answers?: Record<string, AnsweredByView>;
 }
 
 const text = {
@@ -136,11 +155,21 @@ const text = {
   back: "뒤로",
   teams: "팀 방",
   digestTitle: "결재 요약",
+  openInbox: "결재함 열기",
   goRoom: "방으로 이동",
   noPending: "대기 없음",
+  goApproval: (title: string, n: number) => `${title} 승인 대기 ${n}건 — 승인 카드로 이동`,
+  thirdParty: `(${THIRD_PARTY_LABEL})`,
   waitingCount: (n: number) => `승인 ${n}건 대기 중`,
   offline: "연결 대기",
   streamStopped: "실시간 연결이 끊겼어요",
+  streamSkipped: (event: string) =>
+    `실시간 알림(${event}) 하나를 읽지 못했어요. 화면이 늦을 수 있어요`,
+  hashMissing: "이 승인 카드에 동결 해시가 없어 결정을 보낼 수 없어요. 새로 고친 뒤 다시 시도해 주세요",
+  skillIdMissing: "이 스킬 초안의 id 를 받지 못해 결정을 보낼 수 없어요",
+  focusMissing: "가리킨 메시지를 이 방에서 찾지 못했어요",
+  boardMissing: "현황판을 받지 못해 팀 상태를 알 수 없어요",
+  skills: "스킬",
   summaryTitle: "팀 상태 요약",
   stage: "현재 단계",
   pendingList: "승인 대기",
@@ -160,7 +189,6 @@ const text = {
   agentDone: "완료",
   agentErrors: "오류",
   agentNow: "지금 하는 일",
-  levels: { long: "장기", mid: "중기", short: "단기" } as Record<string, string>,
   approve: "승인",
   reject: "반려",
   rejectWhy: "반려 사유를 골라 주세요",
@@ -169,16 +197,7 @@ const text = {
   cancel: "취소",
   evidence: "근거",
   viewInRoom: "방에서 보기",
-  status: {
-    pending: "승인 대기",
-    approved: "승인됨",
-    rejected: "반려됨",
-    expired: "만료됨 — 새 승인 카드가 올 거예요",
-    consumed: "발행됨",
-  } as Record<string, string>,
-  approvalGone: "이 승인은 더 이상 대기 중이 아니에요",
   report: "주간 보고",
-  metrics: { published: "발행", indexed: "색인", ai_citations: "AI 인용" },
   reportDetail: "상세는 목표 탭",
   nextWeek: "다음 주 계획",
   digest: "부재 중 진척",
@@ -186,14 +205,13 @@ const text = {
   composer: "메시지 입력 — 목표를 말하면 팀이 쪼개서 실행합니다",
   fromMemory: "기억에서 찾음",
   tabs: { chat: "채팅", goals: "목표", feed: "피드", ideas: "아이디어", files: "파일" },
+  feedPending: "승인 대기",
+  feedActivity: "활동",
   feedEmpty: { title: "아직 활동이 없어요", detail: "팀이 일하면 여기에 쌓여요." },
   ideasEmpty: {
     title: "아직 제안이 없어요",
     detail: "팀이 다음 주제·목표를 제안하면 여기에 와요.",
   },
-  accept: "채택",
-  hold: "보류",
-  proposalStatus: { accepted: "채택됨", held: "보류됨" } as Record<string, string>,
   filesApproved: "승인본",
   filesAudit: "감사 로그",
   filesEmpty: { title: "아직 문서가 없어요", detail: "승인한 발행본과 감사 기록이 여기에 남아요." },
@@ -218,10 +236,13 @@ export function useEventStream(path: string, onEvent: (event: string, payload: u
   const { api } = useWorkspace();
   const latest = useRef(onEvent);
   latest.current = onEvent;
-  const [status, setStatus] = useState<{ state: StreamState; error: string }>({
+  // skipped = 읽지 못해 건너뛴 이벤트가 있다 — 연결은 살아 있어도 화면이 낡았을 수 있으니 부르는 쪽이 보이고 다시 읽는다
+  const [status, setStatus] = useState<{ state: StreamState; error: string; skipped: string }>({
     state: "connecting",
     error: "",
+    skipped: "",
   });
+  const clearSkipped = useCallback(() => setStatus((prev) => ({ ...prev, skipped: "" })), []);
   useEffect(() => {
     let stopped = false;
     const controller = new AbortController();
@@ -238,6 +259,7 @@ export function useEventStream(path: string, onEvent: (event: string, payload: u
         latest.current(event, JSON.parse(data.join("\n")));
       } catch (e) {
         console.warn(`[0siri] ${path} 이벤트 ${event} 를 읽지 못해 건너뜀`, e);
+        setStatus((prev) => ({ ...prev, skipped: text.streamSkipped(event) }));
       }
     };
     const connect = async () => {
@@ -250,12 +272,13 @@ export function useEventStream(path: string, onEvent: (event: string, payload: u
             signal: controller.signal,
           });
           if (res.status >= 400 && res.status < 500) {
-            setStatus({ state: "stopped", error: `${text.streamStopped} (${res.status})` });
+            const error = `${text.streamStopped} (${res.status})`;
+            setStatus((prev) => ({ ...prev, state: "stopped", error }));
             return;
           }
           if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
           delay = 1000;
-          setStatus({ state: "live", error: "" });
+          setStatus((prev) => ({ ...prev, state: "live", error: "" }));
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
@@ -274,7 +297,7 @@ export function useEventStream(path: string, onEvent: (event: string, payload: u
           why = errorText(e);
         }
         if (stopped) return;
-        setStatus({ state: "waiting", error: why });
+        setStatus((prev) => ({ ...prev, state: "waiting", error: why }));
         await new Promise((r) => setTimeout(r, delay));
         delay = Math.min(delay * 2, 30_000);
       }
@@ -285,7 +308,7 @@ export function useEventStream(path: string, onEvent: (event: string, payload: u
       controller.abort();
     };
   }, [path, api]);
-  return status;
+  return { ...status, clearSkipped };
 }
 export interface StreamHandlers {
   onBoard?: (board: RoomBoard) => void;
@@ -347,9 +370,29 @@ export function useRoomsLive() {
     );
     return () => sub.remove();
   }, [api]);
-  return useEventStream("/api/stream", (event) => {
+  return useEventStream("/api/stream", (event, payload) => {
     if (event === "rooms" || event === "inbox") void refreshRooms(api);
+    for (const l of userEventListeners) l(event, payload);
   });
+}
+// 사용자 스트림(`/api/stream`)은 앱에 하나뿐이다 — 결재함·목표 화면은 연결을 또 열지 않고 여기서 이벤트만 듣는다.
+const userEventListeners = new Set<(event: string, payload: unknown) => void>();
+/** 사용자 스트림의 `rooms {roomId}` · `inbox` 이벤트를 듣는다. 연결은 `useRoomsLive` 가 쥐고 있다. */
+export function useUserEvent(
+  event: "rooms" | "inbox",
+  onEvent: (payload: { roomId?: string }) => void,
+) {
+  const latest = useRef(onEvent);
+  latest.current = onEvent;
+  useEffect(() => {
+    const listener = (name: string, payload: unknown) => {
+      if (name === event) latest.current((payload ?? {}) as { roomId?: string });
+    };
+    userEventListeners.add(listener);
+    return () => {
+      userEventListeners.delete(listener);
+    };
+  }, [event]);
 }
 
 const roomTitle = (room: Room) =>
@@ -393,7 +436,7 @@ export function RoomList({
   onOpen,
   activeId,
 }: {
-  onOpen: (room: Room) => void;
+  onOpen: (room: Room, focus?: RoomFocus) => void;
   activeId?: string;
 }) {
   const { api, navigate } = useWorkspace();
@@ -502,7 +545,18 @@ export function RoomList({
                 <Text style={[s.heading, { fontSize: 15, flexShrink: 1 }]} numberOfLines={1}>
                   {roomTitle(room)}
                 </Text>
-                <Badge count={room.pendingApprovals} />
+                {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
+                {room.pendingApprovals > 0 && (
+                  // 배지를 누르면 같은 방의 승인 카드 위치로 간다 (기획 화면 2)
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={text.goApproval(roomTitle(room), room.pendingApprovals)}
+                    hitSlop={8}
+                    onPress={() => onOpen(room, { approval: true })}
+                  >
+                    <Badge count={room.pendingApprovals} />
+                  </Pressable>
+                )}
                 {room.muted && (
                   <BellOff size={13} color={colors.muted} accessibilityLabel={text.muted} />
                 )}
@@ -553,26 +607,76 @@ export function RoomList({
   );
 }
 
-/** 결재 요약 카드 (화면 2 우측) — 승인을 기다리는 방과 [방으로 이동], 다 처리했으면 «대기 없음». */
-export function ApprovalDigest({ onOpenRoom }: { onOpenRoom: (room: Room) => void }) {
-  const { rooms } = useRooms();
-  if (!rooms) return null; // 목록의 로딩·오류는 RoomList 가 보인다
+/**
+ * 결재 요약 카드 (화면 2 우측) — 승인을 기다리는 방과 [방으로 이동], 다 처리했으면 «대기 없음». 카드를 누르면 결재함(화면 4).
+ * 그 아래 «부재 중 진척»: 마지막으로 본 뒤 팀마다 있었던 일 한 줄(서버 RoomCard.digest).
+ */
+export function ApprovalDigest({
+  onOpenRoom,
+  currentId,
+}: {
+  onOpenRoom: (room: Room, focus?: RoomFocus) => void;
+  /** 지금 열려 있는 방 — 그 방의 부재 중 진척은 타임라인 머리에 이미 있다 */
+  currentId?: string;
+}) {
+  const { api, navigate } = useWorkspace();
+  const { rooms, error } = useRooms();
+  // 모바일 홈에는 방 목록이 떠 있지 않다 — 목록을 못 읽었으면 여기서 사유와 [다시 시도] 를 보인다
+  if (!rooms)
+    return error ? (
+      <View style={{ gap: 8 }}>
+        <ErrorNotice error={`${text.loadFailed}: ${error}`} />
+        <Button small onPress={() => void refreshRooms(api)}>
+          {text.retry}
+        </Button>
+      </View>
+    ) : (
+      <Skeleton rows={1} height={58} />
+    );
   const waiting = rooms.filter((r) => r.pendingApprovals > 0);
+  const away = rooms.filter((r) => !!r.digest && r.id !== currentId);
   return (
-    <Card style={{ gap: 8, padding: 14 }}>
-      <Text style={s.label}>{text.digestTitle}</Text>
-      {waiting.length === 0 && <Text style={s.muted}>{text.noPending}</Text>}
-      {waiting.map((room) => (
-        <View key={room.id} style={[s.between, { gap: 8 }]}>
-          <Text style={[s.text, { flex: 1 }]} numberOfLines={1}>
-            {roomTitle(room)} {text.pendingLine(room.pendingApprovals)}
-          </Text>
-          <Button small onPress={() => onOpenRoom(room)}>
-            {text.goRoom}
-          </Button>
-        </View>
-      ))}
-    </Card>
+    <View style={{ gap: 10 }}>
+      <Card style={{ gap: 8, padding: 14 }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={text.openInbox}
+          onPress={() => navigate("inbox")}
+          style={[s.between, { gap: 8 }]}
+        >
+          <Text style={s.label}>{text.digestTitle}</Text>
+          <Text style={s.small}>{text.openInbox} ›</Text>
+        </Pressable>
+        {waiting.length === 0 && <Text style={s.muted}>{text.noPending}</Text>}
+        {waiting.map((room) => (
+          <View key={room.id} style={[s.between, { gap: 8 }]}>
+            <Text style={[s.text, { flex: 1 }]} numberOfLines={1}>
+              {roomTitle(room)} {text.pendingLine(room.pendingApprovals)}
+            </Text>
+            <Button small onPress={() => onOpenRoom(room, { approval: true })}>
+              {text.goRoom}
+            </Button>
+          </View>
+        ))}
+      </Card>
+      {away.length > 0 && (
+        <Card style={{ gap: 6, padding: 14, backgroundColor: colors.sunk }}>
+          <Text style={s.label}>{text.digest}</Text>
+          {away.map((room) => (
+            <Pressable
+              key={room.id}
+              accessibilityRole="button"
+              accessibilityLabel={`${roomTitle(room)} — ${text.goRoom}`}
+              onPress={() => onOpenRoom(room)}
+            >
+              <Text style={s.text}>
+                {roomTitle(room)} — {room.digest}
+              </Text>
+            </Pressable>
+          ))}
+        </Card>
+      )}
+    </View>
   );
 }
 
@@ -658,7 +762,7 @@ export function BoardWidget({ board }: { board: Board }) {
       <View style={{ gap: 6 }}>
         {board.goals.map((g) => (
           <View key={g.level} style={[s.row, { gap: 10 }]}>
-            <Text style={[s.small, { width: 28 }]}>{text.levels[g.level]}</Text>
+            <Text style={[s.small, { width: 28 }]}>{GOAL_LEVEL_LABELS[g.level]}</Text>
             <View style={{ flex: 1 }}>
               <Bar value={g.progress} />
             </View>
@@ -716,33 +820,56 @@ export function BoardWidget({ board }: { board: Board }) {
 // --- 승인 카드 (화면 3·4 공용) ---
 type Decision = "approve" | "reject";
 export type RejectReason = { kind: RejectKind; note?: string };
-/** 승인 결정. frozenHash 는 결재함(/inbox)의 inputHash 로 동결한다 — 카드 payload 에는 해시가 없다. 이미 처리된 건은 서버가 409 로 막는다. */
+/**
+ * 승인 결정. frozenHash = 그 카드가 화면에 그려질 때 받은 inputHash — 사용자가 본 것을 승인한다.
+ * 누르는 순간 다시 읽어 맞추지 않는다(그러면 그 사이 내용이 바뀌어도 통과한다). 해시가 없으면 보내지 않고 사유를 보인다.
+ * 내용이 바뀌었거나 이미 처리된 건은 서버가 409 로 막는다 — 부르는 쪽이 그 문장을 보이고 카드를 다시 읽는다.
+ */
 export async function decideApproval(
   api: Api,
   approvalId: string,
   decision: Decision,
-  frozenHash: string | undefined,
+  frozenHash: unknown,
   reason?: RejectReason,
 ) {
-  const hash =
-    frozenHash ??
-    (await api.request<{ pending: PendingApproval[] }>("/api/inbox")).pending.find(
-      (a) => a.id === approvalId,
-    )?.inputHash;
-  if (!hash) throw new Error(text.approvalGone);
+  if (typeof frozenHash !== "string" || !frozenHash) throw new Error(text.hashMissing);
   return api.request<{ status: string }>(`/api/approvals/${approvalId}/decide`, {
     decision,
-    frozenHash: hash,
+    frozenHash,
     reasonKind: reason?.kind,
     reason: reason?.note,
   });
 }
+/**
+ * 결재함 항목 하나를 결정한다 (결재함·방 피드 공용). 스킬 초안(kind "skill")은 `/skills/:id/decide` 로 간다.
+ * label 은 결과 칩에 쓸 이름 — 승인 요청은 status 로 찾으므로 비운다.
+ */
+export async function decidePending(
+  api: Api,
+  item: PendingApproval,
+  decision: Decision,
+  reason?: RejectReason,
+): Promise<{ status: string; label?: string }> {
+  if (item.kind !== "skill")
+    return decideApproval(api, item.id, decision, item.inputHash, reason);
+  if (!item.skillId) throw new Error(text.skillIdMissing);
+  // 스킬 반려 사유는 한 문장이다 — 고른 종류(톤·사실·주제)와 덧붙인 말을 이어 보낸다
+  const why = reason && [REJECT_REASON_LABELS[reason.kind], reason.note].filter(Boolean).join(" — ");
+  const skill = await api.request<Skill>(`/api/skills/${item.skillId}/decide`, {
+    decision,
+    reason: why,
+  });
+  return { status: skill.status, label: SKILL_STATUS_LABELS[skill.status] };
+}
+/** 409 = 내용이 바뀌었거나 이미 처리됨. 문장은 서버 것을 그대로 보이고, 화면은 카드를 다시 읽어야 한다. */
+export const isConflict = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 409;
 /** 승인 카드. [승인]=채움 [반려]=외곽선, 반려는 사유(톤·사실·주제)를 고른 뒤에만 보낸다. 결정되면 그 상태로 잠긴다. */
 export function ApprovalCard({
   title,
   summary,
   evidence,
   status,
+  statusLabel,
   character,
   onDecide,
   onOpenRoom,
@@ -751,6 +878,8 @@ export function ApprovalCard({
   summary: string;
   evidence?: string;
   status: string;
+  /** 승인 상태가 아닌 결과(스킬 초안의 «장착됨» 등)의 이름 — 서버가 준 status 의 라벨 */
+  statusLabel?: string;
   /** 어느 팀의 요청인지 — 결재함에서 방 캐릭터를 같이 보인다 */
   character?: string;
   onDecide: (decision: Decision, reason?: RejectReason) => Promise<void>;
@@ -775,9 +904,9 @@ export function ApprovalCard({
     }
   };
   const pending = status === "pending";
-  const good = status === "approved" || status === "consumed";
+  const good = status === "approved" || status === "consumed" || status === "active";
   const tone = pending
-    ? { fg: colors.warn, bg: colors.warnBg, border: colors.brass }
+    ? { fg: colors.warn, bg: colors.warnBg, border: colors.warn }
     : good
       ? { fg: colors.ok, bg: colors.okBg, border: colors.ok }
       : { fg: colors.miss, bg: colors.missBg, border: colors.miss };
@@ -795,7 +924,7 @@ export function ApprovalCard({
           }}
         >
           <Text style={{ color: tone.fg, fontSize: 12, fontWeight: "700" }}>
-            {text.status[status] ?? status}
+            {statusLabel ?? (APPROVAL_STATUS_LABELS as Record<string, string>)[status] ?? status}
           </Text>
         </View>
       </View>
@@ -893,15 +1022,17 @@ export function ApprovalCard({
 
 // --- 캐릭터 (화면 3 상단 중앙) ---
 function Character({
-  room,
-  presence,
+  assetId,
+  state,
   pending,
   mood,
   label,
   onPress,
 }: {
-  room: Room;
-  presence: Presence;
+  /** 서버 현황판의 `character.assetId` — 어떤 그림인지는 eve.tsx 가 정한다 */
+  assetId: string;
+  /** 서버 현황판의 `character.state` — 여기서 다시 계산하지 않는다 */
+  state: CharacterState;
   pending: number;
   mood: Mood;
   label: string;
@@ -917,31 +1048,29 @@ function Character({
         Animated.timing(anim, { toValue: 1, duration: ms, useNativeDriver: true }),
         Animated.timing(anim, { toValue: 0, duration: ms, useNativeDriver: true }),
       ]);
-    // 승인 대기는 사용자 쪽을 보고 멈춘다. done 은 한 번 기울고 멈춘다 — 서버가 곧 idle 을 보낸다.
-    if (presence.state === "waiting") return;
+    // 승인 대기는 사용자 쪽을 보고 멈춘다. 완료 보고는 한 번 기울고 멈춘다 — 서버가 곧 idle 을 보낸다.
+    if (state === "awaiting_approval") return;
     const loop =
-      presence.state === "done"
-        ? seq(220)
-        : Animated.loop(seq(presence.state === "working" ? 420 : 1800));
+      state === "reporting" ? seq(220) : Animated.loop(seq(state === "working" ? 420 : 1800));
     loop.start();
     return () => loop.stop();
-  }, [anim, presence.state, still]);
+  }, [anim, state, still]);
   const transform =
-    presence.state === "working"
+    state === "working"
       ? [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 3] }) }] // 작게 끄덕임
-      : presence.state === "done"
+      : state === "reporting"
         ? [{ rotate: anim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "8deg"] }) }] // 보고 카드 쪽으로 기울임
         : [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.03] }) }]; // 느린 호흡
-  // 스스로 움직이는 캐릭터(영시리)는 기분을 넘기고, 아니면 presence 애니메이션을 여기서 입힌다
-  const own = selfAnimated(room.character);
+  // 스스로 움직이는 캐릭터(영시리)는 기분을 넘기고, 아니면 상태 애니메이션을 여기서 입힌다
+  const own = selfAnimated(assetId);
   const ownMood: Mood =
     pending > 0
       ? "alert"
       : mood !== "idle"
         ? mood
-        : presence.state === "working"
+        : state === "working"
           ? "thinking"
-          : presence.state === "done"
+          : state === "reporting"
             ? "happy"
             : "idle";
   return (
@@ -954,7 +1083,7 @@ function Character({
       style={{ alignItems: "center" }}
     >
       <Animated.View style={own ? undefined : { transform }}>
-        <CharacterAvatar character={room.character} size={own ? 104 : 72} mood={ownMood} />
+        <CharacterAvatar character={assetId} size={own ? 104 : 72} mood={ownMood} />
       </Animated.View>
       <Badge count={pending} style={{ position: "absolute", top: 0, right: -6 }} />
     </Pressable>
@@ -962,27 +1091,79 @@ function Character({
 }
 
 // --- 방 탭: 피드 · 아이디어 · 파일 ---
-function FeedTab({ roomId }: { roomId: string }) {
+/** 피드 = 그 방의 결재함(화면 4): 위에 지금 결정할 승인 대기, 아래에 활동. tick 은 방 스트림의 승인 이벤트마다 오른다. */
+function FeedTab({
+  roomId,
+  tick,
+  onFocus,
+}: {
+  roomId: string;
+  tick: number;
+  onFocus: (focus: RoomFocus) => void;
+}) {
   const { api } = useWorkspace();
+  const key = `${roomId}|${tick}`;
   const feed = useLoad(
     () => api.request<(Activity & { label: string })[]>(`/api/rooms/${roomId}/feed`),
-    roomId,
+    key,
   );
+  const inbox = useLoad(
+    () =>
+      api.request<{ pending: PendingApproval[] }>(
+        `/api/inbox?room_id=${encodeURIComponent(roomId)}`,
+      ),
+    key,
+  );
+  const [conflict, setConflict] = useState("");
+  const decide = async (a: PendingApproval, decision: Decision, reason?: RejectReason) => {
+    setConflict("");
+    try {
+      await decidePending(api, a, decision, reason);
+    } catch (e) {
+      if (!isConflict(e)) throw e;
+      setConflict(e.message); // 카드는 다시 읽으면 사라지므로 사유를 탭 머리에 남긴다
+    }
+    inbox.retry();
+    feed.retry();
+    void refreshRooms(api); // 목록·탭 배지
+  };
+  const pending = inbox.data?.pending ?? [];
   return (
-    <LoadState {...feed} empty={feed.data?.length === 0 && text.feedEmpty}>
-      {feed.data?.map((a) => (
-        <Card key={a.id} style={{ gap: 2, padding: 12 }}>
-          <View style={[s.between, { gap: 8 }]}>
-            <Text style={s.small}>
-              {a.label} · {a.actor}
-            </Text>
-            <Text style={[s.small, mono]}>{relativeDate(a.createdAt)}</Text>
-          </View>
-          <Text style={s.text}>{a.title}</Text>
-          {!!a.detail && <Text style={s.muted}>{a.detail}</Text>}
-        </Card>
+    <View style={{ gap: 10 }}>
+      <ErrorNotice error={conflict} />
+      {inbox.error ? <LoadError error={inbox.error} onRetry={inbox.retry} /> : null}
+      {pending.length > 0 && (
+        <Text style={s.label}>
+          {text.feedPending} {pending.length}
+        </Text>
+      )}
+      {pending.map((a) => (
+        <ApprovalCard
+          key={a.id}
+          title={a.title}
+          summary={a.summary}
+          evidence={a.evidence}
+          status="pending"
+          onDecide={(decision, reason) => decide(a, decision, reason)}
+          onOpenRoom={() => onFocus(a.messageId ? { messageId: a.messageId } : { approval: true })}
+        />
       ))}
-    </LoadState>
+      <Text style={s.label}>{text.feedActivity}</Text>
+      <LoadState {...feed} empty={feed.data?.length === 0 && text.feedEmpty}>
+        {feed.data?.map((a) => (
+          <Card key={a.id} style={{ gap: 2, padding: 12 }}>
+            <View style={[s.between, { gap: 8 }]}>
+              <Text style={s.small}>
+                {a.label} · {a.actor}
+              </Text>
+              <Text style={[s.small, mono]}>{relativeDate(a.createdAt)}</Text>
+            </View>
+            <Text style={s.text}>{a.title}</Text>
+            {!!a.detail && <Text style={s.muted}>{a.detail}</Text>}
+          </Card>
+        ))}
+      </LoadState>
+    </View>
   );
 }
 function IdeasTab({ roomId }: { roomId: string }) {
@@ -1020,14 +1201,14 @@ function IdeasTab({ roomId }: { roomId: string }) {
                 busy={busy === p.id}
                 onPress={() => void decide(p.id, "accept")}
               >
-                {text.accept}
+                {PROPOSAL_DECISION_LABELS.accept}
               </Button>
               <Button small disabled={busy === p.id} onPress={() => void decide(p.id, "hold")}>
-                {text.hold}
+                {PROPOSAL_DECISION_LABELS.hold}
               </Button>
             </View>
           ) : (
-            <Text style={s.small}>{text.proposalStatus[p.status] ?? p.status}</Text>
+            <Text style={s.small}>{PROPOSAL_STATUS_LABELS[p.status]}</Text>
           )}
         </Card>
       ))}
@@ -1076,7 +1257,9 @@ export function RoomScreen({
   onBack: () => void;
   /** 기본 채팅(홈): 앱을 열면 바로 영시리와 대화. 뒤로 대신 팀 방 목록 버튼, 버전 표시 */
   home?: boolean;
-  onOpenRoom?: (room: Room) => void;
+  onOpenRoom?: (room: Room, focus?: RoomFocus) => void;
+  /** 열자마자 보일 곳 — 목록 배지·결재함 [방에서 보기]·활동 항목이 넘긴다 */
+  focus?: RoomFocus;
 }) {
   const { api } = useWorkspace();
   const desktop = useWindowDimensions().width >= 900;
@@ -1084,15 +1267,26 @@ export function RoomScreen({
   const [boardOpen, setBoardOpen] = useState(false);
   const [mood, setMood] = useState<Mood>("idle");
   const [teams, setTeams] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState("");
-  const [presence, setPresence] = useState<Presence>({
-    state: isPresence(room.presence) ? room.presence : "idle",
-    label: isPresence(room.presence) ? PRESENCE_LABELS[room.presence] : room.presence,
-  });
   const [summary, setSummary] = useState<Summary | null | "loading" | { error: string }>(null);
-  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 방 스트림 이벤트 수 — 목표·피드 탭이 이 값이 오르면 다시 읽는다
+  const [tick, setTick] = useState({ goal: 0, approval: 0 });
+  // 보일 곳: 밖에서 온 것(focus)과 방 안 탭(피드·목표)에서 고른 것이 같은 길을 탄다
+  const [target, setTarget] = useState(focus);
+  const [anchor, setAnchor] = useState<{ y: number | "end" }>();
+  const [focusNote, setFocusNote] = useState("");
+  const scrolled = useRef<RoomFocus | undefined>(undefined);
+  const ys = useRef(new Map<string, number>());
+  const show = useCallback((next: RoomFocus) => {
+    setTarget(next);
+    setTab("chat");
+  }, []);
+  useEffect(() => {
+    if (focus) show(focus);
+  }, [focus, show]);
   const lastSeq = useRef(0);
   const messages = timeline?.messages;
   const patchMessages = (fn: (list: RoomMessage[]) => RoomMessage[]) =>
@@ -1119,21 +1313,18 @@ export function RoomScreen({
     if (wasBusy.current && !busy) void load();
     wasBusy.current = busy;
   }, [mood, load]);
-  // 결정: 캐릭터 상태는 room.presence 이벤트 한 곳에서만 바뀐다. 30초 무이벤트 → 휴식은
-  // working/done 에만 적용한다 — waiting 은 승인이 남아 있는 한 서버가 유지하는 상태다.
-  const onPresence = useCallback((p: Presence) => {
-    setPresence(p);
-    if (idleTimer.current) clearTimeout(idleTimer.current);
-    if (p.state === "working" || p.state === "done")
-      idleTimer.current = setTimeout(
-        () => setPresence({ state: "idle", label: PRESENCE_LABELS.idle }),
-        30_000,
-      );
-  }, []);
-  useEffect(
-    () => () => {
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-    },
+  // 캐릭터 상태는 서버 현황판(board.character)이 정본이다 — 여기서 타이머로 다시 계산하지 않는다(쉼으로 돌리는 것도 서버가 한다).
+  // room.presence 이벤트는 같은 값을 먼저 알려 줄 뿐이라, 현황판의 그 칸만 서버 대응표(CHARACTER_STATE_OF)로 옮겨 적는다.
+  const onPresence = useCallback(
+    (p: Presence) =>
+      setBoard(
+        (b) =>
+          b && {
+            ...b,
+            presence: p.state,
+            character: { ...b.character, state: CHARACTER_STATE_OF[p.state], summary: p.label },
+          },
+      ),
     [],
   );
   const setCardStatus = (approvalId: string, status: string) =>
@@ -1147,7 +1338,11 @@ export function RoomScreen({
   const stream = useRoomStream(room.id, {
     onBoard: (b) => setBoard(b as Board),
     onPresence,
-    onApproval: ({ approvalId, status }) => setCardStatus(approvalId, status),
+    onApproval: ({ approvalId, status }) => {
+      setCardStatus(approvalId, status);
+      setTick((t) => ({ ...t, approval: t.approval + 1 }));
+    },
+    onGoal: () => setTick((t) => ({ ...t, goal: t.goal + 1 })),
     onMessage: async () => {
       try {
         const t = await api.request<Timeline>(
@@ -1171,7 +1366,15 @@ export function RoomScreen({
   };
   const decide = async (m: RoomMessage, decision: Decision, reason?: RejectReason) => {
     const approvalId = String(m.payload?.approvalId ?? "");
-    const result = await decideApproval(api, approvalId, decision, undefined, reason);
+    let result: { status: string };
+    try {
+      // 카드가 그려질 때 받은 해시를 그대로 보낸다 — 사용자가 본 것을 승인한다
+      result = await decideApproval(api, approvalId, decision, m.payload?.inputHash, reason);
+    } catch (e) {
+      // 내용이 바뀌었거나 이미 처리됨: 서버 문장은 카드가 보이고(다시 던진다), 카드는 최신으로 다시 읽는다
+      if (isConflict(e)) void load();
+      throw e;
+    }
     setCardStatus(approvalId, result.status);
     void refreshRooms(api); // 목록·탭 배지
     try {
@@ -1183,43 +1386,94 @@ export function RoomScreen({
 
   const pending = board?.pendingApprovals ?? room.pendingApprovals;
   const title = room.packageId === null ? PERSONAL_ROOM_TITLE : room.title;
+  // 현황판이 오기 전에는 방 목록 항목(서버 값)의 상태를 같은 대응표로 읽는다
+  const character = board?.character ?? {
+    assetId: room.character,
+    state: CHARACTER_STATE_OF[room.presence],
+    summary: PRESENCE_LABELS[room.presence],
+  };
   // 끊겨 있으면 «쉬는 중» 이 아니라 «연결 대기» 로 구분한다
-  const statusLine =
-    stream.state === "waiting"
-      ? text.offline
-      : pending > 0
-        ? text.waitingCount(pending)
-        : (text.mood[mood] ?? presence.label);
+  const offline = stream.state === "waiting" || stream.state === "stopped";
+  const statusLine = offline
+    ? text.offline
+    : pending > 0
+      ? text.waitingCount(pending)
+      : (text.mood[mood] ?? character.summary);
   const isPendingCard = (m: RoomMessage) =>
     m.kind === "card" && m.payload?.card === "approval" && m.payload?.status === "pending";
-  const render = (m: RoomMessage) => (
-    <View key={m.id} style={{ paddingHorizontal: 16 }}>
-      <Message message={m} onDecide={(d, r) => decide(m, d, r)} onGoals={() => setTab("goals")} />
-    </View>
-  );
+  const render = (m: RoomMessage) => {
+    const focused = m.id === target?.messageId;
+    return (
+      <View
+        key={m.id}
+        onLayout={(e) => {
+          const y = e.nativeEvent.layout.y;
+          ys.current.set(m.id, y);
+          if (focused && scrolled.current !== target && !isPendingCard(m)) {
+            scrolled.current = target;
+            setAnchor({ y });
+          }
+        }}
+        style={[
+          { paddingHorizontal: 16 },
+          focused && { borderLeftWidth: 3, borderLeftColor: colors.accent },
+        ]}
+      >
+        <Message message={m} onDecide={(d, r) => decide(m, d, r)} onGoals={() => setTab("goals")} />
+      </View>
+    );
+  };
+  // 가리킨 곳으로: 지금 결정할 승인 카드는 대화 끝(footer)에 있고, 지난 메시지는 머리(header) 안의 제 자리에 있다
+  useEffect(() => {
+    if (!target || !messages || tab !== "chat" || scrolled.current === target) return;
+    setFocusNote("");
+    const m = target.messageId ? messages.find((x) => x.id === target.messageId) : undefined;
+    if (target.messageId && !m) {
+      scrolled.current = target;
+      setFocusNote(text.focusMissing);
+      return;
+    }
+    const pendingCard =
+      !!m && m.kind === "card" && m.payload?.card === "approval" && m.payload?.status === "pending";
+    const y = !m || pendingCard ? "end" : ys.current.get(m.id);
+    if (y === undefined) return; // 아직 자리가 안 잡혔다 — 잡히면 onLayout 이 보낸다
+    scrolled.current = target;
+    setAnchor({ y });
+  }, [target, messages, tab]);
   const answerLabel = (id: string) => {
     const a = timeline?.answers?.[id];
-    if (!a) return undefined;
-    return [
-      a.label,
-      a.source === "device" ? a.model : "",
-      a.memoryRefs?.length ? text.fromMemory : "",
-      a.reason ?? "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    return a ? answerLine(a) : undefined;
   };
   // 한 흐름: 지난 기록(부재 중 진척 → 보고·결정된 카드) → 대화 → 지금 결정할 승인 카드
   const header: ReactNode = (
     <View style={{ gap: 10 }}>
-      {home && onOpenRoom && (
+      {(home || desktop) && onOpenRoom && (
         <View style={{ paddingHorizontal: 16 }}>
-          <ApprovalDigest onOpenRoom={onOpenRoom} />
+          <ApprovalDigest onOpenRoom={onOpenRoom} currentId={room.id} />
         </View>
       )}
       {!!stream.error && stream.state === "stopped" && (
         <View style={{ paddingHorizontal: 16 }}>
           <ErrorNotice error={stream.error} />
+        </View>
+      )}
+      {!!stream.skipped && (
+        <View style={{ gap: 8, paddingHorizontal: 16 }}>
+          <ErrorNotice error={stream.skipped} />
+          <Button
+            small
+            onPress={() => {
+              stream.clearSkipped();
+              void load();
+            }}
+          >
+            {text.retry}
+          </Button>
+        </View>
+      )}
+      {!!focusNote && (
+        <View style={{ paddingHorizontal: 16 }}>
+          <ErrorNotice error={focusNote} />
         </View>
       )}
       {error ? (
@@ -1269,14 +1523,17 @@ export function RoomScreen({
       </View>
       <View style={{ alignItems: "center", gap: 2, paddingBottom: 8 }}>
         <Character
-          room={room}
-          presence={presence}
+          assetId={character.assetId}
+          state={character.state}
           pending={pending}
           mood={mood}
           label={`${title} · ${statusLine}`}
           onPress={() => void openSummary()}
         />
-        <Text style={[s.title, { fontSize: 20 }]}>{title}</Text>
+        <View style={[s.row, { gap: 6 }]}>
+          <Text style={[s.title, { fontSize: 20 }]}>{title}</Text>
+          {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
+        </View>
         <Text style={s.muted}>{statusLine}</Text>
         {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
         {home && <Text style={[s.small, mono]}>0Siri v{appJson.expo.version}</Text>}
@@ -1365,13 +1622,23 @@ export function RoomScreen({
               }
               placeholder={home ? undefined : text.composer}
               answerLabel={answerLabel}
+              anchor={anchor}
+              online={!offline}
+              readOnly={room.archived ? ARCHIVED_ROOM_NOTICE : undefined}
             />
           </View>
         </>
       ) : (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
-          {tab === "goals" && <TeamGoalsScreen roomId={room.id} />}
-          {tab === "feed" && <FeedTab roomId={room.id} />}
+          {tab === "goals" && (
+            <TeamGoalsScreen
+              roomId={room.id}
+              tick={tick.goal}
+              onOpenRoom={(_id, next) => show(next ?? {})}
+              onChat={() => setTab("chat")}
+            />
+          )}
+          {tab === "feed" && <FeedTab roomId={room.id} tick={tick.approval} onFocus={show} />}
           {tab === "ideas" && <IdeasTab roomId={room.id} />}
           {tab === "files" && <FilesTab roomId={room.id} />}
         </ScrollView>
@@ -1380,11 +1647,16 @@ export function RoomScreen({
         <Sheet title={text.teams} onClose={() => setTeams(false)}>
           <RoomList
             activeId={room.id}
-            onOpen={(next) => {
+            onOpen={(next, nextFocus) => {
               setTeams(false);
-              onOpenRoom?.(next);
+              onOpenRoom?.(next, nextFocus);
             }}
           />
+        </Sheet>
+      )}
+      {skillsOpen && (
+        <Sheet title={text.skills} subtitle={title} wide onClose={() => setSkillsOpen(false)}>
+          <SkillsScreen roomId={room.id} />
         </Sheet>
       )}
       {summary !== null && (
@@ -1440,29 +1712,41 @@ export function RoomScreen({
                 {text.nextReport}:{" "}
                 {summary.nextReportAt ? timeLabel(summary.nextReportAt) : text.noReport}
               </Text>
-              {!home && (
-                <View style={[s.row, { gap: 8 }]}>
-                  <Button
-                    small
-                    onPress={() => {
-                      setSummary(null);
-                      setTab("chat");
-                      setBoardOpen(true);
-                    }}
-                  >
-                    {text.openBoard}
-                  </Button>
-                  <Button
-                    small
-                    onPress={() => {
-                      setSummary(null);
-                      setTab("goals");
-                    }}
-                  >
-                    {text.openGoals}
-                  </Button>
-                </View>
-              )}
+              <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                {!home && (
+                  <>
+                    <Button
+                      small
+                      onPress={() => {
+                        setSummary(null);
+                        setTab("chat");
+                        setBoardOpen(true);
+                      }}
+                    >
+                      {text.openBoard}
+                    </Button>
+                    <Button
+                      small
+                      onPress={() => {
+                        setSummary(null);
+                        setTab("goals");
+                      }}
+                    >
+                      {text.openGoals}
+                    </Button>
+                  </>
+                )}
+                {/* 스킬(화면 9)은 팀 방과 결재함에서 들어간다 — 이 방의 스킬만 보인다 */}
+                <Button
+                  small
+                  onPress={() => {
+                    setSummary(null);
+                    setSkillsOpen(true);
+                  }}
+                >
+                  {text.skills}
+                </Button>
+              </View>
             </View>
           )}
         </Sheet>
@@ -1470,6 +1754,20 @@ export function RoomScreen({
     </View>
   );
 }
+
+/**
+ * 답변 아래 «누가 답했는지» 한 줄 — 채팅 답변(timeline.answers)과 워커 메시지(payload.answeredBy)가 같은 문장을 쓴다.
+ * 기기에서 답했으면 모델 이름을, 기억을 썼으면 «기억에서 찾음 · 날짜» 를, 서버로 넘어간 사유(reason)가 있으면 그것도 붙인다.
+ */
+const answerLine = (a: AnsweredByView) =>
+  [
+    a.label,
+    a.source === "device" ? a.model : "",
+    a.memoryRefs?.[0] ? `${text.fromMemory} · ${dateLabel(a.memoryRefs[0].at)}` : "",
+    a.reason ?? "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
 function Message({
   message: m,
@@ -1491,6 +1789,21 @@ function Message({
         onDecide={onDecide}
       />
     );
+  // 검수 반려가 되풀이돼 팀이 사람에게 올린 건 — [확인 필요] 칩으로 구분한다. 여기서 실행하는 것은 없다(읽고 대화로 답한다).
+  if (m.kind === "card" && p.card === "escalation")
+    return (
+      <Card style={{ gap: 8, padding: 14, borderColor: colors.warn }}>
+        <View style={[s.row, { gap: 8 }]}>
+          <Chip tint={colors.warnBg}>{ESCALATION_LABEL}</Chip>
+          {typeof p.title === "string" && (
+            <Text style={[s.heading, { flex: 1, fontSize: 15 }]}>{p.title}</Text>
+          )}
+        </View>
+        {!!m.text && <Text style={s.text}>{m.text}</Text>}
+        {typeof p.summary === "string" && <Text style={s.muted}>{p.summary}</Text>}
+        <Text style={[s.small, mono]}>{relativeDate(m.createdAt)}</Text>
+      </Card>
+    );
   // 결정: widget payload 가 현황판 모양(flow 가 있음)일 때만 위젯으로, 아니면 텍스트로 보인다.
   if (m.kind === "widget" && p.flow && typeof p.flow === "object")
     return <BoardWidget board={{ ...(p as unknown as Board), roomId: m.roomId }} />;
@@ -1502,13 +1815,13 @@ function Message({
         <Text style={[s.label, { color: colors.brass }]}>{text.report}</Text>
         {m.text ? <Text style={s.text}>{m.text}</Text> : null}
         <View style={[s.between, { gap: 6 }]}>
-          {(Object.keys(text.metrics) as (keyof typeof text.metrics)[]).map((k) => (
+          {REPORT_METRIC_KEYS.map((k) => (
             <View key={k} style={{ alignItems: "center", flex: 1 }}>
               {/* 값이 없으면 0 이 아니라 «—» — 아직 재지 않은 것과 0 건은 다르다 */}
               <Text style={[s.heading, mono, { fontSize: 18 }]}>
                 {typeof metrics[k] === "number" ? String(metrics[k]) : "—"}
               </Text>
-              <Text style={s.small}>{text.metrics[k]}</Text>
+              <Text style={s.small}>{GOAL_METRIC_LABELS[k]}</Text>
             </View>
           ))}
         </View>
@@ -1536,7 +1849,7 @@ function Message({
       </Card>
     );
   const mine = m.role === "user";
-  const by = p.answeredBy as AnsweredBy | undefined;
+  const by = p.answeredBy as AnsweredByView | undefined;
   return (
     <View style={{ alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "85%", gap: 2 }}>
       <View
@@ -1556,7 +1869,7 @@ function Message({
         <Text style={m.role === "system" ? s.small : s.text}>{m.text}</Text>
       </View>
       <Text style={[s.small, { marginHorizontal: 6 }]}>
-        {by ? `${by.label} · ` : ""}
+        {by ? `${answerLine(by)} · ` : ""}
         {relativeDate(m.createdAt)}
       </Text>
     </View>

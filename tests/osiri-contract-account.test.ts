@@ -33,9 +33,12 @@ import {
 } from "../apps/server/src/osiri/routing.ts";
 import { Catalog, type Subscription, storeRoutes } from "../apps/server/src/osiri/store.ts";
 import {
+  ARCHIVED_ROOM_NOTICE,
+  CAP_REACHED_NOTICE,
   DEFAULT_CHARACTER_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
   MODEL_KEY_PROVIDERS,
+  MODEL_KEY_REMOVED_NOTICE,
   PERSONAL_TIER_LABEL,
   PLATFORM_DATA_HANDLING,
   REPORT_CADENCE_LABELS,
@@ -286,6 +289,14 @@ test("모델 키: 제공자마다 한 줄 · 검증을 통과한 뒤에만 교�
   assert.ok(others.every((r) => r.status === "none"));
 
   assert.equal((await call("/api/model-keys/openai", owner, undefined, "DELETE")).status, 200);
+  // 키를 지우면 공용 열쇠·월 상한으로 돌아간다는 알림이 활동에 남는다 (없는 키를 지울 때는 남지 않는다)
+  const removed = async () =>
+    (await rooms.activities(owner.slice("Bearer owner:".length))).filter(
+      (a) => a.title === MODEL_KEY_REMOVED_NOTICE,
+    ).length;
+  assert.equal(await removed(), 1);
+  assert.equal((await call("/api/model-keys/openai", owner, undefined, "DELETE")).status, 200);
+  assert.equal(await removed(), 1);
   const cleared = await json<Row[]>(call("/api/model-keys", owner));
   assert.equal(cleared.find((r) => r.provider === "openai")?.status, "none");
   assert.equal((await call("/api/model-keys/nope", owner, { apiKey: "x" }, "PUT")).status, 422);
@@ -311,6 +322,8 @@ test("설정: GET /settings 가 라우팅이 읽는 바로 그 기록이다 — 
     fixedModel: null,
     monthlyCapKrw: null,
     notifications: DEFAULT_NOTIFICATION_PREFS,
+    // 알림 발송부가 아직 없다 — 화면이 토글을 «준비 중» 으로 보이게 서버가 밝힌다
+    notificationsReady: false,
     character: DEFAULT_CHARACTER_PREFS,
   });
   const question = { text: "오늘 일정 알려줘" };
@@ -413,6 +426,8 @@ test("사용량: 상한 대비 비율은 잴 수 있을 때만 — 못 재면 nu
     percent: number | null;
     byok: boolean;
     savedKrw: number | null;
+    unpricedCalls: number;
+    warn: "none" | "near" | "reached";
   };
   // 상한이 없으면 비율도 없다
   assert.deepEqual(await json<Usage>(call("/api/billing/usage", owner)), {
@@ -421,6 +436,8 @@ test("사용량: 상한 대비 비율은 잴 수 있을 때만 — 못 재면 nu
     percent: null,
     byok: false,
     savedKrw: 0,
+    unpricedCalls: 0,
+    warn: "none",
   });
   await call("/api/settings/model", owner, { monthlyCapKrw: 1000 }, "PATCH");
   await routing.record("billing-user", {
@@ -437,9 +454,22 @@ test("사용량: 상한 대비 비율은 잴 수 있을 때만 — 못 재면 nu
   assert.equal(measured.capKrw, 1000);
   assert.equal(measured.percent, 30);
   assert.equal(measured.savedKrw, 1200); // 기준선 1500 − 300
+  assert.equal(measured.warn, "none");
+  // 경고 단계는 서버가 정한다(문턱은 도메인 상수) — 80% 부터 near
+  await call("/api/settings/model", owner, { monthlyCapKrw: 375 }, "PATCH");
+  assert.equal((await json<Usage>(call("/api/billing/usage", owner))).warn, "near");
   // 상한을 넘어도 100 을 넘기지 않는다
   await call("/api/settings/model", owner, { monthlyCapKrw: 100 }, "PATCH");
-  assert.equal((await json<Usage>(call("/api/billing/usage", owner))).percent, 100);
+  const over = await json<Usage>(call("/api/billing/usage", owner));
+  assert.equal(over.percent, 100);
+  assert.equal(over.warn, "reached");
+  // 상한에 닿으면 공용 열쇠로는 멈춘다 (402 + 안내)
+  await assert.rejects(routing.forChat("billing-user", { text: "오늘 일정 알려줘" }), (error) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.status, 402);
+    assert.equal(error.message, CAP_REACHED_NOTICE);
+    return true;
+  });
   // 단가 없는 사용분이 끼면 지출을 다 잰 것이 아니다 → 비율·절감액 모두 null
   await routing.record("billing-user", {
     tier: 3,
@@ -454,6 +484,9 @@ test("사용량: 상한 대비 비율은 잴 수 있을 때만 — 못 재면 nu
   assert.equal(measuring.percent, null);
   assert.equal(measuring.savedKrw, null);
   assert.equal(measuring.capKrw, 100);
+  // 상한에서 빠진 사용분을 숨기지 않는다 · 잰 값이 이미 넘었으면 경고는 그대로다
+  assert.equal(measuring.unpricedCalls, 1);
+  assert.equal(measuring.warn, "reached");
   // 본인 키가 있으면 byok
   provider = { status: 200 };
   await call("/api/model-keys/anthropic", owner, { apiKey: "sk-ant-key-EEEE" }, "PUT");
@@ -554,11 +587,14 @@ test("기억: 분류·출처 문구 · PATCH 는 임베딩을 다시 계산 · M
 
   // MCP 문: 기본 닫힘, 켤 때만 열린다, 사용자별
   const door = "/api/memories/mcp-access";
-  assert.deepEqual(await json(call(door, owner)), { enabled: false });
-  assert.deepEqual(await json(call(door, owner, { enabled: true }, "PATCH")), { enabled: true });
-  assert.deepEqual(await json(call(door, owner)), { enabled: true });
-  assert.deepEqual(await json(call(door, as("memory-other"))), { enabled: false });
-  assert.deepEqual(await json(call(door, owner, { enabled: false }, "PATCH")), { enabled: false });
+  // ready: false — 외부 앱이 들어오는 문 자체가 아직 없다(스위치는 저장만 된다)
+  const closed = { enabled: false, ready: false };
+  const open = { enabled: true, ready: false };
+  assert.deepEqual(await json(call(door, owner)), closed);
+  assert.deepEqual(await json(call(door, owner, { enabled: true }, "PATCH")), open);
+  assert.deepEqual(await json(call(door, owner)), open);
+  assert.deepEqual(await json(call(door, as("memory-other"))), closed);
+  assert.deepEqual(await json(call(door, owner, { enabled: false }, "PATCH")), closed);
   assert.equal((await call(door, owner, { enabled: "yes" }, "PATCH")).status, 422);
 });
 
@@ -623,7 +659,7 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
   );
   assert.equal((await rooms.list("store-other")).length, 0);
 
-  // 해지 → 기간 말(endsAt) · 구독 중 아님 · 방 읽기 전용
+  // 해지 → 기간 말(endsAt) · 구독 중 아님 · 방은 기간 말까지 그대로 쓴다(읽기 전용 아님)
   const cancelled = await json<Card>(
     call(`/api/subscriptions/${subscription.id}/cancel`, owner, {}),
   );
@@ -631,12 +667,13 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
   assert.equal(cancelled.endsAt, subscription.nextBillingAt);
   assert.equal((await list()).find((p) => p.id === pkg.id)?.subscribed, false);
   assert.equal((await list()).find((p) => p.id === pkg.id)?.roomId, null);
-  assert.equal((await rooms.get("store-user", roomId)).archived, true);
-  // 해지 예약 취소 → 다시 active, 방 풀림
+  assert.notEqual((await rooms.get("store-user", roomId)).archived, true);
+  await rooms.post("store-user", roomId, { role: "user", kind: "text", text: "기간 말까지는 쓴다" });
+  // 해지 예약 취소 → 다시 active
   const resumed = await json<Card>(call(`/api/subscriptions/${subscription.id}/resume`, owner, {}));
   assert.equal(resumed.status, "active");
   assert.equal(resumed.endsAt, null);
-  assert.equal((await rooms.get("store-user", roomId)).archived, false);
+  assert.notEqual((await rooms.get("store-user", roomId)).archived, true);
   assert.equal((await list()).find((p) => p.id === pkg.id)?.subscribed, true);
   // 남의 구독은 건드릴 수 없다
   assert.equal(
@@ -676,6 +713,21 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
     endsAt: new Date(Date.now() - DAY).toISOString(),
   } as Subscription);
   assert.equal((await mine()).find((s) => s.id === lapsed.id)?.status, "ended");
+  // 기간이 끝나면 그 방이 읽기 전용이 된다 — 종료 안내 한 줄 뒤로는 글이 409
+  const endedRoom = await rooms.get("store-user", lapsed.roomId);
+  assert.equal(endedRoom.archived, true);
+  assert.match((await rooms.timeline("store-user", lapsed.roomId)).at(-1)?.text ?? "", /읽기 전용/);
+  await assert.rejects(
+    rooms.post("store-user", lapsed.roomId, { role: "user", kind: "text", text: "더 쓸래요" }),
+    (error) => error instanceof AppError && error.status === 409 && error.message === ARCHIVED_ROOM_NOTICE,
+  );
+  await mine();
+  assert.equal(
+    (await rooms.timeline("store-user", lapsed.roomId)).filter((m) => /읽기 전용/.test(m.text ?? ""))
+      .length,
+    1,
+    "종료 안내는 한 번만",
+  );
 
   // 설정 화면의 등급 줄이 구독을 따라간다
   const tier = (
