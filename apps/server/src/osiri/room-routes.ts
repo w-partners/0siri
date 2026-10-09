@@ -7,6 +7,7 @@ import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Approvals } from "./approvals.ts";
 import type { EventBus, PresenceState } from "./events.ts";
+import type { Mcp } from "./mcp.ts";
 import type { Rooms, TaskStage } from "./rooms.ts";
 
 type Env = { Variables: { owner: string } };
@@ -15,6 +16,7 @@ export interface RoomDeps {
   rooms: Rooms;
   approvals: Approvals;
   bus: EventBus;
+  mcp?: Mcp;
 }
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const stageSchema = z.enum(["detect", "draft", "geo", "review", "approval", "publish", "done"]);
@@ -222,7 +224,7 @@ export async function issueWorkerToken(
 }
 
 /** 워커(도커 컨테이너) 라우트 — 워커 토큰으로 인증. /api/worker 에 마운트, 사용자 인증 미들웨어보다 앞에. */
-export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
+export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
   type WorkerEnv = { Variables: { owner: string; roomId: string; packageId: string | null } };
   const app = new Hono<WorkerEnv>();
   app.use("*", async (c, next) => {
@@ -262,10 +264,33 @@ export function workerRoutes({ db, rooms, approvals, bus }: RoomDeps) {
     });
     return c.json({ id: approval.id, status: approval.status, inputHash: approval.inputHash });
   });
+  // 워커 폴링: 승인되면 1회용 토큰을 한 번만 돌려준다
   app.get("/approvals/:id", async (c) => {
     const approval = await approvals.get(c.get("owner"), c.req.param("id"));
     if (approval.roomId !== c.get("roomId")) throw new AppError("다른 방의 승인입니다", 403);
-    return c.json({ id: approval.id, status: approval.status, reason: approval.reason });
+    const polled = await approvals.pollForWorker(c.get("owner"), approval.id);
+    return c.json({ id: approval.id, reason: approval.reason, ...polled });
+  });
+  // 워커가 사용자의 MCP 연결 도구를 쓴다 — 위험도 게이트는 Mcp.call 이 건다
+  app.get("/tools", async (c) => {
+    if (!mcp) throw new AppError("MCP 연결 기능이 꺼져 있습니다", 503);
+    const owner = c.get("owner");
+    const servers = await mcp.list(owner);
+    const tools = await Promise.all(servers.map((s) => mcp.toolsFor(owner, s.id).catch(() => [])));
+    return c.json(servers.map((s, i) => ({ id: s.id, name: s.name, tools: tools[i] })));
+  });
+  app.post("/tools/call", async (c) => {
+    if (!mcp) throw new AppError("MCP 연결 기능이 꺼져 있습니다", 503);
+    const body = z
+      .object({
+        serverId: z.string().min(1),
+        tool: z.string().min(1),
+        args: z.unknown().optional(),
+        approval: z.object({ id: z.string(), token: z.string() }).optional(),
+        actor: z.string().max(60).default("team"),
+      })
+      .parse(await c.req.json());
+    return c.json(await mcp.call(c.get("owner"), { roomId: c.get("roomId"), ...body }));
   });
   // 승인 토큰 집행 — 서버가 게이트. 토큰·도구·입력이 전부 맞을 때만 1회 통과
   app.post("/approvals/:id/consume", async (c) => {

@@ -215,18 +215,22 @@ export class Approvals {
     });
     this.bus.publish(owner, { type: "board", roomId: approval.roomId });
     this.bus.publish(owner, { type: "inbox" });
-    // 토큰은 메모리로만 돌려준다 — 저장은 해시뿐
+    // 토큰은 메모리로만 돌려준다 — 저장은 해시뿐. 워커가 가져갈 때까지 프로세스 메모리에 둔다.
+    if (token) this.issued.set(`${owner}:${id}`, token);
     return { ...updated, ...(token ? { token } : {}) } as Approval & { token?: string };
   }
+  // ponytail: 발급 토큰은 프로세스 메모리. 서버가 재시작되면 미수령 토큰은 사라지고 워커는 "approved, token 없음" 을 받아 새 승인을 요청한다.
+  private readonly issued = new Map<string, string>();
 
   /** 워커 폴링: 승인됐으면 토큰을 **한 번만** 넘긴다. 이후에는 상태만. */
   async pollForWorker(
     owner: string,
     id: string,
-    pendingToken?: string,
-  ): Promise<{ status: ApprovalStatus; token?: string }> {
+  ): Promise<{ status: ApprovalStatus; token?: string; tokenLost?: boolean }> {
     const approval = await this.get(owner, id);
-    if (approval.status === "approved" && !approval.tokenDelivered && pendingToken) {
+    if (approval.status === "approved" && !approval.tokenDelivered) {
+      const pendingToken = this.issued.get(`${owner}:${id}`);
+      if (!pendingToken) return { status: "approved", tokenLost: true };
       const delivered = await this.db.compareAndSwap<Approval>(
         owner,
         "approvals",
@@ -234,6 +238,7 @@ export class Approvals {
         { status: "approved", tokenDelivered: false },
         { tokenDelivered: true },
       );
+      this.issued.delete(`${owner}:${id}`);
       if (delivered) return { status: "approved", token: pendingToken };
     }
     return { status: approval.status };
