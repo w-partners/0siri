@@ -95,10 +95,7 @@ test("expired and disconnected proposals never reach the provider", async () => 
   });
   const expired = await service.propose("expired-user", email);
   now += 31 * 60 * 1000;
-  await assert.rejects(
-    service.decide("expired-user", expired.id, expired.hash, "approve"),
-    /만료/,
-  );
+  await assert.rejects(service.decide("expired-user", expired.id, expired.hash, "approve"), /만료/);
   const revoked = await service.propose("revoked-user", email);
   connected = false;
   await assert.rejects(
