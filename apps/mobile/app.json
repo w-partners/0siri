@@ -13,7 +13,26 @@
     },
     "android": {
       "package": "app.osiri.mobile",
-      "permissions": ["android.permission.REQUEST_INSTALL_PACKAGES"]
+      "permissions": [
+        "android.permission.REQUEST_INSTALL_PACKAGES"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "openagentx.org",
+              "pathPrefix": "/invite"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "web": {
       "bundler": "metro",

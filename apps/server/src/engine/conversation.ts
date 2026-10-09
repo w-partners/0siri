@@ -453,7 +453,15 @@ export class ConversationAgent extends AbstractAgent {
           try {
             persona = await this.persona?.(this.owner, input.threadId);
             // 라우팅 실패도 숨기지 않는다 — 기본 모델로 조용히 넘어가면 설정·상한·BYOK 가 무시된다.
-            route = await routing?.forChat(this.owner, { text: latestText }, this.config.model);
+            route = await routing?.forChat(
+              this.owner,
+              {
+                text: latestText,
+                // 화면이 기기 모델 실패 뒤 서버로 넘길 때 forwardedProps.deviceFailed 를 싣는다 → answeredBy.reason
+                deviceFailed: input.forwardedProps?.deviceFailed === true,
+              },
+              this.config.model,
+            );
           } catch (error) {
             // 페르소나 조회 실패는 숨기지 않는다 — 기본 프롬프트로 조용히 넘어가면 팀 방이 개인 방처럼 답한다.
             if (!cancelled) subscriber.error(error);

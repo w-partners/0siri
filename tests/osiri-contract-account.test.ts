@@ -37,6 +37,7 @@ import {
   CAP_REACHED_NOTICE,
   DEFAULT_CHARACTER_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
+  DEVICE_FALLBACK_REASON,
   MODEL_KEY_PROVIDERS,
   MODEL_KEY_REMOVED_NOTICE,
   PERSONAL_TIER_LABEL,
@@ -291,9 +292,7 @@ test("모델 키: 제공자마다 한 줄 · 검증을 통과한 뒤에만 교�
   assert.equal((await call("/api/model-keys/openai", owner, undefined, "DELETE")).status, 200);
   // 키를 지우면 공용 열쇠·월 상한으로 돌아간다는 알림이 활동에 남는다 (없는 키를 지울 때는 남지 않는다)
   const removed = async () =>
-    (await rooms.activities(owner.slice("Bearer owner:".length))).filter(
-      (a) => a.title === MODEL_KEY_REMOVED_NOTICE,
-    ).length;
+    (await rooms.activities("key-user")).filter((a) => a.title === MODEL_KEY_REMOVED_NOTICE).length;
   assert.equal(await removed(), 1);
   assert.equal((await call("/api/model-keys/openai", owner, undefined, "DELETE")).status, 200);
   assert.equal(await removed(), 1);
@@ -328,6 +327,11 @@ test("설정: GET /settings 가 라우팅이 읽는 바로 그 기록이다 — 
   });
   const question = { text: "오늘 일정 알려줘" };
   assert.equal((await routing.forChat("settings-user", question)).decision.tier, 2);
+  // 기기 모델이 실패해 넘어온 대화는 답변 출처(answeredBy.reason)에 그 사실이 실린다
+  assert.equal(
+    (await routing.forChat("settings-user", { ...question, deviceFailed: true })).decision.reason,
+    DEVICE_FALLBACK_REASON,
+  );
 
   // 고정 모델 "4" → 채팅 실행 계획이 최고 모델로 바뀐다
   const fixed = await json<Settings>(
@@ -668,7 +672,11 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
   assert.equal((await list()).find((p) => p.id === pkg.id)?.subscribed, false);
   assert.equal((await list()).find((p) => p.id === pkg.id)?.roomId, null);
   assert.notEqual((await rooms.get("store-user", roomId)).archived, true);
-  await rooms.post("store-user", roomId, { role: "user", kind: "text", text: "기간 말까지는 쓴다" });
+  await rooms.post("store-user", roomId, {
+    role: "user",
+    kind: "text",
+    text: "기간 말까지는 쓴다",
+  });
   // 해지 예약 취소 → 다시 active
   const resumed = await json<Card>(call(`/api/subscriptions/${subscription.id}/resume`, owner, {}));
   assert.equal(resumed.status, "active");
@@ -699,15 +707,23 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
 
   // 해지 뒤 restore 없이 재구독 → 새 방에서 시작
   await call(`/api/subscriptions/${again.subscription.id}/cancel`, owner, {});
-  const started = await json<{ roomId: string }>(
+  const started = await json<{ roomId: string; subscription: Card }>(
     call("/api/subscriptions", owner, { packageId: pkg.id, restore: false }),
   );
   assert.notEqual(started.roomId, roomId);
+  // 새로 시작하면 해지 예약이던 옛 구독은 그 자리에서 끝나고 옛 방은 읽기 전용이 된다
   assert.equal((await rooms.get("store-user", roomId)).archived, true);
+  assert.equal((await mine()).find((s) => s.id === again.subscription.id)?.status, "ended");
 
   // 기간 말이 지난 해지 예약은 ended 로 보인다
-  const lapsed = (await mine()).find((s) => s.id === again.subscription.id) as Card;
+  await call(`/api/subscriptions/${started.subscription.id}/cancel`, owner, {});
+  const lapsed = (await mine()).find((s) => s.id === started.subscription.id) as Card;
   assert.equal(lapsed.status, "cancelled");
+  assert.notEqual(
+    (await rooms.get("store-user", lapsed.roomId)).archived,
+    true,
+    "기간 말까지는 쓸 수 있다",
+  );
   await db.put<Subscription>("store-user", "subscriptions", {
     ...(await db.get<Subscription>("store-user", "subscriptions", lapsed.id)),
     endsAt: new Date(Date.now() - DAY).toISOString(),
@@ -719,15 +735,24 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
   assert.match((await rooms.timeline("store-user", lapsed.roomId)).at(-1)?.text ?? "", /읽기 전용/);
   await assert.rejects(
     rooms.post("store-user", lapsed.roomId, { role: "user", kind: "text", text: "더 쓸래요" }),
-    (error) => error instanceof AppError && error.status === 409 && error.message === ARCHIVED_ROOM_NOTICE,
+    (error) =>
+      error instanceof AppError && error.status === 409 && error.message === ARCHIVED_ROOM_NOTICE,
   );
   await mine();
   assert.equal(
-    (await rooms.timeline("store-user", lapsed.roomId)).filter((m) => /읽기 전용/.test(m.text ?? ""))
-      .length,
+    (await rooms.timeline("store-user", lapsed.roomId)).filter((m) =>
+      /읽기 전용/.test(m.text ?? ""),
+    ).length,
     1,
     "종료 안내는 한 번만",
   );
+
+  // 끝난 뒤 복원으로 다시 구독하면 그 방이 다시 열린다
+  const reopened = await json<{ roomId: string }>(
+    call("/api/subscriptions", owner, { packageId: pkg.id, restore: true }),
+  );
+  assert.equal(reopened.roomId, lapsed.roomId);
+  assert.notEqual((await rooms.get("store-user", reopened.roomId)).archived, true);
 
   // 설정 화면의 등급 줄이 구독을 따라간다
   const tier = (

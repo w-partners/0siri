@@ -346,7 +346,9 @@ export class Catalog {
         continue;
       }
       await this.archiveRoom(owner, s);
-      closed.push(await this.db.put<Subscription>(owner, "subscriptions", { ...s, status: "ended" }));
+      closed.push(
+        await this.db.put<Subscription>(owner, "subscriptions", { ...s, status: "ended" }),
+      );
     }
     return closed;
   }
@@ -360,7 +362,9 @@ export class Catalog {
       room = await this.rooms.get(owner, ended.roomId);
     } catch (error) {
       if (!(error instanceof AppError && error.status === 404)) throw error;
-      console.error(`[osiri] 종료된 구독 ${ended.id} 의 방 ${ended.roomId} 이 없어 잠그지 못했습니다`);
+      console.error(
+        `[osiri] 종료된 구독 ${ended.id} 의 방 ${ended.roomId} 이 없어 잠그지 못했습니다`,
+      );
       return;
     }
     if (room.archived) return;

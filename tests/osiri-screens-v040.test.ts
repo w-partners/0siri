@@ -12,8 +12,17 @@ import { createStore, type Store } from "../apps/server/src/db.ts";
 import { AppError } from "../apps/server/src/errors.ts";
 import { type Approval, Approvals } from "../apps/server/src/osiri/approvals.ts";
 import { EventBus, type RoomEvent } from "../apps/server/src/osiri/events.ts";
-import { issueWorkerToken, roomRoutes, workerRoutes } from "../apps/server/src/osiri/room-routes.ts";
-import { type RoomBoard, type RoomCard, Rooms } from "../apps/server/src/osiri/rooms.ts";
+import {
+  issueWorkerToken,
+  roomRoutes,
+  workerRoutes,
+} from "../apps/server/src/osiri/room-routes.ts";
+import {
+  type GoalView,
+  type RoomBoard,
+  type RoomCard,
+  Rooms,
+} from "../apps/server/src/osiri/rooms.ts";
 import {
   type Skill,
   Skills,
@@ -27,6 +36,8 @@ import {
   DEFAULT_TEAM_GREETING,
   ESCALATION_LABEL,
   GOAL_TREE_LEVELS,
+  PROPOSAL_DECISION_LABELS,
+  PROPOSAL_STATUS_LABELS,
   REVIEW_ESCALATION_THRESHOLD,
   SKILL_MEASURE_NOTE,
 } from "../packages/domain/src/osiri.ts";
@@ -103,6 +114,9 @@ after(async () => {
 test("도메인 라벨: 서버가 쓰던 표가 도메인에 있다", () => {
   assert.equal(APPROVAL_STATUS_LABELS.expired, "만료됨");
   assert.deepEqual([...GOAL_TREE_LEVELS], ["long", "mid", "short"]);
+  // 제안 상태 칩과 버튼이 같은 말(«반영») 을 쓴다
+  assert.equal(PROPOSAL_DECISION_LABELS.accept, "목표에 반영");
+  assert.equal(PROPOSAL_STATUS_LABELS.accepted, "반영됨");
 });
 
 test("구독 직후 팀장 첫 인사 · 스토어와 방 항목의 thirdParty", async () => {
@@ -134,7 +148,12 @@ test("방 목록 digest — 마지막으로 본 뒤의 진척 한 줄, 없으면
   assert.equal("digest" in (await card()), false, "한 번도 안 본 방은 «부재» 가 아니다");
   await rooms.patch(owner, room.id, { lastSeenAt: new Date(Date.now() - 60_000).toISOString() });
   assert.equal("digest" in (await card()), false);
-  await rooms.activity(owner, { roomId: room.id, kind: "publish", actor: "publisher", title: "발행" });
+  await rooms.activity(owner, {
+    roomId: room.id,
+    kind: "publish",
+    actor: "publisher",
+    title: "발행",
+  });
   const digest = (await card()).digest;
   assert.match(digest ?? "", /부재 중 1건/);
   // 방을 열면(타임라인) 같은 문장을 받고, 그 뒤 목록에서는 사라진다
@@ -185,7 +204,11 @@ test("승인 카드가 동결 해시를 싣고, 다른 해시로는 결재할 �
   });
   assert.equal(stale.status, 409);
   assert.match((await json<{ error: string }>(stale)).error, /동결 해시/);
-  assert.equal((await approvals.get(owner, first.id)).status, "pending", "거절된 결재는 반영되지 않는다");
+  assert.equal(
+    (await approvals.get(owner, first.id)).status,
+    "pending",
+    "거절된 결재는 반영되지 않는다",
+  );
 
   const ok = await call(owner, `/api/approvals/${first.id}/decide`, {
     decision: "approve",
@@ -254,7 +277,10 @@ test("스킬 초안이 결재함·배지·inbox 이벤트로 온다 · 효과 �
     );
   const first = await draft("정의문 먼저");
   unsubscribe();
-  assert.ok(events.some((event) => event.type === "inbox"), "초안이 생기면 inbox 이벤트가 나간다");
+  assert.ok(
+    events.some((event) => event.type === "inbox"),
+    "초안이 생기면 inbox 이벤트가 나간다",
+  );
 
   const inbox = await json<Inbox>(call(owner, "/api/inbox"));
   const item = inbox.pending.find((p) => p.skillId === first.id);
@@ -297,7 +323,11 @@ test("스킬 초안이 결재함·배지·inbox 이벤트로 온다 · 효과 �
   assert.equal(kept.measuring, false);
   assert.equal(kept.effect, "인용률 +8%");
   // 다른 방의 워커는 보고할 수 없다
-  const elsewhere = await rooms.create(owner, { packageId: null, title: "다른 방", character: "c" });
+  const elsewhere = await rooms.create(owner, {
+    packageId: null,
+    title: "다른 방",
+    character: "c",
+  });
   const stranger = await issueWorkerToken(db, owner, elsewhere.id, null);
   assert.equal(
     (await call(stranger, `/api/worker/skills/${second.id}/effect`, { effect: "x", worse: true }))
@@ -307,7 +337,10 @@ test("스킬 초안이 결재함·배지·inbox 이벤트로 온다 · 효과 �
 
   // 반려 사유는 초안을 낸 팀(워커)에게 돌아간다
   const third = await draft("길게 쓰기");
-  await call(owner, `/api/skills/${third.id}/decide`, { decision: "reject", reason: "너무 길어요" });
+  await call(owner, `/api/skills/${third.id}/decide`, {
+    decision: "reject",
+    reason: "너무 길어요",
+  });
   const seen = await json<(Skill & { reason?: string })[]>(call(worker, "/api/worker/skills"));
   assert.equal(seen.find((s) => s.id === third.id)?.reason, "너무 길어요");
   assert.equal(seen.find((s) => s.id === third.id)?.status, "rejected");
@@ -325,6 +358,8 @@ test("같은 작업의 검수 반려가 쌓이면 [확인 필요] 카드로 올�
         action: "review.reject",
         result: "error",
         goal_id: goal.id,
+        reason_kind: "fact",
+        detail: "판례 번호가 원문과 다릅니다",
       }),
     );
   for (let i = 1; i < REVIEW_ESCALATION_THRESHOLD; i++)
@@ -339,4 +374,100 @@ test("같은 작업의 검수 반려가 쌓이면 [확인 필요] 카드로 올�
   assert.equal(cards[0]?.payload?.label, ESCALATION_LABEL);
   assert.equal(cards[0]?.payload?.goalId, goal.id);
   assert.equal(cards[0]?.payload?.rejects, REVIEW_ESCALATION_THRESHOLD);
+  assert.equal(cards[0]?.payload?.title, "상속 글");
+  assert.match(String(cards[0]?.payload?.summary), /3번 반려.*판례 번호가 원문과 다릅니다/);
+  // 목표 줄: 가장 최근 반려의 사유 종류와 사유별 건수
+  const view = (await json<GoalView[]>(call(owner, `/api/goals?room_id=${room.id}`))).find(
+    (g) => g.id === goal.id,
+  );
+  assert.equal(view?.reasonKind, "fact");
+  assert.deepEqual(view?.rejects, { total: REVIEW_ESCALATION_THRESHOLD, byKind: { fact: 3 } });
+});
+
+test("막힌 목표를 [다시 진행] 으로 풀면 active 로 돌아가 워커가 다시 집는다 · 막힌 목표가 아니면 409", async () => {
+  const owner = "unblock-user";
+  const room = await rooms.create(owner, { packageId: null, title: "해제", character: "c" });
+  const goal = await rooms.createGoal(owner, { roomId: room.id, title: "상속 글", level: "short" });
+  // 막히지 않은 목표는 풀 것이 없다
+  assert.equal((await call(owner, `/api/goals/${goal.id}/unblock`, {})).status, 409);
+  await rooms.updateGoal(owner, goal.id, { status: "blocked", stage: "draft", progress: 40 });
+  // 남의 목표는 보이지 않는다
+  assert.equal((await call("someone-else", `/api/goals/${goal.id}/unblock`, {})).status, 404);
+  const released = await call(owner, `/api/goals/${goal.id}/unblock`, {});
+  assert.equal(released.status, 200);
+  const after = await json<GoalView>(released);
+  assert.equal(after.status, "active");
+  assert.equal(after.stage, "draft"); // 멈춘 자리 그대로
+  assert.equal(after.progress, 40);
+  assert.equal((await rooms.goal(owner, goal.id)).status, "active");
+  const activity = (await rooms.activities(owner)).find((a) => a.title === "다시 진행: 상속 글");
+  assert.equal(activity?.kind, "goal");
+  assert.equal(activity?.roomId, room.id);
+  assert.ok(
+    (await rooms.auditLogs(owner)).some(
+      (log) => log.goalId === goal.id && log.action === "goal.unblock",
+    ),
+  );
+  // 두 번 누르면 두 번째는 409
+  assert.equal((await call(owner, `/api/goals/${goal.id}/unblock`, {})).status, 409);
+});
+
+test("활동·승인본이 방 메시지를 가리킨다 · 목표 기간(dueAt) · 사용자 반려도 목표 줄에 센다", async () => {
+  const owner = "link-user";
+  const room = await rooms.create(owner, { packageId: null, title: "연결", character: "c" });
+  const worker = await issueWorkerToken(db, owner, room.id, null);
+  const dueAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  const long = await json<GoalView>(
+    call(owner, "/api/goals", { roomId: room.id, title: "상속 분야 1위", dueAt }),
+  );
+  const task = await rooms.createGoal(owner, { roomId: room.id, title: "글 1건", level: "task" });
+  const request = (title: string) =>
+    approvals.request(owner, {
+      roomId: room.id,
+      goalId: task.id,
+      toolName: "site:publish",
+      input: { title },
+      title,
+      summary: "요약",
+      requestedBy: "publisher",
+    });
+  const rejected = await request("첫 글");
+  await approvals.decide(owner, rejected.id, "reject", {
+    decidedBy: owner,
+    reasonKind: "tone",
+    frozenHash: rejected.inputHash,
+  });
+  const approved = await request("고친 글");
+  await approvals.decide(owner, approved.id, "approve", {
+    decidedBy: owner,
+    frozenHash: approved.inputHash,
+  });
+
+  // 활동 줄 → 그 승인 카드 메시지
+  const activities = await rooms.activities(owner);
+  assert.equal(
+    activities.find((a) => a.title === "승인 요청: 고친 글")?.messageId,
+    approved.messageId,
+  );
+  assert.equal(activities.find((a) => a.title === "반려: 첫 글")?.messageId, rejected.messageId);
+  // 승인본 → 목표·메시지
+  const files = await json<{
+    approved: { approvalId: string; goalId: string | null; messageId: string | null }[];
+  }>(call(owner, `/api/rooms/${room.id}/files`));
+  assert.deepEqual(
+    files.approved.map(({ approvalId, goalId, messageId }) => ({ approvalId, goalId, messageId })),
+    [{ approvalId: approved.id, goalId: task.id, messageId: approved.messageId }],
+  );
+  // 목표: 기간은 정한 것만, 없으면 null · 사용자 반려의 사유 종류
+  const views = await json<GoalView[]>(call(owner, `/api/goals?room_id=${room.id}`));
+  assert.equal(views.find((g) => g.id === long.id)?.dueAt, dueAt);
+  const taskView = views.find((g) => g.id === task.id);
+  assert.equal(taskView?.dueAt, null);
+  assert.equal(taskView?.reasonKind, "tone");
+  assert.deepEqual(taskView?.rejects, { total: 1, byKind: { tone: 1 } });
+  assert.equal("rejects" in (views.find((g) => g.id === long.id) ?? {}), false);
+  // 팀이 기간을 고칠 수 있다
+  const next = new Date(Date.now() + 7 * 86_400_000).toISOString();
+  await call(worker, `/api/worker/goals/${task.id}/progress`, { progress: 10, due_at: next });
+  assert.equal((await rooms.goalViews(owner, room.id)).find((g) => g.id === task.id)?.dueAt, next);
 });

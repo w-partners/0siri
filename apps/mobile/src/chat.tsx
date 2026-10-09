@@ -29,6 +29,7 @@ import {
   View,
 } from "react-native";
 import { z } from "zod";
+import { CAP_REACHED_NOTICE } from "../../../packages/domain/src/osiri";
 import { ArtifactCard } from "./agent-ui";
 import { useAgentWorkspace } from "./agent-workspace";
 import { AssistantResponse } from "./assistant-response";
@@ -207,9 +208,7 @@ function ServerToolCard({
       {parsed.success && parsed.data.error ? (
         <ErrorNotice error={parsed.data.error} />
       ) : (
-        <Text style={s.muted}>
-          {loading ? t.tools.card.waiting : raw || t.tools.card.saved}
-        </Text>
+        <Text style={s.muted}>{loading ? t.tools.card.waiting : raw || t.tools.card.saved}</Text>
       )}
       <Button small onPress={() => navigate(target)}>
         {t.tools.card.view(name)}
@@ -403,7 +402,6 @@ export function ChatScreen({
   ]);
   // 끊긴 동안 대화 이력을 못 읽었으면, 다시 붙었을 때 스스로 한 번 더 읽는다 — 쌓아 둔 메시지는 이력이 있어야 나간다.
   // historyError 는 일부러 의존성에서 뺀다: 붙어 있는 동안의 실패는 [다시 불러오기] 로 사람이 고른다(무한 재시도 금지).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 연결이 돌아온 순간에만 다시 읽는다
   useEffect(() => {
     if (online && historyError) setHistoryAttempt((attempt) => attempt + 1);
   }, [online]);
@@ -611,16 +609,17 @@ export function ChatScreen({
               {(readOnly
                 ? []
                 : [
-                {
-                  text: t.chat.empty.suggestions.plan.label,
-                  action: () => enqueue(t.chat.empty.suggestions.plan.prompt),
-                },
-                {
-                  text: t.chat.empty.suggestions.summarize.label,
-                  action: () => enqueue(t.chat.empty.suggestions.summarize.prompt),
-                },
-                { text: t.chat.empty.suggestions.goal.label, action: () => navigate("goals") },
-              ]).map((item) => (
+                    {
+                      text: t.chat.empty.suggestions.plan.label,
+                      action: () => enqueue(t.chat.empty.suggestions.plan.prompt),
+                    },
+                    {
+                      text: t.chat.empty.suggestions.summarize.label,
+                      action: () => enqueue(t.chat.empty.suggestions.summarize.prompt),
+                    },
+                    { text: t.chat.empty.suggestions.goal.label, action: () => navigate("goals") },
+                  ]
+              ).map((item) => (
                 <Button key={item.text} onPress={item.action}>
                   {item.text}
                 </Button>
@@ -747,6 +746,12 @@ export function ChatScreen({
             {t.chat.errors.retryResponse}
           </Button>
         )}
+        {/* 월 상한(공용 열쇠)에 닿아 서버가 멈춘 경우 — 위 문장은 서버가 준 그대로이고, 풀 수 있는 곳(설정 → 사용량 · 내 키)으로 보낸다 */}
+        {error.includes(CAP_REACHED_NOTICE) && (
+          <Button style={{ alignSelf: "flex-start" }} onPress={() => navigate("settings")}>
+            {t.chat.errors.openUsage}
+          </Button>
+        )}
       </ScrollView>
       {awayFromLatest && (
         <Button
@@ -867,149 +872,151 @@ export function ChatScreen({
             <Text style={s.muted}>{readOnly}</Text>
           </View>
         ) : (
-        <View
-          style={{
-            backgroundColor: colors.card,
-            borderRadius: 32,
-            borderWidth: 1,
-            borderColor: focused ? colors.accent : colors.line,
-            padding: 8,
-            shadowColor: colors.text,
-            shadowOpacity: focused ? 0.1 : 0.06,
-            shadowRadius: 20,
-            shadowOffset: { width: 0, height: 4 },
-            elevation: 4,
-          }}
-        >
-          {attachments.length > 0 && (
-            <View style={[s.row, { gap: 6, flexWrap: "wrap", padding: 9 }]}>
-              {w.files
-                .filter((f) => attachments.includes(f.id))
-                .map((f) => (
-                  <Pressable
-                    key={f.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={t.chat.attach.remove(f.name)}
-                    onPress={() => setAttachments((ids) => ids.filter((id) => id !== f.id))}
-                    style={[
-                      s.row,
-                      {
-                        gap: 7,
-                        maxWidth: "100%",
-                        backgroundColor: colors.sky,
-                        borderRadius: 16,
-                        paddingHorizontal: 11,
-                        paddingVertical: 8,
-                      },
-                    ]}
-                  >
-                    <FileText size={14} color={colors.blueDark} />
-                    <Text
-                      numberOfLines={1}
-                      style={{ flexShrink: 1, fontSize: 12, color: colors.text }}
+          <View
+            style={{
+              backgroundColor: colors.card,
+              borderRadius: 32,
+              borderWidth: 1,
+              borderColor: focused ? colors.accent : colors.line,
+              padding: 8,
+              shadowColor: colors.text,
+              shadowOpacity: focused ? 0.1 : 0.06,
+              shadowRadius: 20,
+              shadowOffset: { width: 0, height: 4 },
+              elevation: 4,
+            }}
+          >
+            {attachments.length > 0 && (
+              <View style={[s.row, { gap: 6, flexWrap: "wrap", padding: 9 }]}>
+                {w.files
+                  .filter((f) => attachments.includes(f.id))
+                  .map((f) => (
+                    <Pressable
+                      key={f.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={t.chat.attach.remove(f.name)}
+                      onPress={() => setAttachments((ids) => ids.filter((id) => id !== f.id))}
+                      style={[
+                        s.row,
+                        {
+                          gap: 7,
+                          maxWidth: "100%",
+                          backgroundColor: colors.sky,
+                          borderRadius: 16,
+                          paddingHorizontal: 11,
+                          paddingVertical: 8,
+                        },
+                      ]}
                     >
-                      {f.name}
-                    </Text>
-                    <X size={13} color={colors.muted} />
-                  </Pressable>
-                ))}
-            </View>
-          )}
-          <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t.chat.attach.button}
-              accessibilityState={{ expanded: picking }}
-              onPress={() => setPicking(!picking)}
-              style={({ pressed }) => ({
-                width: 44,
-                height: 44,
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 24,
-                backgroundColor: picking || pressed ? colors.sky : "transparent",
-              })}
-            >
-              <Text style={{ color: colors.text, fontSize: 29, fontWeight: "300", lineHeight: 32 }}>
-                +
-              </Text>
-            </Pressable>
-            <TextInput
-              accessibilityLabel={t.chat.composer.inputLabel}
-              value={draft}
-              onChangeText={setDraft}
-              onContentSizeChange={(event) =>
-                setInputHeight(Math.max(44, Math.min(140, event.nativeEvent.contentSize.height)))
-              }
-              placeholder={
-                !isReady
-                  ? t.chat.composer.connecting
-                  : !loaded
-                    ? historyError
-                      ? t.chat.composer.unavailable
-                      : t.chat.composer.loading
-                    : (placeholder ?? t.chat.composer.placeholder)
-              }
-              placeholderTextColor={colors.muted}
-              selectionColor={colors.blueDark}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              style={{
-                flex: 1,
-                color: colors.text,
-                height: inputHeight,
-                minHeight: 44,
-                maxHeight: 140,
-                fontSize: 17,
-                lineHeight: 24,
-                paddingHorizontal: 2,
-                paddingTop: 10,
-                paddingBottom: 10,
-                ...noFocusRing,
-              }}
-              multiline
-              editable
-              onKeyPress={
-                Platform.OS === "web"
-                  ? (event) => {
-                      if (
-                        event.nativeEvent.key === "Enter" &&
-                        !("shiftKey" in event.nativeEvent && event.nativeEvent.shiftKey)
-                      ) {
-                        event.preventDefault();
-                        send();
+                      <FileText size={14} color={colors.blueDark} />
+                      <Text
+                        numberOfLines={1}
+                        style={{ flexShrink: 1, fontSize: 12, color: colors.text }}
+                      >
+                        {f.name}
+                      </Text>
+                      <X size={13} color={colors.muted} />
+                    </Pressable>
+                  ))}
+              </View>
+            )}
+            <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t.chat.attach.button}
+                accessibilityState={{ expanded: picking }}
+                onPress={() => setPicking(!picking)}
+                style={({ pressed }) => ({
+                  width: 44,
+                  height: 44,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: 24,
+                  backgroundColor: picking || pressed ? colors.sky : "transparent",
+                })}
+              >
+                <Text
+                  style={{ color: colors.text, fontSize: 29, fontWeight: "300", lineHeight: 32 }}
+                >
+                  +
+                </Text>
+              </Pressable>
+              <TextInput
+                accessibilityLabel={t.chat.composer.inputLabel}
+                value={draft}
+                onChangeText={setDraft}
+                onContentSizeChange={(event) =>
+                  setInputHeight(Math.max(44, Math.min(140, event.nativeEvent.contentSize.height)))
+                }
+                placeholder={
+                  !isReady
+                    ? t.chat.composer.connecting
+                    : !loaded
+                      ? historyError
+                        ? t.chat.composer.unavailable
+                        : t.chat.composer.loading
+                      : (placeholder ?? t.chat.composer.placeholder)
+                }
+                placeholderTextColor={colors.muted}
+                selectionColor={colors.blueDark}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                style={{
+                  flex: 1,
+                  color: colors.text,
+                  height: inputHeight,
+                  minHeight: 44,
+                  maxHeight: 140,
+                  fontSize: 17,
+                  lineHeight: 24,
+                  paddingHorizontal: 2,
+                  paddingTop: 10,
+                  paddingBottom: 10,
+                  ...noFocusRing,
+                }}
+                multiline
+                editable
+                onKeyPress={
+                  Platform.OS === "web"
+                    ? (event) => {
+                        if (
+                          event.nativeEvent.key === "Enter" &&
+                          !("shiftKey" in event.nativeEvent && event.nativeEvent.shiftKey)
+                        ) {
+                          event.preventDefault();
+                          send();
+                        }
                       }
-                    }
-                  : undefined
-              }
-            />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
-              disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
-              onPress={replying ? () => void stop() : send}
-              style={({ pressed }) => ({
-                width: 44,
-                height: 44,
-                borderRadius: 24,
-                backgroundColor: replying || draft.trim() ? colors.accent : colors.sunk,
-                alignItems: "center",
-                justifyContent: "center",
-                transform: [{ scale: pressed ? 0.94 : 1 }],
-              })}
-            >
-              {replying ? (
-                <Square size={18} fill={colors.onAccent} strokeWidth={0} />
-              ) : (
-                <ArrowUp
-                  size={25}
-                  strokeWidth={1.8}
-                  color={draft.trim() ? colors.onAccent : colors.muted}
-                />
-              )}
-            </Pressable>
+                    : undefined
+                }
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
+                disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
+                onPress={replying ? () => void stop() : send}
+                style={({ pressed }) => ({
+                  width: 44,
+                  height: 44,
+                  borderRadius: 24,
+                  backgroundColor: replying || draft.trim() ? colors.accent : colors.sunk,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transform: [{ scale: pressed ? 0.94 : 1 }],
+                })}
+              >
+                {replying ? (
+                  <Square size={18} fill={colors.onAccent} strokeWidth={0} />
+                ) : (
+                  <ArrowUp
+                    size={25}
+                    strokeWidth={1.8}
+                    color={draft.trim() ? colors.onAccent : colors.muted}
+                  />
+                )}
+              </Pressable>
+            </View>
           </View>
-        </View>
         )}
       </KeyboardAvoidingView>
     </View>

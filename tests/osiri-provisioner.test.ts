@@ -98,6 +98,7 @@ test("구독 큐 → docker run (host 네트워크·env-file 토큰) → workers
   // 기간 말이 지남 → 구독 종료 · 방 archived → rm -f (사용자가 앱을 열지 않아도)
   await db.put("u1", "subscriptions", {
     ...(await db.get<Record<string, unknown>>("u1", "subscriptions", subscriptionId)),
+    id: subscriptionId,
     endsAt: new Date(Date.now() - 1000).toISOString(),
   });
   assert.deepEqual(await provisioner.drainOnce(), { started: 0, failed: 0, stopped: 1 });

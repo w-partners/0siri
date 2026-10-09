@@ -10,12 +10,20 @@ import {
   PASSWORD_RESET_HINT,
   PERSONAL_TIER_LABEL,
 } from "../../../../packages/domain/src/osiri";
-import type { Accounts, Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
+import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
+import type { Accounts } from "../../../server/src/osiri/accounts.ts";
 import type { Room } from "../../../server/src/osiri/rooms.ts";
 import { API_URL, apiBase, type MuseApi, setApiBase } from "../api";
 import { ApiError, readApiPayload } from "../api-response";
-import { Button, Card, colors, ErrorNotice, Field, fonts, Skeleton, s } from "../ui";
-import { useAction, useWide } from "./store";
+import { Button, Card, colors, ErrorNotice, Field, fonts, Skeleton, s, useWide } from "../ui";
+import {
+  GOAL_STEP,
+  GoalStep,
+  ONBOARDING_STEPS,
+  PROFILE_STEP,
+  ProfileStep,
+  profileComplete,
+} from "./onboarding-steps";
 
 const text = {
   welcome: "0Siri",
@@ -57,27 +65,10 @@ const text = {
   serverLogoutFailed: (reason: string) =>
     `이 기기에서는 로그아웃했지만 서버 세션을 끝내지 못했습니다(만료될 때까지 남습니다): ${reason}`,
   stepsTitle: "가입하면 이렇게 진행됩니다",
-  steps: [
-    { title: "계정 만들기", body: "초대 코드 · 전화번호 · 비밀번호" },
-    { title: "사무소 프로필", body: "이름 · 전문 분야 · 지역" },
-    { title: "첫 목표 한 줄", body: "예: 상속 분야 GEO 선점" },
-  ],
+  steps: ONBOARDING_STEPS,
   stepOf: (n: number, total: number) => `${n}/${total}`,
   done: "✓",
-  displayName: "이름",
-  displayNamePlaceholder: "홍길동 법률사무소",
-  specialty: "전문 분야",
-  specialtyPlaceholder: "예: 상속 · 가사",
-  region: "지역",
-  regionPlaceholder: "예: 서울 서초",
-  profileRequired: "이름 · 전문 분야 · 지역을 모두 입력해 주세요",
-  goal: "첫 목표",
-  goalPlaceholder: "상속 분야 GEO 선점",
-  goalHint: "한 줄이면 됩니다. 제안 상태로 저장되고, 목표 화면에서 승인하면 시작합니다.",
-  goalRequired: "첫 목표를 한 줄 적어 주세요",
   noPersonalRoom: "개인 방을 찾지 못해 목표를 저장할 수 없습니다. 다시 시도해 주세요.",
-  next: "저장하고 다음",
-  saveGoal: "목표 저장",
   finishedTitle: "준비가 끝났습니다",
   finishedBody: "프로필과 첫 목표를 저장했습니다.",
   start: "시작하기",
@@ -158,32 +149,27 @@ export async function saveApiBase(url: string): Promise<void> {
 }
 /**
  * 기기의 토큰은 항상 지운다(못 지우면 던진다 — 로그아웃이 안 된 것이다).
- * 서버 세션을 못 끝낸 경우는 로그아웃 자체는 됐으므로 던지지 않고 경고 문장을 돌려준다("" = 깨끗이 끝남) — 부르는 쪽이 보여 준다.
+ * 서버 세션을 못 끝낸 경우는 로그아웃 자체는 됐으므로 던지지 않고 경고를 쌓아 둔다 — 로그아웃 뒤에 뜨는 로그인 화면이 보인다(takeAuthIssues).
  */
-export async function logout(api: MuseApi): Promise<string> {
-  let warning = "";
+export async function logout(api: MuseApi): Promise<void> {
   try {
     await api.request("/api/auth/logout", {});
   } catch (e) {
-    warning = text.serverLogoutFailed(message(e));
-    report(warning); // 로그아웃 뒤에 뜨는 로그인 화면이 이 경고를 보인다
+    report(text.serverLogoutFailed(message(e)));
   }
   await clearToken();
-  return warning;
 }
 
 // --- /api/me ---
-/** `GET /me` — 서버 account-routes.ts 의 `app.get("/me")` 핸들러가 만든다(내보낸 타입이 없어 여기 한 번 적는다). */
-export type Me = { user: PublicUser; profile: Profile };
 export function useMe(api: MuseApi) {
-  const [me, setMe] = useState<Me | null>(null);
+  const [me, setMe] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const reload = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      setMe(await api.request<Me>("/api/me"));
+      setMe(await api.request<MeResponse>("/api/me"));
     } catch (e) {
       setError(message(e));
     } finally {
@@ -480,127 +466,8 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
   );
 }
 
-// --- 온보딩 3단계: 1/3 계정 만들기 ✓ → 2/3 사무소 프로필 → 3/3 첫 목표 한 줄 ---
-const PROFILE_STEP = 1;
-const GOAL_STEP = 2;
+// --- 온보딩 3단계 (2/3 · 3/3 조각은 onboarding-steps.tsx — 스토어의 구독 뒤 온보딩과 같이 쓴다) ---
 const FINISHED = text.steps.length;
-/** 단계 제목 — 스토어의 구독 뒤 온보딩(화면 6)이 같은 문구를 쓴다 */
-export const ONBOARDING_TITLES = {
-  profile: text.steps[PROFILE_STEP].title,
-  goal: text.steps[GOAL_STEP].title,
-};
-export const profileComplete = (profile: Profile) =>
-  !!(profile.displayName && profile.specialty && profile.region);
-
-/** 2/3 사무소 프로필 — 저장해 둔 값을 채워 보이고 `PATCH /me/profile` 로 저장한다. 화면 1 과 화면 6(구독 뒤)이 같이 쓴다. */
-export function ProfileStep({
-  api,
-  profile,
-  onSaved,
-}: {
-  api: MuseApi;
-  profile: Profile;
-  onSaved: () => void;
-}) {
-  const [displayName, setDisplayName] = useState(profile.displayName ?? "");
-  const [specialty, setSpecialty] = useState(profile.specialty ?? "");
-  const [region, setRegion] = useState(profile.region ?? "");
-  const [invalid, setInvalid] = useState("");
-  const act = useAction();
-  const save = () => {
-    const body = {
-      displayName: displayName.trim(),
-      specialty: specialty.trim(),
-      region: region.trim(),
-    };
-    if (!body.displayName || !body.specialty || !body.region)
-      return setInvalid(text.profileRequired);
-    setInvalid("");
-    void act.run(async () => {
-      await api.request("/api/me/profile", body, "PATCH");
-      onSaved();
-    });
-  };
-  return (
-    <View style={{ gap: 12 }}>
-      <ErrorNotice error={invalid || act.error} />
-      <View>
-        <Field
-          label={text.displayName}
-          value={displayName}
-          onChangeText={setDisplayName}
-          placeholder={text.displayNamePlaceholder}
-        />
-        <Field
-          label={text.specialty}
-          value={specialty}
-          onChangeText={setSpecialty}
-          placeholder={text.specialtyPlaceholder}
-        />
-        <Field
-          label={text.region}
-          value={region}
-          onChangeText={setRegion}
-          placeholder={text.regionPlaceholder}
-          onSubmitEditing={save}
-        />
-      </View>
-      <Button primary busy={act.busy} onPress={save}>
-        {act.error ? text.retry : text.next}
-      </Button>
-    </View>
-  );
-}
-
-/** 3/3 첫 목표 한 줄 → `POST /goals`(제안 상태). 어느 방의 목표인지는 부르는 쪽이 정한다(개인 방 / 방금 구독한 팀 방). */
-export function GoalStep({
-  api,
-  roomId,
-  after,
-  onSaved,
-}: {
-  api: MuseApi;
-  roomId: () => Promise<string> | string;
-  /** 목표 저장 뒤에 이어서 할 일. 여기서 실패하면 [다시 시도] 가 목표를 또 만들지 않고 이 일부터 잇는다 */
-  after?: () => Promise<void>;
-  onSaved: () => void;
-}) {
-  const [goal, setGoal] = useState("");
-  const [invalid, setInvalid] = useState("");
-  const act = useAction();
-  const goalSaved = useRef(false);
-  const save = () => {
-    const title = goal.trim();
-    if (!title) return setInvalid(text.goalRequired);
-    setInvalid("");
-    void act.run(async () => {
-      if (!goalSaved.current) {
-        await api.request("/api/goals", { roomId: await roomId(), title });
-        goalSaved.current = true;
-      }
-      await after?.();
-      onSaved();
-    });
-  };
-  return (
-    <View style={{ gap: 12 }}>
-      <ErrorNotice error={invalid || act.error} />
-      <View>
-        <Field
-          label={text.goal}
-          value={goal}
-          onChangeText={setGoal}
-          placeholder={text.goalPlaceholder}
-          onSubmitEditing={save}
-        />
-        <Text style={[s.small, { marginTop: -8 }]}>{text.goalHint}</Text>
-      </View>
-      <Button primary busy={act.busy} onPress={save}>
-        {act.error ? text.retry : text.saveGoal}
-      </Button>
-    </View>
-  );
-}
 
 export function Onboarding({
   api,

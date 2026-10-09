@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import {
   missingTeamRoles,
+  REJECT_REASON_KINDS,
   type WorkerPresenceState,
 } from "../../../../packages/domain/src/osiri.ts";
 import { tierModels } from "./routing.ts";
@@ -190,13 +191,17 @@ export class TeamRuntime {
     await progress(40, "draft");
     const geo = json<Draft>(await this.ask("geo", JSON.stringify(draft)));
     await progress(60, "geo");
-    const review = json<{ pass: boolean; reasons: string[] }>(
+    const review = json<{ pass: boolean; reasons: string[]; reason_kind?: string }>(
       await this.ask("reviewer", JSON.stringify(geo)),
     );
     if (!review.pass) {
       await progress(40, "draft", { status: "active" });
+      // 사유 종류는 검수가 정해진 값으로 밝혔을 때만 싣는다 — 문장을 보고 서버가 짐작하지 않는다
+      const reasonKind = REJECT_REASON_KINDS.find((kind) => kind === review.reason_kind);
       const logged = (await this.audit("reviewer", "review.reject", "error", {
         goal_id: goal.id,
+        ...(reasonKind ? { reason_kind: reasonKind } : {}),
+        ...(review.reasons?.length ? { detail: review.reasons.join(" · ").slice(0, 2000) } : {}),
       })) as { escalated?: boolean } | undefined;
       // 반려가 반복되면 서버가 목표를 멈추고 [확인 필요] 카드를 냈다 — «되돌립니다» 라고 말하지 않는다
       if (logged?.escalated) {

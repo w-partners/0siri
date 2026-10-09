@@ -113,13 +113,6 @@ function writeLocation(tab: Tab, roomId: string | undefined, storeTab: StoreTab)
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null); // null = 아직 저장소를 안 읽음
-  // 로그아웃하면 셸이 사라지므로, 그때 생긴 경고는 여기(로그인 화면 위)에 띄운다
-  const [notice, setNotice] = useState("");
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(""), 8000);
-    return () => clearTimeout(timer);
-  }, [notice]);
   useEffect(() => {
     void loadApiBase()
       .then(loadToken)
@@ -155,18 +148,11 @@ export default function App() {
           runtimeUrl={`${apiBase()}/api/copilotkit`}
           headers={{ Authorization: `Bearer ${token}` }}
         >
-          <WorkspaceApp
-            token={token}
-            onLogout={(warning) => {
-              setToken("");
-              setNotice(warning ?? "");
-            }}
-          />
+          <WorkspaceApp token={token} onLogout={() => setToken("")} />
         </CopilotKitProvider>
       ) : (
         <LoginScreen onToken={setToken} />
       )}
-      {!!notice && <Toast message={notice} bottom={40} onClose={() => setNotice("")} />}
     </SafeAreaProvider>
   );
 }
@@ -229,14 +215,7 @@ function Loading({ error, onRetry }: { error?: string; onRetry?: () => void }) {
   );
 }
 
-function WorkspaceApp({
-  token,
-  onLogout,
-}: {
-  token: string;
-  /** warning = 로그아웃은 됐지만 알려야 할 것(서버 세션 정리 실패 등) */
-  onLogout: (warning?: string) => void;
-}) {
+function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void }) {
   const api = useMemo(() => new MuseApi(token), [token]);
   const { me, loading: meLoading, error: meError, reload: reloadMe } = useMe(api);
   const [workspace, setWorkspace] = useState<Workspace>();
@@ -375,10 +354,10 @@ function WorkspaceApp({
             error={error || (rooms ? "" : roomsError)}
             onLogout={() =>
               void logout(api)
-                .then((warning) => {
+                .then(() => {
                   resetRooms();
-                  // 경고는 콘솔이 아니라 화면에 — 셸이 사라지므로 App 이 로그인 화면 위에 띄운다
-                  onLogout(warning || undefined);
+                  // 서버 세션 정리 경고는 auth.tsx 가 쌓아 두고, 곧바로 뜨는 로그인 화면이 보인다(takeAuthIssues)
+                  onLogout();
                 })
                 .catch((e) => setError(String(e)))
             }
@@ -452,13 +431,7 @@ function Shell({
   // 방 안: 탭 숨김, 전체 화면 (§4.0). 웹에서는 사이드바 옆 메인에 뜬다
   // 채팅 탭 = 영시리와의 기본 채팅(Muse 처럼). 팀 방은 그 화면의 버튼으로 연다
   const main = room ? (
-    <RoomScreen
-      key={room.id}
-      room={room}
-      focus={focus}
-      onBack={closeRoom}
-      onOpenRoom={openRoom}
-    />
+    <RoomScreen key={room.id} room={room} focus={focus} onBack={closeRoom} onOpenRoom={openRoom} />
   ) : tab === "rooms" ? (
     personal ? (
       <RoomScreen key="home" home room={personal} onBack={closeRoom} onOpenRoom={openRoom} />

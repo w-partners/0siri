@@ -456,9 +456,8 @@ test("지표 — 구독자 방 집계만, 자료가 없으면 null", async () =>
   // 카나리를 멈추면 견줄 대상이 없어진다
   await db.put("system", "package-versions", {
     ...(await db.get<{ id: string }>("system", "package-versions", "ver-degraded")),
-    id: "ver-degraded",
     canary: { stage: "stopped", percent: 0 },
-  });
+  } as { id: string });
   const stopped = await json<OperatorMetrics>(
     await call(`/api/operator/metrics?package_id=${contentId}`, otherOperatorId),
   );

@@ -10,6 +10,7 @@ import { AppError } from "../apps/server/src/errors.ts";
 import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import { Routing, routingRoutes } from "../apps/server/src/osiri/routing.ts";
+import { DEVICE_FALLBACK_REASON } from "../packages/domain/src/osiri.ts";
 
 let db: Store, directory: string, routing: Routing, rooms: Rooms;
 let app: Hono<{ Variables: { owner: string } }>;
@@ -73,7 +74,7 @@ test("티어 배정 규칙 — 짧은 잡담 2, 초안 3, 전략/검수 4, 도�
   const fallback = await route({ text: "안녕", deviceFailed: true });
   assert.equal(fallback.tier, 2);
   assert.equal(fallback.badge, "서버에서 답함");
-  assert.match(fallback.reason, /fallback_reason=device_model_failed/);
+  assert.equal(fallback.reason, DEVICE_FALLBACK_REASON);
   assert.equal(fallback.model, "gw/light");
   // 기기 LLM 플래그가 켜지면 짧은 잡담은 티어 1
   await call("/api/settings/routing", "u1", { deviceLlmEnabled: true }, "PATCH");

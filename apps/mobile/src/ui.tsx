@@ -1,5 +1,5 @@
 import { ArrowUpRight, Check, ChevronRight, type LucideIcon, X } from "lucide-react-native";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import {
   ActivityIndicator,
   Appearance,
@@ -346,6 +346,28 @@ export function ErrorNotice({ error }: { error?: string }) {
       <Text style={[s.text, { color: colors.danger }]}>{error}</Text>
     </View>
   ) : null;
+}
+/** 웹 넓은 화면(좌: 목록 / 우: 상세) 기준 — 0Siri 화면들이 같은 기준을 쓴다. */
+const WIDE_MIN = 900;
+export function useWide() {
+  return useWindowDimensions().width >= WIDE_MIN;
+}
+/** 버튼 한 번 = 요청 한 번: busy·오류를 한 곳에서. 오류는 서버의 한국어 메시지를 그대로 보인다. */
+export function useAction() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, run };
 }
 export function Sheet({
   title,

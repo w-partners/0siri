@@ -19,6 +19,7 @@ import {
   type CharacterPrefs,
   DEFAULT_CHARACTER_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
+  DEVICE_FALLBACK_REASON,
   FIXED_TIERS,
   type FixedTier,
   MODEL_KEY_PROVIDERS,
@@ -237,7 +238,7 @@ export class Routing {
     });
     // 답변 방식(설정 화면): auto = 아래 규칙대로 · device = 대화는 기기에서 · server = 기기로 보내지 않는다
     const mode = settings.answerMode ?? "auto";
-    if (input.deviceFailed) return decide(2, "fallback_reason=device_model_failed");
+    if (input.deviceFailed) return decide(2, DEVICE_FALLBACK_REASON);
     if (input.needsTools) return decide(3, "도구 호출·외부 행위는 서버");
     if (input.longTask) return decide(3, "긴 작업은 서버");
     const kind = input.kind ?? "chat";
@@ -347,7 +348,7 @@ export class Routing {
    */
   async forChat(
     owner: string,
-    input: Pick<RouteInput, "text" | "needsTools" | "longTask" | "kind">,
+    input: Pick<RouteInput, "text" | "needsTools" | "longTask" | "kind" | "deviceFailed">,
     defaultModel?: string,
   ): Promise<ChatRoute> {
     const plan = async (byok: boolean) => {
@@ -637,6 +638,8 @@ const settingsView = (
   notificationsReady: NOTIFICATIONS_READY,
   character: settings.character ?? DEFAULT_CHARACTER_PREFS,
 });
+/** `GET /settings` 응답 모양 — 화면이 이 타입을 가져다 쓴다 */
+export type SettingsView = ReturnType<typeof settingsView>;
 const FIXED_MODELS = FIXED_TIERS.map(String);
 /**
  * 알림(푸시·배지 알림)을 보내는 발송부가 아직 없다 — 알림 설정은 저장만 되고 읽는 곳이 없다.

@@ -18,6 +18,15 @@
 - `GET /rooms/:id/summary` 응답에 `recentDone: string[]` 추가(현황판과 같은 값).
 - `GET /rooms/:id/timeline` 응답에 `answers: Record<채팅 답변 messageId, AnsweredBy>` 추가 — 화면이 답변 아래에 «누가 답했는지» 를 붙인다. 워커가 올린 방 메시지는 `payload.answeredBy` 로 같은 모양을 싣는다.
 - 메시지(채팅 응답) 메타데이터: `answeredBy: { tier: 0|1|2|3|4, label: string, model: string, source: "device"|"server"|"byok", reason?: string }`, `memoryRefs?: { id, text, at }[]`.
+- (v0.4.0) `GET /rooms` 항목에 추가: `archived: boolean`(해지 기간이 끝난 방 — 읽기 전용), `thirdParty: boolean`(타사 입점 팀의 방), `digest?: string`(마지막으로 본 뒤의 진척 한 줄 — 없으면 필드 자체가 없다. 방을 열면 `timeline.digest` 로 같은 문장을 받고 목록에서는 사라진다).
+  `pendingApprovals` 는 승인 대기에 그 방의 개인 스킬 초안 수를 더한 값이다.
+- (v0.4.0) `archived` 방에 글을 쓰면(사용자 `POST /rooms/:id/messages` · 워커 `POST /worker/messages`) 409 `{ error: "해지된 방입니다 — 읽기 전용" }` (도메인 `ARCHIVED_ROOM_NOTICE`). 읽기는 그대로 된다.
+- (v0.4.0) 방 메시지 카드 `kind: "card"`, `payload: { card: "escalation", label: "확인 필요", goalId, title, rejects, actor }` — 같은 작업의 검수 반려가 `REVIEW_ESCALATION_THRESHOLD`(3)회 쌓일 때마다 올라온다. 그 목표는 `status: "blocked"` 가 되고 초안으로 되돌리지 않는다.
+  워커 `POST /worker/audit` 응답에 `escalated?: true` 추가(그 반려가 에스컬레이션을 일으켰을 때만).
+  카드 payload 에 `summary: string`(«검수에서 N번 반려되어 멈췄습니다 — 마지막 사유: …»), `reasonKind?: "tone"|"fact"|"topic"` 도 실린다.
+  워커 `POST /worker/audit` 본문에 `reason_kind?: "tone"|"fact"|"topic"`, `detail?: string`(반려 사유 문장) 추가 — `review.reject` 에 실으면 목표 줄과 카드 요약이 쓴다.
+- (v0.4.0) `Activity` 에 `messageId?: string` 추가 — 그 활동이 가리키는 방 메시지(승인 요청·승인·반려·만료 활동은 승인 카드 메시지). 없는 활동은 필드가 없다.
+- (v0.4.0) `GET /rooms/:id/files` 의 `approved[]` 에 `goalId: string|null`, `messageId: string|null` 추가.
 
 ## 승인 (화면 3·4)
 
@@ -25,16 +34,23 @@
   반려는 `reasonKind` 필수(400). 이미 처리된 건은 409 + 현재 `status`.
 - `GET /inbox` — `?room_id=`·`?kind=publish|consult|skill` 필터. pending 항목에 `kind`, `roomCharacter` 추가.
   한 팀 조회가 실패해도 나머지는 준다: `failed: { roomId, roomTitle, error }[]`.
+- (v0.4.0) 승인 카드 방 메시지 `payload` 에 `inputHash: string` 추가 — 화면은 이 값을 `frozenHash` 로 되돌려 보낸다. 다르면 409 «화면에 보인 내용과 승인 대상이 다릅니다(동결 해시 불일치)…», 결재는 반영되지 않는다.
+- (v0.4.0) 반려하면 그 방 상태(presence·`board.character.state`)가 `working` 이 된다(재작업). 승인이 만료되면 목표가 `stage: "geo"`·`progress: 60` 으로 돌아가 팀이 승인 카드를 다시 올리고, 활동에 «승인 요청 만료: …» 가 남는다.
+- (v0.4.0) `GET /inbox` 의 `pending` 에 개인 스킬 초안이 섞여 온다: `{ id, skillId, kind: "skill", roomId, roomTitle, roomCharacter, title, summary, evidence, status: "pending", requestedBy, createdAt }`. 결재는 `POST /skills/:skillId/decide`(승인 경로가 아니다). `?kind=skill` 이면 초안만, `publish|consult` 면 초안은 빠진다. 초안이 생기면 사용자 스트림에 `inbox` 이벤트가 나간다.
 
 ## 목표 (화면 1·5)
 
 - `TeamGoal.status` 에 `"proposed"` 추가(장기 목표는 사용자 승인 전에는 시작하지 않는다). 달성은 기존 `"completed"`.
 - `POST /goals` `{ roomId, title }` → 장기 목표 `status: "proposed"` (온보딩 «첫 목표 한 줄»).
 - `POST /goals/:id/activate` → `proposed` → `active`. 그 밖의 상태면 409.
+- (v0.4.0) `POST /goals/:id/unblock` → `blocked` → `active` (`TeamGoal`). [확인 필요] 로 멈춘 목표를 주인이 풀면 워커가 다시 집는다 — 단계·진척은 멈춘 자리 그대로. 막힌 목표가 아니면 409, 남의 목표는 404. 활동(`kind: "goal"`)에 «다시 진행: …» 이 남는다.
 - `GET /goals/:id/metrics?period=week|month|quarter` → `{ period, measuredAt: string|null, metrics: { published, indexed, ai_citations, conversions } }` — 각 값은 `number|null`, `null` = 아직 측정 전("수집 중").
 - `GoalProposal = { id, roomId, title, detail, status: "pending"|"accepted"|"held", proposedBy, createdAt }`
   - `GET /goals/proposals?room_id=` · `POST /goals/proposals/:id/decide` `{ decision: "accept"|"hold" }` (accept → 다음 중기 목표로 편입 + 방 공지).
   - 워커: `POST /worker/goals/proposals` `{ title, detail }`.
+- (v0.4.0) `GET /goals?room_id=` 항목(`TeamGoal`)에 추가: `dueAt: string|null`(목표 기간의 끝 — 정한 적이 없으면 `null`. 서버가 기간을 지어내지 않는다), `reasonKind?: "tone"|"fact"|"topic"`(가장 최근 반려의 사유 종류), `rejects?: { total: number, byKind: { tone?, fact?, topic? } }`(검수 반려 `review.reject` + 사용자 반려를 합친 건수. `byKind` 는 사유 종류가 기록된 것만 — 합이 `total` 보다 작을 수 있다. 반려가 없으면 두 필드 모두 없다).
+  `POST /goals` 가 `dueAt?: string`(ISO 8601)을 받는다. 워커: `POST /worker/goals` `dueAt?`, `POST /worker/goals/:id/progress` `due_at?`.
+- (v0.4.0) 제안 상태 문구는 버튼과 같은 «반영» 계열로 맞췄다: 버튼 `PROPOSAL_DECISION_LABELS`(목표에 반영·보류) ↔ 상태 `PROPOSAL_STATUS_LABELS`(대기·반영됨·보류됨). 수락 활동 제목도 «제안 반영: …».
 
 ## 스토어 (화면 6)
 
@@ -43,6 +59,9 @@
 - `POST /subscriptions` `{ packageId, restore?: boolean }` — 해지했던 팀을 다시 구독할 때 `restore` 로 기존 방·기억 복원/새로 시작을 고른다. 이미 구독 중이면 409.
 - `POST /subscriptions/:id/resume` — 해지 예약 취소.
 - 구독 항목에 추가: `paymentMethod: string|null`, `endsAt: string|null`(해지 시 기간 말), `status` 에 `"ended"`.
+- (v0.4.0) `GET /store/packages` 항목에 `thirdParty: boolean` 추가(타사 입점 — 라벨은 도메인 `THIRD_PARTY_LABEL`). `POST /admin/packages` 가 `thirdParty?: boolean`, `greeting?: string` 을 받는다.
+- (v0.4.0) 새 방으로 구독이 시작되면 팀장의 첫 인사가 방에 올라온다: `role: "assistant"`, `payload: { actor: "root", greeting: true }`, 본문은 패키지 `greeting` 또는 도메인 `DEFAULT_TEAM_GREETING`(첫 목표를 말해 달라는 초대). 복원(`restore`)에는 올리지 않는다.
+- (v0.4.0) 해지(`cancel`)는 방을 잠그지 않는다 — `endsAt` 까지 그대로 쓰고, 활동에 «구독 해지 예약 — YYYY-MM-DD 까지 …» 가 남는다. `endsAt` 이 지나면 구독이 `ended` 가 되면서 방이 `archived`(읽기 전용)로 바뀌고 안내 한 줄이 남는다. 해지 예약 중에 새로 시작(`restore` 없이)으로 다시 구독하면 옛 구독은 그 자리에서 `ended`, 옛 방은 `archived` 가 된다.
 
 ## 연결 (화면 7)
 
@@ -51,12 +70,14 @@
 - 모델 계정: `GET /model-keys` → 제공자별 `{ provider, status: "active"|"none", last4: string|null, baseUrl?: string }` (OpenAI·Anthropic·Google·compatible 전부 한 줄씩).
   `PUT /model-keys/:provider` `{ apiKey, baseUrl? }` — 검증 통과 후에만 이전 키 폐기(교체). 실패는 `{ error, kind: "format"|"auth"|"network" }` 400.
   `DELETE /model-keys/:provider`.
+  (v0.4.0) 있던 키를 지우면 활동(팀 방마다, 팀 방이 없으면 방 없이)에 «내 키를 지웠습니다 — 공용 열쇠로 전환, 월 상한 적용»(도메인 `MODEL_KEY_REMOVED_NOTICE`)이 남고 `inbox` 이벤트가 나간다.
 
 ## 기억 (화면 8)
 
 - `GET /memories?category=profile|preference|goal|feedback&q=` — 항목에 `category`, `sourceLabel`("대화에서 학습" 등) 추가.
 - `PATCH /memories/:id` `{ text }` (임베딩 다시 계산).
 - `GET /memories/mcp-access` · `PATCH /memories/mcp-access` `{ enabled: boolean }` (다른 LLM 앱이 읽는 기억 MCP 문 — 켤 때만 열린다).
+  (v0.4.0) 두 응답에 `ready: boolean` 추가 — 지금은 항상 `false`: 밖에서 읽는 기억 MCP 문이 아직 없어 스위치는 저장만 된다. 화면은 `ready: false` 면 «준비 중» 으로 보인다.
 
 ## 스킬 (화면 9)
 
@@ -64,6 +85,9 @@
 - `GET /skills?room_id=&status=&scope=` · `POST /skills/:id/decide` `{ decision: "approve"|"reject"|"retire"|"keep", reason? }` · `POST /skills/:id/rollback` · `PATCH /skills/:id` `{ enabled }`(개인 스킬 끄기).
 - 개인 스킬은 사용자가, 패키지 공통 스킬은 운영자가 승인한다(사용자 화면에서 패키지 초안은 보이지만 버튼이 없다 → 403).
 - 검수·컴플라이언스 기준을 완화하는 초안은 서버가 만들지 않는다(§17.3) — 워커 `POST /worker/skills` 가 `loosens: true` 면 422.
+- (v0.4.0) `Skill` 에 `measureNote?: string` 추가 — `measuring: true` 일 때만 실린다(측정이 어떻게 끝나는지 한 줄, 도메인 `SKILL_MEASURE_NOTE`).
+- (v0.4.0) 워커: `GET /worker/skills` → 그 방의 개인 스킬 + 패키지 스킬(`Skill` + `reason?` — 반려 사유가 초안을 낸 팀에게 돌아간다) · `POST /worker/skills/:id/effect` `{ effect: string, worse: boolean }` → `Skill`. 그 방의 개인 스킬만(아니면 403). `worse: true` 면 `status: "retire_proposed"`(폐기 제안 — 결정은 사용자), 아니면 `measuring: false` + `effect` 만 남긴다.
+- (v0.4.0) 개인 스킬 초안·폐기 제안은 활동(`kind: "skill"`)으로 남고 결재함(`/inbox`)에 들어온다 — 위 «승인» 절.
 
 ## 운영자 콘솔 (화면 10) — `role` 이 operator·admin 일 때만, 자기 패키지만
 
@@ -72,6 +96,7 @@
 - `POST /operator/versions` `{ packageId, imageDigest?, mcpUrl? }` → 심사 체크리스트 9항(§15.5) 자동 재시험. 하나라도 실패면 `status: "review_failed"`, 배포 없음.
 - `POST /operator/versions/:id/canary` `{ action: "advance"|"stop" }` · `POST /operator/rollback` `{ packageId }`(심사 없이 즉시 이전 버전).
 - `GET /operator/metrics?package_id=` → `{ approvalRate: number|null, topRejectReason: string|null, citations: number|null }` (집계만).
+  (v0.4.0) 추가: `degraded: boolean`, `canaryApprovalRate: number|null`, `previousApprovalRate: number|null` — 카나리 배포 중(멈춤 제외)인 최신 버전의 `createdAt` 을 기준으로 결재(`decidedAt`)를 앞뒤로 나눠 승인율을 견준다. 뒤가 낮으면 `degraded: true`. 카나리가 없거나 한쪽에 결재가 없으면 `false`·`null`. 결재가 버전별로 표시되지 않아 시각 기준의 근사다.
 - `GET /operator/skills?package_id=` · `POST /operator/skills/:id/decide` `{ decision: "approve"|"reject", reason? }`
 - `POST /operator/notices` `{ packageId, text }` → 구독자 방에 공지.
 
@@ -80,6 +105,11 @@
 - `GET /settings` → `{ tier: { label, subscription: string|null, nextBillingAt: string|null }, answerMode: "auto"|"device"|"server", autoEconomy: boolean, fixedModel: string|null, monthlyCapKrw: number|null, notifications: { approvals: boolean, weeklyReport: boolean }, character: { enabled: boolean, intensity: "motion"|"face"|"text" } }`
 - `PATCH /settings/model` `{ answerMode?, autoEconomy?, fixedModel?, monthlyCapKrw? }` · `PATCH /settings` `{ notifications?, character? }`
 - `GET /billing/usage` → `{ costKrw, capKrw: number|null, percent: number|null, byok: boolean, savedKrw: number|null }` (`null` = "측정 중").
+  (v0.4.0) 추가: `unpricedCalls: number`(단가가 없어 비용을 못 잰 호출 수 — 0 보다 크면 `percent` 는 `null`), `warn: "none"|"near"|"reached"`(도메인 `CAP_WARN_NEAR_PERCENT` 80 · `CAP_WARN_REACHED_PERCENT` 100. 상한이 없으면 `"none"`. 잰 지출만으로 내므로 `percent` 가 `null` 이어도 값이 실린다).
+- (v0.4.0) 공용 열쇠로 월 상한에 닿으면 채팅이 402 `{ error: "이번 달 사용 상한에 도달해 … 내 모델 키를 연결하세요" }`(도메인 `CAP_REACHED_NOTICE`). 내 키(BYOK)로 답하는 경로는 막지 않는다.
+- (v0.4.0) `GET /settings` 에 `notificationsReady: boolean` 추가 — 지금은 `false`: 알림 설정은 저장되지만 실제로 보내는 발송기가 아직 없다.
+- (v0.4.0) 기기 모델이 실패해 서버가 대신 답한 경우 `answeredBy.reason` 이 «기기 실패 — 서버로 답했습니다»(도메인 `DEVICE_FALLBACK_REASON`)가 된다. 서버는 화면이 알려 줄 때만 안다: 채팅 실행 요청의 `forwardedProps.deviceFailed: true`, 또는 `POST /route` `{ deviceFailed: true }`.
+- (v0.4.0) 서버 타입: `SettingsView`(`osiri/routing.ts`, `GET /settings` 응답) · `MeResponse`(`osiri/account-routes.ts`, `GET /me` 응답) · `GoalView`(`osiri/rooms.ts`, `GET /goals` 항목).
 - `POST /account/delete` → `{ deleteAfter }` (30일 내 삭제 + 증적 기록).
 
 ## 로그인·온보딩 (화면 1)

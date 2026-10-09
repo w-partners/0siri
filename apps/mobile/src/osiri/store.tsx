@@ -1,7 +1,7 @@
 // 0Siri 화면 6 · 스토어 («0Siri 종합 기획» §03): 탐색 / 내 구독. 계약: docs/0siri-api-contract.md «스토어». 탭 URL 동기화는 App 이 맡는다.
 import { Search, Store } from "lucide-react-native";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   STORE_CATEGORIES,
   STORE_CATEGORY_ALL_LABEL,
@@ -11,6 +11,7 @@ import {
   type SubscribeErrorKind,
   THIRD_PARTY_LABEL,
 } from "../../../../packages/domain/src/osiri";
+import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Catalog, publicPackage } from "../../../server/src/osiri/store.ts";
 import { ApiError } from "../api-response";
 import {
@@ -27,10 +28,12 @@ import {
   Sheet,
   Skeleton,
   s,
+  useAction,
+  useWide,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { GoalStep, type Me, ONBOARDING_TITLES, ProfileStep, profileComplete } from "./auth";
 import { CharacterAvatar } from "./eve";
+import { GoalStep, ONBOARDING_TITLES, ProfileStep, profileComplete } from "./onboarding-steps";
 
 /** `GET /store/packages` 항목 — 서버 `publicPackage()` 가 만든다. */
 type Pkg = ReturnType<typeof publicPackage>;
@@ -116,11 +119,8 @@ const statusTint: Record<Sub["status"], string> = {
 };
 const MINE = "/api/subscriptions/mine";
 
-/** 웹 넓은 화면(좌: 목록 / 우: 상세) 기준. auth.tsx 도 같은 기준을 쓴다. */
-const WIDE_MIN = 900;
-export function useWide() {
-  return useWindowDimensions().width >= WIDE_MIN;
-}
+// useWide · useAction 의 정의는 ../ui 에 있다(auth.tsx ↔ 이 파일의 순환 import 를 끊으려고 옮겼다) — 기존 화면들이 여기서 가져다 쓰므로 그대로 내보낸다
+export { useAction, useWide };
 
 /** 로딩·오류·재시도를 한 곳에서. settings.tsx 도 이걸 가져다 쓴다 (사본 금지). */
 export function useLoad<T>(load: () => Promise<T>, key = "") {
@@ -147,24 +147,6 @@ export function useLoad<T>(load: () => Promise<T>, key = "") {
     retry: () => setAttempt((n) => n + 1),
     setData: (data: T) => setState({ data, loading: false }),
   };
-}
-
-/** 버튼 한 번 = 요청 한 번: busy·오류를 한 곳에서. 오류는 서버의 한국어 메시지를 그대로 보인다. */
-export function useAction() {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    setError("");
-    try {
-      await fn();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, error, run };
 }
 
 /** 로딩(스켈레톤)·오류+재시도·빈 상태(다음 행동 버튼) 공통 래퍼. */
@@ -504,9 +486,7 @@ function Explore({
                   <Text style={s.text}>{pkg.summary}</Text>
                   <Conversion rate={pkg.conversionRate} />
                   {pkg.reviewing ? (
-                    <Button small disabled onPress={() => undefined}>
-                      {text.reviewing}
-                    </Button>
+                    <Chip tint={colors.warnBg}>{text.reviewing}</Chip>
                   ) : pkg.subscribed && pkg.roomId ? (
                     <Button small onPress={() => onOpenRoom(pkg.roomId as string)}>
                       {`${SUBSCRIPTION_STATUS_LABELS.active} · ${text.openRoom}`}
@@ -698,9 +678,7 @@ function PackageDetail({
           </Button>
         </View>
       ) : pkg.reviewing ? (
-        <Button disabled onPress={() => undefined}>
-          {text.reviewing}
-        </Button>
+        <Chip tint={colors.warnBg}>{text.reviewing}</Chip>
       ) : !confirming ? (
         <Button primary onPress={() => setConfirming(true)}>
           {text.subscribe}
@@ -753,7 +731,7 @@ function PackageDetail({
 /** 구독 확정 뒤의 팀별 온보딩: 프로필 확인(비어 있을 때만) → 그 팀 방의 첫 목표 한 줄. 단계 조각은 화면 1(auth.tsx)의 것을 그대로 쓴다. */
 function TeamOnboarding({ roomId, onDone }: { roomId: string; onDone: () => void }) {
   const { api } = useWorkspace();
-  const me = useLoad(() => api.request<Me>("/api/me"));
+  const me = useLoad(() => api.request<MeResponse>("/api/me"));
   const [profileSaved, setProfileSaved] = useState(false);
   return (
     <Card style={{ gap: 12, borderColor: colors.accent }}>

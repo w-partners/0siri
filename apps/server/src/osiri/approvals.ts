@@ -160,6 +160,7 @@ export class Approvals {
     await this.rooms.updateGoal(owner, goal.id, { progress: 60, stage: "geo" }, "system");
     await this.rooms.activity(owner, {
       roomId: approval.roomId,
+      ...(approval.messageId ? { messageId: approval.messageId } : {}),
       kind: "approval",
       actor: "system",
       title: `승인 요청 만료: ${approval.title} — 팀이 다시 준비해 새 승인 카드를 올립니다`,
@@ -229,6 +230,7 @@ export class Approvals {
     await this.db.put(owner, "approvals", approval);
     await this.rooms.activity(owner, {
       roomId: input.roomId,
+      messageId: card.id,
       kind: "approval",
       actor: input.requestedBy,
       title: `승인 요청: ${approval.title}`,
@@ -311,6 +313,7 @@ export class Approvals {
       });
     await this.rooms.activity(owner, {
       roomId: approval.roomId,
+      ...(approval.messageId ? { messageId: approval.messageId } : {}),
       kind: "approval",
       actor: "user",
       title: `${decision === "approve" ? "승인" : "반려"}: ${approval.title}`,
@@ -331,6 +334,7 @@ export class Approvals {
       actor: options.decidedBy,
       action: `approval.${decision}:${approval.toolName}`,
       approvalId: id,
+      ...(approval.goalId ? { goalId: approval.goalId } : {}),
       result: "ok",
       roomId: approval.roomId,
       ...(reasonKind ? { reasonKind } : {}),

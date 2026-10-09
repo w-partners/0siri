@@ -38,16 +38,17 @@ import {
   ESCALATION_LABEL,
   GOAL_LEVEL_LABELS,
   GOAL_METRIC_LABELS,
+  GOAL_UNBLOCK_LABEL,
   PERSONAL_ROOM_TITLE,
   PRESENCE_LABELS,
   PRESENCE_STATES,
-  type PresenceState,
   PROPOSAL_DECISION_LABELS,
   PROPOSAL_STATUS_LABELS,
+  type PresenceState,
   REJECT_REASON_KINDS,
   REJECT_REASON_LABELS,
-  type RejectReasonKind,
   REPORT_METRIC_KEYS,
+  type RejectReasonKind,
   SKILL_STATUS_LABELS,
   STAGE_LABELS,
   THIRD_PARTY_LABEL,
@@ -59,6 +60,7 @@ import type {
   RoomBoard,
   RoomCard,
   RoomMessage,
+  Rooms,
   TaskStage,
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
@@ -87,7 +89,7 @@ import {
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood, selfAnimated, useStill } from "./eve";
 import { SkillsScreen } from "./skills";
-import { LoadState, useLoad } from "./store";
+import { LoadState, useAction, useLoad } from "./store";
 import { type GoalProposal, LoadError, TeamGoalsScreen } from "./team-goals";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
@@ -165,7 +167,8 @@ const text = {
   streamStopped: "실시간 연결이 끊겼어요",
   streamSkipped: (event: string) =>
     `실시간 알림(${event}) 하나를 읽지 못했어요. 화면이 늦을 수 있어요`,
-  hashMissing: "이 승인 카드에 동결 해시가 없어 결정을 보낼 수 없어요. 새로 고친 뒤 다시 시도해 주세요",
+  hashMissing:
+    "이 승인 카드에 동결 해시가 없어 결정을 보낼 수 없어요. 새로 고친 뒤 다시 시도해 주세요",
   skillIdMissing: "이 스킬 초안의 id 를 받지 못해 결정을 보낼 수 없어요",
   focusMissing: "가리킨 메시지를 이 방에서 찾지 못했어요",
   boardMissing: "현황판을 받지 못해 팀 상태를 알 수 없어요",
@@ -204,6 +207,7 @@ const text = {
   noMessages: "아직 기록이 없어요. 아래에 목표를 말하면 팀장이 쪼개서 시작해요.",
   composer: "메시지 입력 — 목표를 말하면 팀이 쪼개서 실행합니다",
   fromMemory: "기억에서 찾음",
+  resumed: "멈춘 목표를 풀었습니다 — 팀이 이어서 작업합니다.",
   tabs: { chat: "채팅", goals: "목표", feed: "피드", ideas: "아이디어", files: "파일" },
   feedPending: "승인 대기",
   feedActivity: "활동",
@@ -882,11 +886,11 @@ export async function decidePending(
   decision: Decision,
   reason?: RejectReason,
 ): Promise<{ status: string; label?: string }> {
-  if (item.kind !== "skill")
-    return decideApproval(api, item.id, decision, item.inputHash, reason);
+  if (item.kind !== "skill") return decideApproval(api, item.id, decision, item.inputHash, reason);
   if (!item.skillId) throw new Error(text.skillIdMissing);
   // 스킬 반려 사유는 한 문장이다 — 고른 종류(톤·사실·주제)와 덧붙인 말을 이어 보낸다
-  const why = reason && [REJECT_REASON_LABELS[reason.kind], reason.note].filter(Boolean).join(" — ");
+  const why =
+    reason && [REJECT_REASON_LABELS[reason.kind], reason.note].filter(Boolean).join(" — ");
   const skill = await api.request<Skill>(`/api/skills/${item.skillId}/decide`, {
     decision,
     reason: why,
@@ -1247,10 +1251,8 @@ function IdeasTab({ roomId }: { roomId: string }) {
     </LoadState>
   );
 }
-interface RoomFiles {
-  approved: { approvalId: string; title: string; summary: string; decidedAt: string }[];
-  audit: { id: string; ts: string; action: string; actor: string; approvalId?: string }[];
-}
+/** `GET /rooms/:id/files` — 서버 `Rooms.files()` 가 만든다. 목표 화면(team-goals.tsx)도 이 타입을 쓴다 */
+export type RoomFiles = Awaited<ReturnType<Rooms["files"]>>;
 function FilesTab({ roomId }: { roomId: string }) {
   const { api } = useWorkspace();
   const files = useLoad(() => api.request<RoomFiles>(`/api/rooms/${roomId}/files`), roomId);
@@ -1284,6 +1286,7 @@ export function RoomScreen({
   onBack,
   home = false,
   onOpenRoom,
+  focus,
 }: {
   room: Room;
   onBack: () => void;
@@ -1801,6 +1804,49 @@ const answerLine = (a: AnsweredByView) =>
     .filter(Boolean)
     .join(" · ");
 
+/**
+ * 검수 반려가 되풀이돼 팀이 사람에게 올린 건 — [확인 필요] 칩으로 구분한다.
+ * [다시 진행] 은 멈춘 목표를 푼다(`POST /goals/:id/unblock`). 이미 풀린 목표면 서버가 409 로 사유를 말하고 그 문장을 그대로 보인다.
+ */
+function EscalationCard({ message: m }: { message: RoomMessage }) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const [resumed, setResumed] = useState(false);
+  const p = m.payload ?? {};
+  const goalId = typeof p.goalId === "string" ? p.goalId : "";
+  return (
+    <Card style={{ gap: 8, padding: 14, borderColor: colors.warn }}>
+      <View style={[s.row, { gap: 8 }]}>
+        <Chip tint={colors.warnBg}>{ESCALATION_LABEL}</Chip>
+        {typeof p.title === "string" && (
+          <Text style={[s.heading, { flex: 1, fontSize: 15 }]}>{p.title}</Text>
+        )}
+      </View>
+      {!!m.text && <Text style={s.text}>{m.text}</Text>}
+      {typeof p.summary === "string" && <Text style={s.muted}>{p.summary}</Text>}
+      <ErrorNotice error={act.error} />
+      {resumed ? (
+        <Text style={s.small}>{text.resumed}</Text>
+      ) : goalId ? (
+        <Button
+          small
+          style={{ alignSelf: "flex-start" }}
+          busy={act.busy}
+          onPress={() =>
+            void act.run(async () => {
+              await api.request(`/api/goals/${goalId}/unblock`, {});
+              setResumed(true);
+            })
+          }
+        >
+          {GOAL_UNBLOCK_LABEL}
+        </Button>
+      ) : null}
+      <Text style={[s.small, mono]}>{relativeDate(m.createdAt)}</Text>
+    </Card>
+  );
+}
+
 function Message({
   message: m,
   onDecide,
@@ -1821,21 +1867,7 @@ function Message({
         onDecide={onDecide}
       />
     );
-  // 검수 반려가 되풀이돼 팀이 사람에게 올린 건 — [확인 필요] 칩으로 구분한다. 여기서 실행하는 것은 없다(읽고 대화로 답한다).
-  if (m.kind === "card" && p.card === "escalation")
-    return (
-      <Card style={{ gap: 8, padding: 14, borderColor: colors.warn }}>
-        <View style={[s.row, { gap: 8 }]}>
-          <Chip tint={colors.warnBg}>{ESCALATION_LABEL}</Chip>
-          {typeof p.title === "string" && (
-            <Text style={[s.heading, { flex: 1, fontSize: 15 }]}>{p.title}</Text>
-          )}
-        </View>
-        {!!m.text && <Text style={s.text}>{m.text}</Text>}
-        {typeof p.summary === "string" && <Text style={s.muted}>{p.summary}</Text>}
-        <Text style={[s.small, mono]}>{relativeDate(m.createdAt)}</Text>
-      </Card>
-    );
+  if (m.kind === "card" && p.card === "escalation") return <EscalationCard message={m} />;
   // 결정: widget payload 가 현황판 모양(flow 가 있음)일 때만 위젯으로, 아니면 텍스트로 보인다.
   if (m.kind === "widget" && p.flow && typeof p.flow === "object")
     return <BoardWidget board={{ ...(p as unknown as Board), roomId: m.roomId }} />;

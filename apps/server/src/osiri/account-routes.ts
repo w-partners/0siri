@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { USER_ROLES } from "../../../../packages/domain/src/osiri.ts";
 import { AppError } from "../errors.ts";
-import type { Accounts, AuditWriter } from "./accounts.ts";
+import type { Accounts, AuditWriter, Profile, User } from "./accounts.ts";
 
 type Env = { Variables: { owner: string } };
 
@@ -45,13 +45,16 @@ export function accountDeletionRoutes(accounts: Accounts, audit: AuditWriter) {
   return app;
 }
 
+/** `GET /me` 응답 모양 — 비밀번호 해시는 싣지 않는다 */
+export type MeResponse = { user: Omit<User, "passwordHash">; profile: Profile };
+
 export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
   const app = new Hono<Env>();
   app.get("/me", async (c) => {
     const user = await accounts.userById(c.get("owner"));
     if (!user) return c.json({ error: "세션의 사용자를 찾을 수 없습니다" }, 401);
     const { passwordHash: _omit, ...safe } = user;
-    return c.json({ user: safe, profile: await accounts.profile(user.id) });
+    return c.json({ user: safe, profile: await accounts.profile(user.id) } satisfies MeResponse);
   });
   app.patch("/me/profile", async (c) => {
     const body = z

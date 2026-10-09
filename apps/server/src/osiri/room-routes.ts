@@ -451,16 +451,26 @@ export function roomRoutes(deps: RoomDeps) {
   app.get("/goals", async (c) => {
     const roomId = c.req.query("room_id");
     if (!roomId) throw new AppError("room_id 가 필요합니다", 422);
-    return c.json(await rooms.goals(c.get("owner"), roomId));
+    return c.json(await rooms.goalViews(c.get("owner"), roomId));
   });
   app.post("/goals", async (c) => {
     const body = z
-      .object({ roomId: z.string().min(1), title: z.string().trim().min(1).max(300) })
+      .object({
+        roomId: z.string().min(1),
+        title: z.string().trim().min(1).max(300),
+        dueAt: z.string().datetime().optional(),
+      })
       .parse(await c.req.json());
     return c.json(
       await rooms.createGoal(
         c.get("owner"),
-        { roomId: body.roomId, title: body.title, level: "long", status: "proposed" },
+        {
+          roomId: body.roomId,
+          title: body.title,
+          level: "long",
+          status: "proposed",
+          dueAt: body.dueAt,
+        },
         "user",
       ),
     );
@@ -528,6 +538,10 @@ export function roomRoutes(deps: RoomDeps) {
       );
     return c.json(active);
   });
+  // blocked → active: [확인 필요] 로 멈춘 목표를 사용자가 풀어 준다(워커가 다시 집는다). 막힌 목표가 아니면 409
+  app.post("/goals/:id/unblock", async (c) =>
+    c.json(await rooms.unblockGoal(c.get("owner"), c.req.param("id"))),
+  );
   app.get("/goals/:id/metrics", async (c) => {
     const period = z.enum(METRIC_PERIODS).parse(c.req.query("period"));
     return c.json(await rooms.goalMetrics(c.get("owner"), c.req.param("id"), period));
@@ -699,6 +713,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         stage: stageSchema.optional(),
         assignee: z.string().max(60).optional(),
         nextActions: z.array(z.string()).optional(),
+        dueAt: z.string().datetime().optional(),
       })
       .parse(await c.req.json());
     return c.json(
@@ -742,6 +757,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
           })
           .optional(),
         next_actions: z.array(z.string()).optional(),
+        due_at: z.string().datetime().optional(),
         actor: z.string().max(60).default("team"),
       })
       .parse(await c.req.json());
@@ -754,6 +770,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         status: body.status,
         metrics: body.metrics,
         nextActions: body.next_actions,
+        dueAt: body.due_at,
       },
       body.actor,
     );
@@ -771,6 +788,9 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         approval_id: z.string().optional(),
         result: z.enum(["ok", "error", "blocked"]),
         external: z.boolean().optional(),
+        // 검수 반려(review.reject)의 사유 — 목표 줄의 사유 칩과 [확인 필요] 카드 요약이 이것을 쓴다
+        reason_kind: z.enum(REJECT_REASON_KINDS).optional(),
+        detail: z.string().max(2000).optional(),
       })
       .parse(await c.req.json());
     if (body.external && !body.approval_id)
@@ -784,6 +804,8 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
       approvalId: body.approval_id,
       result: body.result,
       roomId: c.get("roomId"),
+      ...(body.reason_kind ? { reasonKind: body.reason_kind } : {}),
+      ...(body.detail ? { detail: body.detail } : {}),
     });
     if (body.result === "error")
       await rooms.activity(c.get("owner"), {
@@ -808,6 +830,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
       else if (rejects % REVIEW_ESCALATION_THRESHOLD === 0) {
         escalated = true;
         await rooms.updateGoal(c.get("owner"), goal.id, { status: "blocked" }, "system");
+        const summary = `검수에서 ${rejects}번 반려되어 멈췄습니다${body.detail ? ` — 마지막 사유: ${body.detail}` : ""}`;
         await rooms.post(c.get("owner"), c.get("roomId"), {
           role: "assistant",
           kind: "card",
@@ -817,6 +840,8 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
             label: ESCALATION_LABEL,
             goalId: goal.id,
             title: goal.title,
+            summary,
+            ...(body.reason_kind ? { reasonKind: body.reason_kind } : {}),
             rejects,
             actor: body.actor,
           },

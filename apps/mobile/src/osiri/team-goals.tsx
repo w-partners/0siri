@@ -4,19 +4,31 @@ import { ArrowDown, ArrowUp, Store, Target } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import {
+  APPROVAL_STATUS_LABELS,
+  GOAL_LEVEL_LABELS,
   GOAL_METRIC_KEYS,
+  GOAL_METRIC_LABELS,
+  GOAL_STATUS_LABELS,
+  GOAL_STATUS_TRACK,
+  GOAL_UNBLOCK_LABEL,
   type GoalMetricKey,
+  METRIC_PERIOD_LABELS,
   METRIC_PERIODS,
   type MetricPeriod,
+  PROPOSAL_DECISION_LABELS,
+  PROPOSAL_STATUS_LABELS,
   type ProposalDecision,
+  REJECT_REASON_KINDS,
+  REJECT_REASON_LABELS,
+  REPORT_METRIC_KEYS,
   STAGE_LABELS,
 } from "../../../../packages/domain/src/osiri";
 import type {
   GoalMetrics,
   GoalProposal,
+  GoalView,
   RoomCard,
   TaskStage,
-  TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
 import {
   Button,
@@ -34,6 +46,8 @@ import {
 } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
+import type { Inbox } from "./inbox";
+import { type RoomFiles, type RoomFocus, refreshRooms, useRooms, useUserEvent } from "./rooms";
 import { Choice, useAction, useLoad } from "./store";
 
 // rooms.tsx 가 제안 카드 타입을 여기서 가져간다 — 정의는 서버 rooms.ts 하나다.
@@ -49,17 +63,6 @@ const text = {
   emptyDetail: "팀장에게 이루고 싶은 것을 한 줄로 말하면 장기 목표 초안이 여기에 올라와요.",
   examples: ["상속 분야에서 AI 답변에 먼저 인용되고 싶어", "이번 달 글 8건을 발행하고 싶어"],
   goChat: "대화하러 가기",
-  levels: { long: "장기", mid: "중기", short: "단기", task: "작업" } satisfies Record<
-    TeamGoal["level"],
-    string
-  >,
-  status: {
-    proposed: "제안",
-    active: "진행",
-    completed: "달성",
-    paused: "일시정지",
-    blocked: "막힘",
-  } satisfies Record<TeamGoal["status"], string>,
   started: "시작",
   activate: "승인",
   activateHint: "장기 목표는 승인해야 시작돼요.",
@@ -68,17 +71,18 @@ const text = {
   up: "위로",
   down: "아래로",
   openLinked: "연결된 승인·발행 건 보기",
+  linkedPending: "승인 대기",
+  linkedPublished: "발행",
+  linkedNone: "이 목표에 연결된 승인·발행 건이 아직 없어요.",
+  viewInRoom: "방에서 보기",
+  rejected: "반려",
+  rejects: (n: number, by: string) => (by ? `반려 ${n}건 (${by})` : `반려 ${n}건`),
+  due: "기한",
+  heldNote: "다음 주간 보고에서 팀이 다시 제안할지 판단해요.",
   stalled: "멈춘 팀",
   stalledDetail: "약속한 보고 주기를 넘겼어요. 방에서 팀 상태를 확인해 주세요.",
   openRoom: "방 열기",
   metricsHeading: "지표",
-  period: { week: "주", month: "월", quarter: "분기" } satisfies Record<MetricPeriod, string>,
-  metrics: {
-    published: "발행",
-    indexed: "색인",
-    ai_citations: "인용",
-    conversions: "전환",
-  } satisfies Record<GoalMetricKey, string>,
   // 지표 칩을 누르면 보이는 측정 방법
   how: {
     published: "승인을 거쳐 실제로 발행된 글의 수예요. 발행 기록(감사 로그)에서 셉니다.",
@@ -97,18 +101,12 @@ const text = {
   lastReported: "마지막 보고값",
   proposalsHeading: "팀 제안",
   noProposals: "팀이 낸 제안이 아직 없어요. 팀이 주간 보고에서 다음 목표를 제안해요.",
-  accept: "목표에 반영",
-  hold: "보류",
-  proposalStatus: { pending: "대기", accepted: "반영됨", held: "보류됨" } satisfies Record<
-    GoalProposal["status"],
-    string
-  >,
   tasksHeading: "작업 목록",
   count: (n: number) => `${n}건`,
   noTasks: "진행 중인 작업이 없어요.",
 };
 
-const statusTint: Record<TeamGoal["status"], string> = {
+const statusTint: Record<GoalView["status"], string> = {
   proposed: colors.warnBg,
   active: colors.accentSoft,
   completed: colors.okBg,
@@ -146,18 +144,28 @@ export function Meter({ value, tone = colors.accent }: { value: number; tone?: s
     </View>
   );
 }
-const meterTone = (status: TeamGoal["status"]) =>
+const meterTone = (status: GoalView["status"]) =>
   status === "completed" ? colors.ok : status === "blocked" ? colors.miss : colors.accent;
 
+/**
+ * tick: 방 안 «목표» 탭일 때 방 스트림의 goal 이벤트마다 올라가는 수 — 바뀌면 다시 읽는다.
+ * onChat: 방 안일 때 그 방의 대화 탭으로 가는 길. 없으면(전체 목표 화면) 그 팀의 방을 연다.
+ */
 export function TeamGoalsScreen({
   roomId,
   onOpenRoom,
+  tick,
+  onChat,
 }: {
   roomId?: string;
-  onOpenRoom?: (roomId: string) => void;
+  onOpenRoom?: (roomId: string, focus?: RoomFocus) => void;
+  tick?: number;
+  onChat?: () => void;
 }) {
   const { api, navigate } = useWorkspace();
-  const rooms = useLoad(() => api.request<RoomCard[]>("/api/rooms"));
+  // 방 목록은 앱이 쥔 것 하나를 같이 쓴다(여기서 또 읽지 않는다)
+  const state = useRooms();
+  const rooms = { data: state.rooms, error: state.error, retry: () => void refreshRooms(api) };
   const [picked, setPicked] = useState("");
 
   if (!rooms.data)
@@ -194,7 +202,7 @@ export function TeamGoalsScreen({
       )}
       {rooms.error ? <LoadError error={rooms.error} onRetry={rooms.retry} /> : null}
       {room ? (
-        <TeamGoals key={room.id} room={room} onOpenRoom={onOpenRoom} />
+        <TeamGoals key={room.id} room={room} onOpenRoom={onOpenRoom} tick={tick} onChat={onChat} />
       ) : (
         <LoadError error={text.roomMissing} onRetry={rooms.retry} />
       )}
@@ -205,53 +213,87 @@ export function TeamGoalsScreen({
 function TeamGoals({
   room,
   onOpenRoom,
+  tick,
+  onChat,
 }: {
   room: RoomCard;
-  onOpenRoom?: (roomId: string) => void;
+  onOpenRoom?: (roomId: string, focus?: RoomFocus) => void;
+  tick?: number;
+  onChat?: () => void;
 }) {
-  const { api, navigate } = useWorkspace();
+  const { api } = useWorkspace();
   const { width } = useWindowDimensions();
-  const goals = useLoad(() => api.request<TeamGoal[]>(`/api/goals?room_id=${room.id}`), room.id);
+  // tick 이 키에 들어 있다 — 방 스트림의 goal 이벤트가 오면 다시 읽는다
+  const key = `${room.id}|${tick ?? ""}`;
+  const goals = useLoad(() => api.request<GoalView[]>(`/api/goals?room_id=${room.id}`), key);
   const proposals = useLoad(
     () => api.request<GoalProposal[]>(`/api/goals/proposals?room_id=${room.id}`),
-    room.id,
+    key,
   );
+  // 방 밖(전체 목표 화면)에서는 방 스트림이 없다 — 사용자 스트림의 `rooms {roomId}` 로 갱신한다
+  useUserEvent("rooms", (p) => {
+    if (tick !== undefined || p.roomId !== room.id) return;
+    goals.retry();
+    proposals.retry();
+  });
   const act = useAction();
+  const [open, setOpen] = useState(""); // 펼친 단기 목표
 
   // 서버가 준 순서(order → 생성순)를 그대로 쓴다. 순서를 바꾸면 다시 읽는다.
   const list = goals.data;
   const childrenOf = (parentId: string | null) =>
     (list ?? []).filter((g) => g.parentId === parentId && g.level !== "task");
   // 단기 목표 순서: 이웃과 order 를 맞바꾼다(두 건 PATCH). 서버가 방 타임라인에 알림을 남긴다.
-  const move = (goal: TeamGoal, other: TeamGoal) =>
+  const move = (goal: GoalView, other: GoalView) =>
     act.run(async () => {
       await api.request(`/api/goals/${goal.id}/order`, { order: other.order }, "PATCH");
       await api.request(`/api/goals/${other.id}/order`, { order: goal.order }, "PATCH");
       goals.retry();
     });
-  const activate = (goal: TeamGoal) =>
+  // 막힌 목표를 푼다 — 상태 칩은 서버가 돌려준 목록으로만 바뀐다
+  const unblock = (goal: GoalView) =>
+    act.run(async () => {
+      await api.request(`/api/goals/${goal.id}/unblock`, {});
+      goals.retry();
+    });
+  const unblockButton = (goal: GoalView) => (
+    <Button
+      small
+      style={{ alignSelf: "flex-start" }}
+      busy={act.busy}
+      onPress={() => void unblock(goal)}
+    >
+      {GOAL_UNBLOCK_LABEL}
+    </Button>
+  );
+  const activate = (goal: GoalView) =>
     act.run(async () => {
       await api.request(`/api/goals/${goal.id}/activate`, {});
       goals.retry(); // 상태 칩은 서버가 돌려준 목록으로만 바뀐다
     });
 
-  const row = (goal: TeamGoal, depth: number) => {
+  const row = (goal: GoalView, depth: number) => {
     const siblings = goal.level === "short" ? childrenOf(goal.parentId) : [];
     const idx = siblings.indexOf(goal);
-    const openable = goal.level === "short" && onOpenRoom;
+    const openable = goal.level === "short";
     const main = (
       <View style={{ gap: 6 }}>
         <View style={[s.row, { gap: 8 }]}>
-          <Chip>{text.levels[goal.level]}</Chip>
+          <Chip>{GOAL_LEVEL_LABELS[goal.level]}</Chip>
           <Text style={[s.text, { flex: 1 }]} numberOfLines={2}>
             {goal.title}
           </Text>
           {goal.status === "active" ? null : (
-            <Chip tint={statusTint[goal.status]}>{text.status[goal.status]}</Chip>
+            <Chip tint={statusTint[goal.status]}>{GOAL_STATUS_LABELS[goal.status]}</Chip>
           )}
           <Text style={[s.small, mono, { width: 40, textAlign: "right" }]}>{goal.progress}%</Text>
         </View>
         <Meter value={goal.progress} tone={meterTone(goal.status)} />
+        {goal.dueAt ? (
+          <Text style={[s.small, mono]}>
+            {text.due} {dateLabel(goal.dueAt)}
+          </Text>
+        ) : null}
         {goal.nextActions?.[0] ? (
           <Text style={s.small}>
             {text.next}: {goal.nextActions[0]}
@@ -266,7 +308,8 @@ function TeamGoals({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`${goal.title} — ${text.openLinked}`}
-              onPress={() => openable(room.id)}
+              accessibilityState={{ expanded: open === goal.id }}
+              onPress={() => setOpen(open === goal.id ? "" : goal.id)}
               style={{ flex: 1 }}
             >
               {main}
@@ -279,10 +322,14 @@ function TeamGoals({
               index={idx}
               count={siblings.length}
               disabled={act.busy}
-              onMove={(dir) => void move(goal, siblings[idx + dir] as TeamGoal)}
+              onMove={(dir) => void move(goal, siblings[idx + dir] as GoalView)}
             />
           ) : null}
         </View>
+        {goal.status === "blocked" ? unblockButton(goal) : null}
+        {open === goal.id ? (
+          <LinkedItems room={room} goal={goal} tick={tick} onOpenRoom={onOpenRoom} />
+        ) : null}
         {childrenOf(goal.id).map((k) => row(k, depth + 1))}
       </View>
     );
@@ -290,6 +337,19 @@ function TeamGoals({
 
   const roots = childrenOf(null);
   const tasks = (list ?? []).filter((g) => g.level === "task");
+  // «반려 3건 (톤 2 · 사실 1)» — 서버가 목표마다 센 값(`rejects`: 검수 반려 + 사용자 반려)을 더할 뿐, 여기서 다시 세지 않는다.
+  // 사유 종류가 기록되지 않은 반려가 있으면 괄호 안의 합이 건수보다 작다.
+  const rejectTotal = (list ?? []).reduce((sum, g) => sum + (g.rejects?.total ?? 0), 0);
+  const rejectKinds = REJECT_REASON_KINDS.map((k) => ({
+    k,
+    n: (list ?? []).reduce((sum, g) => sum + (g.rejects?.byKind[k] ?? 0), 0),
+  })).filter((x) => x.n > 0);
+  const rejectSummary = rejectTotal
+    ? text.rejects(
+        rejectTotal,
+        rejectKinds.map((x) => `${REJECT_REASON_LABELS[x.k]} ${x.n}`).join(" · "),
+      )
+    : "";
   const wide = width >= 900;
 
   const tree = !list ? (
@@ -306,9 +366,12 @@ function TeamGoals({
             <Chip key={e}>{`“${e}”`}</Chip>
           ))}
         </View>
-        <Button primary onPress={() => navigate("chat")}>
-          {text.goChat}
-        </Button>
+        {/* 방 안에서는 그 방의 대화 탭으로, 전체 목표 화면에서는 그 팀의 방으로 — 홈(영시리)으로 내보내지 않는다 */}
+        {onChat || onOpenRoom ? (
+          <Button primary onPress={() => (onChat ? onChat() : onOpenRoom?.(room.id))}>
+            {text.goChat}
+          </Button>
+        ) : null}
       </Empty>
     </Card>
   ) : (
@@ -319,9 +382,10 @@ function TeamGoals({
           <View style={[s.row, { gap: 12, alignItems: "flex-start" }]}>
             <View style={{ flex: 1, gap: 6 }}>
               <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-                <Chip tint={colors.sunk}>{text.levels[goal.level]}</Chip>
+                <Chip tint={colors.sunk}>{GOAL_LEVEL_LABELS[goal.level]}</Chip>
                 <Text style={[s.small, mono]}>
                   {text.started} {dateLabel(goal.createdAt)}
+                  {goal.dueAt ? ` · ${text.due} ${dateLabel(goal.dueAt)}` : ""}
                 </Text>
               </View>
               <Text style={[s.heading, { fontFamily: fonts.display }]}>{goal.title}</Text>
@@ -338,9 +402,8 @@ function TeamGoals({
           </View>
           {goal.metrics ? (
             <Text style={[s.small, mono]}>
-              {(["published", "indexed", "ai_citations"] as const)
-                .filter((k) => goal.metrics?.[k] !== undefined)
-                .map((k) => `${text.metrics[k]} ${goal.metrics?.[k]}`)
+              {REPORT_METRIC_KEYS.filter((k) => goal.metrics?.[k] !== undefined)
+                .map((k) => `${GOAL_METRIC_LABELS[k]} ${goal.metrics?.[k]}`)
                 .join(" / ")}
             </Text>
           ) : null}
@@ -400,6 +463,7 @@ function TeamGoals({
             <Text style={s.heading}>{text.tasksHeading}</Text>
             <Text style={[s.heading, mono]}>{text.count(tasks.length)}</Text>
           </View>
+          {rejectSummary ? <Text style={s.small}>{rejectSummary}</Text> : null}
           {tasks.length === 0 ? (
             <Text style={s.muted}>{text.noTasks}</Text>
           ) : (
@@ -419,7 +483,12 @@ function TeamGoals({
                       {t.title}
                     </Text>
                     {stageLabel(t.stage) ? <Chip>{stageLabel(t.stage)}</Chip> : null}
-                    <Chip tint={statusTint[t.status]}>{text.status[t.status]}</Chip>
+                    {t.reasonKind ? (
+                      <Chip tint={colors.missBg}>
+                        {text.rejected} · {REJECT_REASON_LABELS[t.reasonKind]}
+                      </Chip>
+                    ) : null}
+                    <Chip tint={statusTint[t.status]}>{GOAL_STATUS_LABELS[t.status]}</Chip>
                     <Text style={[s.small, mono, { width: 40, textAlign: "right" }]}>
                       {t.progress}%
                     </Text>
@@ -429,6 +498,7 @@ function TeamGoals({
                       {[t.assignee, t.nextActions?.[0]].filter(Boolean).join(" · ")}
                     </Text>
                   ) : null}
+                  {t.status === "blocked" ? unblockButton(t) : null}
                 </View>
               ))}
             </Card>
@@ -452,8 +522,8 @@ function TeamGoals({
         >
           <Chip tint={colors.card}>{text.stalled}</Chip>
           <Text style={s.text}>{text.stalledDetail}</Text>
-          {onOpenRoom ? (
-            <Button small onPress={() => onOpenRoom(room.id)}>
+          {onChat || onOpenRoom ? (
+            <Button small onPress={() => (onChat ? onChat() : onOpenRoom?.(room.id))}>
               {text.openRoom}
             </Button>
           ) : null}
@@ -476,9 +546,74 @@ function TeamGoals({
   );
 }
 
+/** 단기 목표를 펼치면 보이는 것: 이 목표에 걸린 승인 대기와 발행 건. 각 줄에서 방의 그 카드로 간다. */
+function LinkedItems({
+  room,
+  goal,
+  tick,
+  onOpenRoom,
+}: {
+  room: RoomCard;
+  goal: GoalView;
+  tick?: number;
+  onOpenRoom?: (roomId: string, focus?: RoomFocus) => void;
+}) {
+  const { api } = useWorkspace();
+  const key = `${room.id}|${tick ?? ""}`;
+  const inbox = useLoad(
+    () => api.request<Inbox>(`/api/inbox?room_id=${encodeURIComponent(room.id)}`),
+    key,
+  );
+  // 발행(승인본) 목록 — 항목마다 goalId·messageId 가 온다(없으면 null)
+  const files = useLoad(() => api.request<RoomFiles>(`/api/rooms/${room.id}/files`), key);
+  const pending = inbox.data?.pending.filter((a) => a.goalId === goal.id) ?? [];
+  const published = files.data?.approved.filter((a) => a.goalId === goal.id) ?? [];
+  const line = (id: string, label: string, title: string, when: string, focus?: RoomFocus) => (
+    <View key={id} style={[s.row, { gap: 8 }]}>
+      <Chip>{label}</Chip>
+      <Text style={[s.small, { flex: 1 }]} numberOfLines={2}>
+        {title} · {when}
+      </Text>
+      {onOpenRoom && focus ? (
+        <Button small onPress={() => onOpenRoom(room.id, focus)}>
+          {text.viewInRoom}
+        </Button>
+      ) : null}
+    </View>
+  );
+  return (
+    <View style={{ gap: 8, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: colors.line }}>
+      {inbox.error ? <LoadError error={inbox.error} onRetry={inbox.retry} /> : null}
+      {files.error ? <LoadError error={files.error} onRetry={files.retry} /> : null}
+      {!inbox.data && !inbox.error ? <Skeleton rows={1} height={24} /> : null}
+      {pending.map((a) =>
+        line(
+          a.id,
+          APPROVAL_STATUS_LABELS.pending,
+          a.title,
+          relativeDate(a.createdAt),
+          a.messageId ? { messageId: a.messageId } : { approval: true },
+        ),
+      )}
+      {published.map((a) =>
+        line(
+          a.approvalId,
+          text.linkedPublished,
+          a.title,
+          dateLabel(a.decidedAt),
+          a.messageId ? { messageId: a.messageId } : undefined,
+        ),
+      )}
+      {inbox.data && files.data && pending.length === 0 && published.length === 0 ? (
+        <Text style={s.small}>{text.linkedNone}</Text>
+      ) : null}
+    </View>
+  );
+}
+
 /** 목표 상태: proposed → active → achieved. 일시정지·막힘은 따로 칩으로 붙는다. */
-function StatusTrack({ status }: { status: TeamGoal["status"] }) {
-  const steps = ["proposed", "active", "completed"] as const;
+function StatusTrack({ status }: { status: GoalView["status"] }) {
+  const steps = GOAL_STATUS_TRACK;
   const off = status === "paused" || status === "blocked";
   return (
     <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
@@ -486,11 +621,11 @@ function StatusTrack({ status }: { status: TeamGoal["status"] }) {
         <View key={step} style={[s.row, { gap: 6 }]}>
           {i > 0 ? <Text style={s.small}>→</Text> : null}
           <Chip tint={step === status || (off && step === "active") ? statusTint[step] : undefined}>
-            {text.status[step]}
+            {GOAL_STATUS_LABELS[step]}
           </Chip>
         </View>
       ))}
-      {off ? <Chip tint={statusTint[status]}>{text.status[status]}</Chip> : null}
+      {off ? <Chip tint={statusTint[status]}>{GOAL_STATUS_LABELS[status]}</Chip> : null}
     </View>
   );
 }
@@ -535,7 +670,7 @@ function Reorder({
 }
 
 /** 장기 목표의 지표 칩 + 기간 전환. 조회에 실패하면 마지막 측정값과 그 시각을 보인다. */
-function MetricsCard({ goal }: { goal: TeamGoal }) {
+function MetricsCard({ goal }: { goal: GoalView }) {
   const { api } = useWorkspace();
   const [period, setPeriod] = useState<MetricPeriod>("month");
   const [explain, setExplain] = useState<GoalMetricKey | null>(null);
@@ -559,7 +694,7 @@ function MetricsCard({ goal }: { goal: TeamGoal }) {
           {METRIC_PERIODS.map((p) => (
             <Choice
               key={p}
-              label={text.period[p]}
+              label={METRIC_PERIOD_LABELS[p]}
               selected={p === period}
               onPress={() => setPeriod(p)}
             />
@@ -579,11 +714,11 @@ function MetricsCard({ goal }: { goal: TeamGoal }) {
               <Pressable
                 key={k}
                 accessibilityRole="button"
-                accessibilityLabel={text.howTitle(text.metrics[k])}
+                accessibilityLabel={text.howTitle(GOAL_METRIC_LABELS[k])}
                 onPress={() => setExplain(k)}
               >
                 <Chip tint={v === null ? undefined : colors.okBg}>
-                  {text.metrics[k]} {v === null ? text.collecting : v}
+                  {GOAL_METRIC_LABELS[k]} {v === null ? text.collecting : v}
                 </Chip>
               </Pressable>
             );
@@ -597,7 +732,7 @@ function MetricsCard({ goal }: { goal: TeamGoal }) {
           </Text>
           <Text style={[s.small, mono]}>
             {load.data
-              ? `${text.lastMeasured} · ${text.period[load.data.period]} · ${
+              ? `${text.lastMeasured} · ${METRIC_PERIOD_LABELS[load.data.period]} · ${
                   load.data.measuredAt ? relativeDate(load.data.measuredAt) : text.notMeasured
                 }`
               : `${text.lastReported} · ${relativeDate(goal.updatedAt)}`}
@@ -614,7 +749,7 @@ function MetricsCard({ goal }: { goal: TeamGoal }) {
         </Text>
       ) : null}
       {explain ? (
-        <Sheet title={text.howTitle(text.metrics[explain])} onClose={() => setExplain(null)}>
+        <Sheet title={text.howTitle(GOAL_METRIC_LABELS[explain])} onClose={() => setExplain(null)}>
           <Text style={s.text}>{text.how[explain]}</Text>
         </Sheet>
       ) : null}
@@ -636,11 +771,12 @@ function ProposalCard({ proposal, onDecided }: { proposal: GoalProposal; onDecid
         <Text style={[s.heading, { flex: 1 }]}>{proposal.title}</Text>
         {proposal.status === "pending" ? null : (
           <Chip tint={proposal.status === "accepted" ? colors.okBg : colors.sunk}>
-            {text.proposalStatus[proposal.status]}
+            {PROPOSAL_STATUS_LABELS[proposal.status]}
           </Chip>
         )}
       </View>
       {proposal.detail ? <Text style={s.muted}>{proposal.detail}</Text> : null}
+      {proposal.status === "held" ? <Text style={s.small}>{text.heldNote}</Text> : null}
       <Text style={s.small}>
         {proposal.proposedBy} · {relativeDate(proposal.createdAt)}
       </Text>
@@ -648,10 +784,10 @@ function ProposalCard({ proposal, onDecided }: { proposal: GoalProposal; onDecid
       {proposal.status === "pending" ? (
         <View style={[s.row, { gap: 8 }]}>
           <Button small primary busy={act.busy} onPress={() => void decide("accept")}>
-            {text.accept}
+            {PROPOSAL_DECISION_LABELS.accept}
           </Button>
           <Button small disabled={act.busy} onPress={() => void decide("hold")}>
-            {text.hold}
+            {PROPOSAL_DECISION_LABELS.hold}
           </Button>
         </View>
       ) : null}

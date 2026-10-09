@@ -22,7 +22,6 @@ import {
   BIG_LAYER,
   CHARACTER_INTENSITIES,
   CHARACTER_INTENSITY_LABELS,
-  type CharacterPrefs,
   DEVICE_LAYER_STATE_LABELS,
   type DeviceLayerState,
   EMBED_DOWNLOAD_MB,
@@ -30,20 +29,19 @@ import {
   EMBED_MODEL_ID,
   EMBED_TOKENIZER_MB,
   FIXED_TIERS,
-  type FixedTier,
   MODEL_KEY_PROVIDER_LABELS,
   MODEL_KEY_PROVIDERS,
   type ModelTier,
   NOT_READY_LABEL,
-  type NotificationPrefs,
   RETENTION_DAYS,
   TIER_LABELS,
   USER_ROLE_LABELS,
   USER_ROLES,
   type UserRole,
 } from "../../../../packages/domain/src/osiri";
+import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Invite, PublicUser } from "../../../server/src/osiri/accounts.ts";
-import type { ModelKeyRow, Routing } from "../../../server/src/osiri/routing.ts";
+import type { ModelKeyRow, Routing, SettingsView } from "../../../server/src/osiri/routing.ts";
 import {
   Button,
   Card,
@@ -58,7 +56,7 @@ import {
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { type Me, takeAuthIssues } from "./auth";
+import { takeAuthIssues } from "./auth";
 import { Confirm, ConnectionsScreen, column, columns, Loaded, mono } from "./connections";
 import { deviceAvailable, embedOnDevice, measureDevice } from "./device-embed";
 import { setCharacterPref } from "./eve";
@@ -68,22 +66,6 @@ import { SkillsScreen } from "./skills";
 import { Block, Choice, useAction, useLoad, won } from "./store";
 import { deviceSearchOff, setDeviceSearchOff } from "./tier0";
 
-/**
- * `GET /settings` — 서버 routing.ts 의 `settingsView()` 가 만든다.
- * ponytail: 서버가 그 반환 타입을 내보내지 않아(비공개 const) 여기 한 번 적는다 — 서버가 `SettingsView` 를 내보내면 이 선언을 import 로 바꾼다.
- */
-interface AppSettings {
-  tier: { label: string; subscription: string | null; nextBillingAt: string | null };
-  answerMode: AnswerMode;
-  autoEconomy: boolean;
-  /** 고정한 서버 티어의 문자열("2"·"3"·"4"). null = 고정 안 함 */
-  fixedModel: `${FixedTier}` | null;
-  monthlyCapKrw: number | null;
-  notifications: NotificationPrefs;
-  /** false = 알림 발송이 아직 없다. 토글을 켜고 꺼도 달라지는 것이 없으므로 화면은 «준비 중» 으로 잠근다 */
-  notificationsReady: boolean;
-  character: CharacterPrefs;
-}
 /** `GET /billing/usage` — 서버 `Routing.billing()`. percent 는 상한 대비 0~100, null = 측정 중 */
 type BillingUsage = Awaited<ReturnType<Routing["billing"]>>;
 type MonthUsage = Awaited<ReturnType<Routing["month"]>>;
@@ -262,7 +244,7 @@ const text = {
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { api } = useWorkspace();
-  const me = useLoad(() => api.request<Me>("/api/me"));
+  const me = useLoad(() => api.request<MeResponse>("/api/me"));
   const [sub, setSub] = useState(readSub);
   useEffect(() => writeSub(sub), [sub]);
   // 앱을 켤 때 쌓인 저장소 경고(auth.tsx) — 로그인 화면을 거치지 않고 들어왔으면 여기서 보인다
@@ -299,7 +281,15 @@ export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
 
 const allowed = (sub: Sub, role: UserRole) => SUB_ROLES[sub]?.includes(role) ?? true; // 표에 없으면 누구나
 
-function SubScreen({ sub, me, onProfile }: { sub: Sub; me: Me; onProfile: (me: Me) => void }) {
+function SubScreen({
+  sub,
+  me,
+  onProfile,
+}: {
+  sub: Sub;
+  me: MeResponse;
+  onProfile: (me: MeResponse) => void;
+}) {
   if (!allowed(sub, me.user.role)) return <ErrorNotice error={text.forbidden} />;
   switch (sub) {
     case "connections":
@@ -319,9 +309,17 @@ function SubScreen({ sub, me, onProfile }: { sub: Sub; me: Me; onProfile: (me: M
   }
 }
 
-function Main({ me, open, onLogout }: { me: Me; open: (sub: Sub) => void; onLogout: () => void }) {
+function Main({
+  me,
+  open,
+  onLogout,
+}: {
+  me: MeResponse;
+  open: (sub: Sub) => void;
+  onLogout: () => void;
+}) {
   const { api } = useWorkspace();
-  const settings = useLoad(() => api.request<AppSettings>("/api/settings"));
+  const settings = useLoad(() => api.request<SettingsView>("/api/settings"));
   const usage = useLoad(() => api.request<BillingUsage>("/api/billing/usage"));
   return (
     <View style={columns}>
@@ -355,7 +353,7 @@ function Main({ me, open, onLogout }: { me: Me; open: (sub: Sub) => void; onLogo
   );
 }
 
-function TierCard({ tier }: { tier: AppSettings["tier"] }) {
+function TierCard({ tier }: { tier: SettingsView["tier"] }) {
   const { navigate } = useWorkspace();
   return (
     <View>
@@ -391,8 +389,8 @@ function ModelCard({
   usage,
   openConnections,
 }: {
-  settings: AppSettings;
-  onSaved: (next: AppSettings) => void;
+  settings: SettingsView;
+  onSaved: (next: SettingsView) => void;
   usage: UsageState;
   openConnections: () => void;
 }) {
@@ -400,10 +398,10 @@ function ModelCard({
   const act = useAction();
   const [cap, setCap] = useState<string>();
   // 서버가 받아들인 뒤에 서버 값을 다시 읽어 보인다 (낙관적 표시 없음)
-  const patch = (body: Partial<Pick<AppSettings, "answerMode" | "autoEconomy" | "fixedModel">>) =>
+  const patch = (body: Partial<Pick<SettingsView, "answerMode" | "autoEconomy" | "fixedModel">>) =>
     act.run(async () => {
       await api.request("/api/settings/model", body, "PATCH");
-      onSaved(await api.request<AppSettings>("/api/settings"));
+      onSaved(await api.request<SettingsView>("/api/settings"));
     });
   const saveCap = () =>
     act.run(async () => {
@@ -412,7 +410,7 @@ function ModelCard({
       if (value !== null && (!Number.isFinite(value) || value < 0))
         throw new Error(text.capInvalid);
       await api.request("/api/settings/model", { monthlyCapKrw: value }, "PATCH");
-      onSaved(await api.request<AppSettings>("/api/settings"));
+      onSaved(await api.request<SettingsView>("/api/settings"));
       setCap(undefined);
       notify(text.saved);
     });
@@ -743,15 +741,15 @@ function PreferencesCard({
   settings,
   onSaved,
 }: {
-  settings: AppSettings;
-  onSaved: (next: AppSettings) => void;
+  settings: SettingsView;
+  onSaved: (next: SettingsView) => void;
 }) {
   const { api } = useWorkspace();
   const act = useAction();
-  const patch = (body: Partial<Pick<AppSettings, "notifications" | "character">>) =>
+  const patch = (body: Partial<Pick<SettingsView, "notifications" | "character">>) =>
     act.run(async () => {
       await api.request("/api/settings", body, "PATCH");
-      const next = await api.request<AppSettings>("/api/settings");
+      const next = await api.request<SettingsView>("/api/settings");
       setCharacterPref(next.character); // 열려 있는 모든 캐릭터에 바로 반영
       onSaved(next);
     });
@@ -899,7 +897,7 @@ function Menu({
 }
 
 // ---- 하위: 프로필 ----
-function Profile({ me, onSaved }: { me: Me; onSaved: (me: Me) => void }) {
+function Profile({ me, onSaved }: { me: MeResponse; onSaved: (me: MeResponse) => void }) {
   const { api, notify } = useWorkspace();
   const [displayName, setDisplayName] = useState(me.profile.displayName);
   const [credentialText, setCredentialText] = useState(me.profile.credentialText ?? ""); // 선택 필드
@@ -923,7 +921,7 @@ function Profile({ me, onSaved }: { me: Me; onSaved: (me: Me) => void }) {
         busy={act.busy}
         onPress={() =>
           act.run(async () => {
-            const profile = await api.request<Me["profile"]>(
+            const profile = await api.request<MeResponse["profile"]>(
               "/api/me/profile",
               { displayName, credentialText },
               "PATCH",

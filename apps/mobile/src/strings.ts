@@ -127,6 +127,7 @@ export const t = {
       notReady: "아직 대화를 시작할 준비가 되지 않았습니다.",
       stopFailed: (detail: string) => `응답을 중단하지 못했습니다: ${detail}`,
       retryResponse: "응답 다시 받기",
+      openUsage: "설정에서 사용량 · 내 키 보기",
     },
     status: {
       working: `${common.agentName}가 작업 중입니다`,

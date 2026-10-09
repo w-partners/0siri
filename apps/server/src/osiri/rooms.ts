@@ -10,6 +10,7 @@ import {
   type CharacterState,
   GOAL_METRIC_KEYS,
   GOAL_TREE_LEVELS,
+  GOAL_UNBLOCK_LABEL,
   type GoalLevel,
   type GoalMetricKey,
   type GoalStatus,
@@ -109,12 +110,22 @@ export interface TeamGoal {
   assignee?: string; // 에이전트 역할명
   metrics?: { published?: number; indexed?: number; ai_citations?: number; conversions?: number };
   nextActions?: string[];
+  dueAt?: string; // 목표 기간의 끝 — 정한 사람(사용자·팀)이 있을 때만
   createdAt: string;
   updatedAt: string;
 }
+/** 목표 화면용 모양 — 기간(`dueAt`, 없으면 null)과 그 목표에 쌓인 반려(검수·사용자)를 붙인다 */
+export type GoalView = Omit<TeamGoal, "dueAt"> & {
+  dueAt: string | null;
+  /** 가장 최근 반려의 사유 종류 — 사유 종류가 기록된 반려가 있을 때만 */
+  reasonKind?: RejectReasonKind;
+  /** `byKind` 는 사유 종류가 기록된 반려만 센다 (합이 total 보다 작을 수 있다) */
+  rejects?: { total: number; byKind: Partial<Record<RejectReasonKind, number>> };
+};
 export interface Activity {
   id: string;
   roomId?: string;
+  messageId?: string; // 이 활동이 가리키는 방 메시지 — 결재함 줄에서 그 메시지로 바로 연다
   kind: ActivityKind;
   actor: string;
   title: string;
@@ -133,7 +144,8 @@ export interface AuditLog {
   approvalId?: string;
   result: "ok" | "error" | "blocked";
   roomId?: string; // 방의 감사 문서 목록(`/rooms/:id/files`)이 이것으로 거른다
-  reasonKind?: RejectReasonKind; // 반려 사유 종류 (approval.reject)
+  reasonKind?: RejectReasonKind; // 반려 사유 종류 (approval.reject · review.reject)
+  detail?: string; // 반려 사유 문장 (review.reject)
 }
 export interface RoomBoard {
   roomId: string;
@@ -304,6 +316,8 @@ export class Rooms {
         title: string;
         summary: string;
         decidedAt?: string;
+        goalId?: string;
+        messageId?: string;
       }>(owner, "approvals", "roomId", roomId),
       this.goals(owner, roomId),
       this.auditLogs(owner),
@@ -319,6 +333,8 @@ export class Rooms {
           title: a.title,
           summary: a.summary,
           decidedAt: a.decidedAt as string,
+          goalId: a.goalId ?? null,
+          messageId: a.messageId ?? null,
         }))
         .sort((a, b) => b.decidedAt.localeCompare(a.decidedAt)),
       audit: logs
@@ -395,7 +411,9 @@ export class Rooms {
   async createGoal(
     owner: string,
     input: Pick<TeamGoal, "roomId" | "title" | "level"> &
-      Partial<Pick<TeamGoal, "parentId" | "stage" | "assignee" | "order" | "nextActions">> & {
+      Partial<
+        Pick<TeamGoal, "parentId" | "stage" | "assignee" | "order" | "nextActions" | "dueAt">
+      > & {
         /** "proposed" = 사용자가 시작을 누르기 전. 안 주면 바로 "active" */
         status?: Extract<GoalStatus, "active" | "proposed">;
       },
@@ -420,6 +438,7 @@ export class Rooms {
       stage: input.stage ?? (input.level === "task" ? "detect" : undefined),
       assignee: input.assignee,
       nextActions: input.nextActions,
+      ...(input.dueAt ? { dueAt: input.dueAt } : {}),
       createdAt: now(),
       updatedAt: now(),
     };
@@ -465,6 +484,41 @@ export class Rooms {
     });
     this.bus.publish(owner, { type: "goal", roomId: goal.roomId, goalId });
     this.bus.publish(owner, { type: "board", roomId: goal.roomId });
+    return updated;
+  }
+  /**
+   * blocked → active (사용자가 [다시 진행]). 막힘은 진행 중(active)이던 목표에만 걸리므로 풀면 active 로 돌아가고,
+   * 워커의 tick 이 그 목표를 다시 집는다. 단계·진척은 멈춘 자리 그대로다. 그 밖의 상태면 409.
+   */
+  async unblockGoal(owner: string, goalId: string, actor = "user"): Promise<TeamGoal> {
+    const goal = await this.goal(owner, goalId);
+    const updated = await this.db.compareAndSwap<TeamGoal>(
+      owner,
+      "team-goals",
+      goalId,
+      { status: "blocked" },
+      { status: "active", updatedAt: now() },
+    );
+    if (!updated)
+      throw new AppError(
+        `막힌 목표만 다시 진행할 수 있습니다 (현재 상태: ${(await this.goal(owner, goalId)).status})`,
+        409,
+      );
+    await this.audit(owner, {
+      packageId: null,
+      goalId,
+      actor,
+      action: "goal.unblock",
+      result: "ok",
+      roomId: goal.roomId,
+    });
+    await this.activity(owner, {
+      roomId: goal.roomId,
+      kind: "goal",
+      actor,
+      title: `${GOAL_UNBLOCK_LABEL}: ${goal.title}`,
+    });
+    this.bus.publish(owner, { type: "goal", roomId: goal.roomId, goalId });
     return updated;
   }
   /**
@@ -593,7 +647,7 @@ export class Rooms {
       roomId: proposal.roomId,
       kind: "goal",
       actor: "user",
-      title: `제안 수락: ${proposal.title}`,
+      title: `제안 반영: ${proposal.title}`,
     });
     return linked;
   }
@@ -602,13 +656,34 @@ export class Rooms {
       (a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt),
     );
   }
+  /** 목표 화면(`GET /goals`)용 — 반려는 감사 로그에서 센다 (검수 `review.reject` + 사용자 `approval.reject:*`). */
+  async goalViews(owner: string, roomId: string): Promise<GoalView[]> {
+    const [goals, logs] = await Promise.all([this.goals(owner, roomId), this.auditLogs(owner)]);
+    const isReject = (action: string) =>
+      action === "review.reject" || action.startsWith("approval.reject");
+    return goals.map((goal) => {
+      // auditLogs 는 최신순 — 첫 번째가 가장 최근 반려다
+      const rejected = logs.filter((log) => log.goalId === goal.id && isReject(log.action));
+      const view: GoalView = { ...goal, dueAt: goal.dueAt ?? null };
+      if (rejected.length === 0) return view;
+      const byKind: Partial<Record<RejectReasonKind, number>> = {};
+      for (const log of rejected)
+        if (log.reasonKind) byKind[log.reasonKind] = (byKind[log.reasonKind] ?? 0) + 1;
+      const latest = rejected.find((log) => log.reasonKind)?.reasonKind;
+      return {
+        ...view,
+        ...(latest ? { reasonKind: latest } : {}),
+        rejects: { total: rejected.length, byKind },
+      };
+    });
+  }
   async updateGoal(
     owner: string,
     goalId: string,
     patch: Partial<
       Pick<
         TeamGoal,
-        "progress" | "status" | "stage" | "metrics" | "nextActions" | "order" | "title"
+        "progress" | "status" | "stage" | "metrics" | "nextActions" | "order" | "title" | "dueAt"
       >
     >,
     actor = "system",

@@ -343,7 +343,13 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = { enabled: true, intensity: "motion" };
 
 // ---- 서버·앱 공용 라벨·문턱 (화면 3·4·5·6·9·11) — 서버가 쓰던 표를 여기로 올렸다 ----
-export const APPROVAL_STATUSES = ["pending", "approved", "rejected", "expired", "consumed"] as const;
+export const APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+  "consumed",
+] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
   pending: "대기 중",
@@ -378,9 +384,10 @@ export const GOAL_METRIC_LABELS: Record<GoalMetricKey, string> = {
   ai_citations: "AI 인용",
   conversions: "전환",
 };
+/** 버튼(`PROPOSAL_DECISION_LABELS`: 목표에 반영·보류)과 같은 말로 맞춘다 — «채택» 은 쓰지 않는다 */
 export const PROPOSAL_STATUS_LABELS: Record<ProposalStatus, string> = {
   pending: "대기",
-  accepted: "채택됨",
+  accepted: "반영됨",
   held: "보류됨",
 };
 export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
@@ -398,6 +405,8 @@ export const DEFAULT_TEAM_GREETING =
 /** 같은 작업의 검수 반려가 이만큼 쌓이면 초안으로 되돌리지 않고 사람에게 올린다 */
 export const REVIEW_ESCALATION_THRESHOLD = 3;
 export const ESCALATION_LABEL = "확인 필요";
+/** 막힌(blocked) 목표를 사용자가 푸는 버튼 이름 — 방의 [확인 필요] 카드·목표 줄·활동 제목이 같은 말을 쓴다 */
+export const GOAL_UNBLOCK_LABEL = "다시 진행";
 /** 월 상한 경고 단계 (`GET /billing/usage` 의 warn). 문턱은 상한 대비 사용률(%) */
 export const CAP_WARN_LEVELS = ["none", "near", "reached"] as const;
 export type CapWarnLevel = (typeof CAP_WARN_LEVELS)[number];
@@ -409,8 +418,10 @@ export const MODEL_KEY_REMOVED_NOTICE = "내 키를 지웠습니다 — 공용 �
 /** 스킬 효과 측정은 아직 자동 수집이 아니다 — «효과 측정 중» 배지 옆에 그대로 밝힌다 */
 export const SKILL_MEASURE_NOTE =
   "효과 지표는 팀이 보고할 때 반영됩니다 — 자동 수집 전이라 측정이 길어질 수 있습니다";
+/** 기기 모델이 실패해 서버가 대신 답했을 때 `answeredBy.reason` 에 실리는 문장 */
+export const DEVICE_FALLBACK_REASON = "기기 실패 — 서버로 답했습니다";
 
-// ---- 앱 화면 라벨 (화면 1·7·10·11) — 화면이 따로 들고 있던 표를 여기로 올렸다 (클라이언트 블록 시작) ----
+// ---- 앱 화면 라벨 (화면 1·7·10·11) — 화면이 따로 들고 있던 표를 여기로 올렸다 ----
 export const MODEL_KEY_PROVIDER_LABELS: Record<ModelKeyProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
@@ -467,4 +478,27 @@ export const EMBED_TOKENIZER_MB = 31;
 /** 로그인 실패가 이만큼 쌓이면 비밀번호 재설정 경로를 안내한다 (기획 화면 1 «3회 실패 시 우회») */
 export const LOGIN_FAILS_BEFORE_RESET_HINT = 3;
 export const PASSWORD_RESET_HINT = "비밀번호를 잊었으면 초대해 준 사람에게 재설정을 요청하세요";
-// ---- (클라이언트 블록 끝) ----
+
+// ---- 방·결재함·목표 화면 라벨 (화면 3·4·5) — 화면이 따로 들고 있던 표를 여기로 올렸다 ----
+/** 장기 목표 카드의 상태 흐름 (일시정지·막힘은 흐름 밖 — 칩으로 따로 붙는다) */
+export const GOAL_STATUS_TRACK = [
+  "proposed",
+  "active",
+  "completed",
+] as const satisfies readonly GoalStatus[];
+/** 주간 보고 카드·장기 목표 카드 한 줄에 싣는 지표 (전환은 지표 카드에서만 본다) */
+export const REPORT_METRIC_KEYS = [
+  "published",
+  "indexed",
+  "ai_citations",
+] as const satisfies readonly GoalMetricKey[];
+export const METRIC_PERIOD_LABELS: Record<MetricPeriod, string> = {
+  week: "주",
+  month: "월",
+  quarter: "분기",
+};
+/** 팀 제안 카드의 버튼 이름 — 방 채팅 카드와 목표 화면이 같은 말을 쓴다 */
+export const PROPOSAL_DECISION_LABELS: Record<ProposalDecision, string> = {
+  accept: "목표에 반영",
+  hold: "보류",
+};
