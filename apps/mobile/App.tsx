@@ -1,20 +1,23 @@
+// 0Siri 앱 셸 (0SIRI-SPEC §4.0): 앱은 하단 탭 5개(방·스토어·결재함·목표·설정), 방 안에서는 탭을 숨긴다.
+// 웹은 2단(사이드바 280px + 메인). 로그인은 전화번호+비밀번호(§4.1), 온보딩 4단계 뒤에 셸로 들어온다.
 import { CopilotKitProvider } from "@copilotkit/react-native/headless";
 import { StatusBar } from "expo-status-bar";
 import {
   Bell,
   Check,
+  Inbox,
   type LucideIcon,
-  Menu,
-  MessageCircle,
-  PanelsTopLeft,
-  Shapes,
-  SquareCheck,
+  MessageSquare,
+  Settings,
+  Store,
+  Target,
   X,
 } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -23,106 +26,137 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { Section, Workspace } from "../../packages/domain/src";
-import { AgentActivityScreen, AgentStatus, AppsScreen, GoalsScreen } from "./src/agent-ui";
-import { AgentWorkspaceProvider, useAgentWorkspace } from "./src/agent-workspace";
-import { API_URL, createSession, MuseApi } from "./src/api";
-import { ChatScreen, WorkspaceTools } from "./src/chat";
+import { AgentWorkspaceProvider } from "./src/agent-workspace";
+import { API_URL, MuseApi } from "./src/api";
+import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
-import { t } from "./src/strings";
-import { ThreadsProvider, ThreadsSheet, useMuseThread } from "./src/threads";
-import { Button, Card, colors, ErrorNotice, Field, IconButton, Mascot, s } from "./src/ui";
+import { LoginScreen, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
+import { InboxScreen } from "./src/osiri/inbox";
+import { type Room, RoomList, RoomScreen } from "./src/osiri/rooms";
+import { SettingsScreen } from "./src/osiri/settings";
+import { StoreScreen } from "./src/osiri/store";
+import { TeamGoalsScreen } from "./src/osiri/team-goals";
+import { ThreadsProvider } from "./src/threads";
+import { Button, colors, ErrorNotice, IconButton, Mascot, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
-const nav: { id: Section; label: string; icon: LucideIcon }[] = [
-  { id: "chat", label: t.app.nav.chat, icon: MessageCircle },
-  { id: "activity", label: t.app.nav.activity, icon: PanelsTopLeft },
-  { id: "goals", label: t.app.nav.goals, icon: SquareCheck },
-  { id: "apps", label: t.app.nav.apps, icon: Shapes },
+type Tab = "rooms" | "store" | "inbox" | "goals" | "settings";
+type StoreTab = "explore" | "mine";
+const nav: { id: Tab; label: string; icon: LucideIcon }[] = [
+  { id: "rooms", label: "방", icon: MessageSquare },
+  { id: "store", label: "스토어", icon: Store },
+  { id: "inbox", label: "결재함", icon: Inbox },
+  { id: "goals", label: "목표", icon: Target },
+  { id: "settings", label: "설정", icon: Settings },
 ];
-const titles: Partial<Record<Section, { title: string; subtitle: string }>> = t.app.titles;
+const titles: Record<Tab, string> = {
+  rooms: "내 팀",
+  store: "스토어",
+  inbox: "결재함",
+  goals: "목표",
+  settings: "설정",
+};
+const text = {
+  loading: "0Siri 를 여는 중…",
+  retry: "다시 시도",
+  dismiss: "닫기",
+  notifications: (n: number) => (n ? `알림 ${n}건` : "알림"),
+};
+// 옛 openmuse 섹션 → 0Siri 탭 (agent-ui 등이 navigate("chat") 을 부를 때)
+const legacy: Partial<Record<Section, Tab>> = {
+  chat: "rooms",
+  activity: "inbox",
+  connections: "settings",
+  apps: "settings",
+};
+const isTab = (value: string): value is Tab => nav.some((item) => item.id === value);
+
+// --- 웹 URL ↔ 상태 (§4.12 라우팅: /rooms/:id · /store?tab= · /inbox · /goals · /settings) ---
+function readLocation(): { tab: Tab; roomId?: string; storeTab: StoreTab } {
+  if (Platform.OS !== "web" || typeof location === "undefined")
+    return { tab: "rooms", storeTab: "explore" };
+  const [, first = "", second] = location.pathname.split("/");
+  const storeTab = new URLSearchParams(location.search).get("tab") === "mine" ? "mine" : "explore";
+  if (first === "rooms" && second) return { tab: "rooms", roomId: second, storeTab };
+  return { tab: isTab(first) ? first : "rooms", storeTab };
+}
+function writeLocation(tab: Tab, roomId: string | undefined, storeTab: StoreTab) {
+  if (Platform.OS !== "web" || typeof history === "undefined") return;
+  const path =
+    tab === "rooms" && roomId
+      ? `/rooms/${roomId}`
+      : tab === "store"
+        ? `/store?tab=${storeTab}`
+        : `/${tab}`;
+  if (`${location.pathname}${location.search}` !== path) history.replaceState(null, "", path);
+}
+
 export default function App() {
-  const [token, setToken] = useState("");
-  const [accessKey, setAccessKey] = useState("");
-  const [busy, setBusy] = useState(true);
-  const [error, setError] = useState("");
-  const connect = useCallback(async (key?: string) => {
-    setBusy(true);
-    setError("");
-    try {
-      const session = await createSession(key);
-      setToken(session.token);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const [token, setToken] = useState<string | null>(null); // null = 아직 저장소를 안 읽음
   useEffect(() => {
-    void connect();
-  }, [connect]);
+    void loadToken().then((saved) => setToken(saved || ""));
+  }, []);
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      {token ? (
+      {token === null ? (
+        <Loading />
+      ) : token ? (
         <CopilotKitProvider
           runtimeUrl={`${API_URL}/api/copilotkit`}
           headers={{ Authorization: `Bearer ${token}` }}
         >
-          <WorkspaceApp token={token} />
+          <WorkspaceApp token={token} onLogout={() => setToken("")} />
         </CopilotKitProvider>
       ) : (
-        <SafeAreaView
-          style={{
-            flex: 1,
-            backgroundColor: colors.canvas,
-            justifyContent: "center",
-            alignItems: "center",
-            padding: 24,
-          }}
-        >
-          <View style={{ width: "100%", maxWidth: 420, gap: 22, alignItems: "center" }}>
-            <Mascot size={72} />
-            <Text
-              style={{ fontSize: 32, color: colors.text, letterSpacing: -1, fontWeight: "500" }}
-            >
-              {t.app.login.welcome}
-            </Text>
-            <Text style={[s.muted, { textAlign: "center" }]}>{t.app.login.tagline}</Text>
-            {busy ? (
-              <ActivityIndicator color={colors.blueDark} />
-            ) : (
-              <Card style={{ width: "100%" }}>
-                <ErrorNotice error={error} />
-                <Field
-                  label={t.app.login.accessKey}
-                  value={accessKey}
-                  onChangeText={setAccessKey}
-                  secureTextEntry
-                  placeholder={t.app.login.accessKeyPlaceholder}
-                />
-                <Button primary onPress={() => void connect(accessKey || undefined)}>
-                  {t.app.login.open}
-                </Button>
-                <Text style={[s.small, { marginTop: 15 }]}>{t.app.login.hint(API_URL)}</Text>
-              </Card>
-            )}
-          </View>
-        </SafeAreaView>
+        <LoginScreen onToken={setToken} />
       )}
     </SafeAreaProvider>
   );
 }
-function WorkspaceApp({ token }: { token: string }) {
+
+function Loading({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  return (
+    <SafeAreaView
+      style={{
+        flex: 1,
+        backgroundColor: colors.canvas,
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        gap: 18,
+      }}
+    >
+      <Mascot size={56} />
+      {error ? (
+        <>
+          <ErrorNotice error={error} />
+          {onRetry && <Button onPress={onRetry}>{text.retry}</Button>}
+        </>
+      ) : (
+        <>
+          <ActivityIndicator color={colors.blueDark} />
+          <Text style={s.muted}>{text.loading}</Text>
+        </>
+      )}
+    </SafeAreaView>
+  );
+}
+
+function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void }) {
   const api = useMemo(() => new MuseApi(token), [token]);
+  const { me, loading: meLoading, error: meError, reload: reloadMe } = useMe(api);
   const [workspace, setWorkspace] = useState<Workspace>();
-  const [section, setSection] = useState<Section>("chat");
+  const initial = useMemo(readLocation, []);
+  const [tab, setTab] = useState<Tab>(initial.tab);
+  const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
+  const [room, setRoom] = useState<Room>();
+  const [skipOnboarding, setSkipOnboarding] = useState(false);
   const [detail, setDetail] = useState<Detail>();
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
-  const [prompt, setPrompt] = useState<{ id: number; text: string }>();
   const refresh = useCallback(async () => {
-    const snapshot = await api.request<Workspace>("/api/workspace");
-    setWorkspace(snapshot);
+    setWorkspace(await api.request<Workspace>("/api/workspace"));
     setError("");
   }, [api]);
   useEffect(() => {
@@ -139,237 +173,231 @@ function WorkspaceApp({ token }: { token: string }) {
     const timer = setTimeout(() => setToast(""), 5500);
     return () => clearTimeout(timer);
   }, [toast]);
-  const navigate = useCallback(
-    (next: Section) => setSection(next === "connections" ? "apps" : next),
-    [],
+  // 웹 딥링크 /rooms/:id — 목록에서 그 방을 찾아 연다
+  useEffect(() => {
+    if (!initial.roomId) return;
+    void api
+      .request<Room[]>("/api/rooms")
+      .then((rooms) => setRoom(rooms.find((r) => r.id === initial.roomId)))
+      .catch((e) => setError(String(e)));
+  }, [api, initial.roomId]);
+  useEffect(() => writeLocation(tab, room?.id, storeTab), [tab, room, storeTab]);
+  // 세션 만료(401) 면 로그인으로
+  useEffect(() => {
+    if (/401|세션|로그인/.test(meError)) onLogout();
+  }, [meError, onLogout]);
+
+  const navigate = useCallback((next: Section) => {
+    const target = isTab(next) ? next : legacy[next];
+    if (!target) return;
+    setRoom(undefined);
+    setTab(target);
+  }, []);
+  const openRoom = useCallback((next: Room) => {
+    setTab("rooms");
+    setRoom(next);
+  }, []);
+  const openRoomById = useCallback(
+    (id: string) =>
+      void api
+        .request<Room[]>("/api/rooms")
+        .then((rooms) => {
+          const found = rooms.find((r) => r.id === id);
+          if (found) openRoom(found);
+        })
+        .catch((e) => setError(String(e))),
+    [api, openRoom],
   );
   const open = useCallback((next: Detail) => setDetail(next), []);
   const close = useCallback(() => setDetail(undefined), []);
-  const ask = useCallback((text: string) => {
-    setPrompt({ id: Date.now(), text });
-    setSection("chat");
-  }, []);
-  if (!workspace)
+  const ask = useCallback(() => navigate("rooms"), [navigate]); // ponytail: 옛 "채팅으로 질문" 은 방 목록으로
+
+  if (!workspace || (meLoading && !me))
     return (
-      <SafeAreaView
-        style={{
-          flex: 1,
-          backgroundColor: colors.canvas,
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 24,
-          gap: 18,
+      <Loading
+        error={error || meError}
+        onRetry={() => {
+          void refresh().catch((e) => setError(String(e)));
+          void reloadMe();
         }}
-      >
-        <Mascot size={56} />
-        {error ? (
-          <>
-            <ErrorNotice error={error} />
-            <Button onPress={() => void refresh().catch((e) => setError(String(e)))}>
-              {t.common.retry}
-            </Button>
-          </>
-        ) : (
-          <>
-            <ActivityIndicator color={colors.blueDark} />
-            <Text style={s.muted}>{t.app.loading.opening}</Text>
-          </>
-        )}
+      />
+    );
+  if (me && !me.profile.onboardedAt && !skipOnboarding)
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.canvas }}>
+        <Onboarding
+          api={api}
+          onDone={() => void reloadMe()}
+          onGoStore={() => {
+            setSkipOnboarding(true);
+            setTab("store");
+          }}
+        />
       </SafeAreaView>
     );
   return (
     <WorkspaceContext.Provider
-      value={{ workspace, api, section, navigate, refresh, open, close, notify: setToast, ask }}
+      value={{
+        workspace,
+        api,
+        section: tab,
+        navigate,
+        refresh,
+        open,
+        close,
+        notify: setToast,
+        ask,
+      }}
     >
       <AgentWorkspaceProvider>
         <ThreadsProvider>
-          <WorkspaceShell
+          <Shell
+            tab={tab}
+            setTab={(next) => {
+              setRoom(undefined);
+              setTab(next);
+            }}
+            room={room}
+            openRoom={openRoom}
+            openRoomById={openRoomById}
+            closeRoom={() => setRoom(undefined)}
+            storeTab={storeTab}
+            setStoreTab={setStoreTab}
             detail={detail}
             toast={toast}
             clearToast={() => setToast("")}
             error={error}
-            prompt={prompt}
+            onLogout={() => void logout(api).then(onLogout)}
           />
         </ThreadsProvider>
       </AgentWorkspaceProvider>
     </WorkspaceContext.Provider>
   );
 }
-function WorkspaceShell({
+
+function Shell({
+  tab,
+  setTab,
+  room,
+  openRoom,
+  openRoomById,
+  closeRoom,
+  storeTab,
+  setStoreTab,
   detail,
   toast,
   clearToast,
   error,
-  prompt,
+  onLogout,
 }: {
+  tab: Tab;
+  setTab: (tab: Tab) => void;
+  room?: Room;
+  openRoom: (room: Room) => void;
+  openRoomById: (id: string) => void;
+  closeRoom: () => void;
+  storeTab: StoreTab;
+  setStoreTab: (tab: StoreTab) => void;
   detail?: Detail;
   toast: string;
   clearToast: () => void;
   error: string;
-  prompt?: { id: number; text: string };
+  onLogout: () => void;
 }) {
-  const { workspace, section, navigate, open } = useWorkspace();
-  const { data } = useAgentWorkspace();
-  const {
-    selection,
-    visited,
-    mainId,
-    loading: threadsLoading,
-    error: threadsError,
-    retry: retryThreads,
-    enabled: richThreads,
-  } = useMuseThread();
-  const [threadsOpen, setThreadsOpen] = useState(false);
+  const { workspace, open } = useWorkspace();
   const { width } = useWindowDimensions();
   const desktop = width >= 900;
-  const pending =
-    (data?.notifications.filter((n) => !n.read).length || 0) +
-    workspace.actions.filter((a) => a.status === "awaiting_review").length;
-  const activeTask =
-    data?.tasks.find(
-      (task) => task.status === "waiting_approval" || task.status === "waiting_input",
-    ) || data?.tasks.find((task) => task.status === "running");
-  const agentName = data?.identity.name || t.common.agentName;
-  const status = activeTask
-    ? activeTask.status === "waiting_approval"
-      ? t.app.status.readyToReview(activeTask.title)
-      : activeTask.status === "waiting_input"
-        ? t.app.status.needsInput(activeTask.title)
-        : activeTask.plan.find((step) => step.status === "running")?.title || activeTask.title
-    : data?.tasks.some((task) => task.status === "queued")
-      ? t.app.status.pickingUp
-      : t.app.status.idle;
-  const title = titles[section] || titles.apps;
-  const Screen =
-    section === "activity" ? AgentActivityScreen : section === "goals" ? GoalsScreen : AppsScreen;
+  const pending = workspace.actions.filter((a) => a.status === "awaiting_review").length;
+  const screen =
+    tab === "store" ? (
+      <StoreScreen tab={storeTab} onTab={setStoreTab} onOpenRoom={openRoomById} />
+    ) : tab === "inbox" ? (
+      <InboxScreen />
+    ) : tab === "goals" ? (
+      <TeamGoalsScreen />
+    ) : tab === "settings" ? (
+      <SettingsScreen onLogout={onLogout} />
+    ) : (
+      <RoomList onOpen={openRoom} />
+    );
+  // 방 안: 탭 숨김, 전체 화면 (§4.0). 웹에서는 사이드바 옆 메인에 뜬다
+  const main = room ? (
+    <RoomScreen key={room.id} room={room} onBack={closeRoom} />
+  ) : (
+    <ScrollView
+      key={tab}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingHorizontal: desktop ? 42 : 22, paddingBottom: 28 }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={[s.row, { justifyContent: "space-between", marginTop: 8, marginBottom: 22 }]}>
+        <Text style={[s.title, { fontSize: 25 }]}>{titles[tab]}</Text>
+        <View>
+          <IconButton
+            icon={Bell}
+            label={text.notifications(pending)}
+            onPress={() => open({ type: "notifications" })}
+          />
+          {pending > 0 && (
+            <View
+              pointerEvents="none"
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 4,
+                position: "absolute",
+                top: 7,
+                right: 9,
+                backgroundColor: colors.blueDark,
+              }}
+            />
+          )}
+        </View>
+      </View>
+      <ErrorNotice error={error} />
+      {screen}
+    </ScrollView>
+  );
   return (
     <>
       <WorkspaceTools />
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.canvas }} edges={["top", "bottom"]}>
-        <View style={{ flex: 1, width: "100%", maxWidth: 760, alignSelf: "center" }}>
-          <View
-            style={{
-              height: desktop ? 146 : 122,
-              paddingTop: desktop ? 14 : 2,
-              marginHorizontal: 20,
-            }}
-          >
-            <View style={{ position: "absolute", left: 0, top: 16 }}>
-              <IconButton
-                icon={Menu}
-                label={t.app.a11y.openMenu}
-                onPress={() => setThreadsOpen(true)}
-              />
-            </View>
-            <View pointerEvents="box-none" style={{ alignItems: "center", gap: 1 }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t.app.a11y.openActivity(agentName)}
-                onPress={() => navigate("activity")}
-                style={({ pressed }) => ({
-                  alignItems: "center",
-                  maxWidth: "70%",
-                  opacity: pressed ? 0.65 : 1,
-                })}
-              >
-                <Mascot size={desktop ? 58 : 49} variant={data?.identity.avatar} />
-                <Text
-                  style={{
-                    fontSize: 16,
-                    fontWeight: "600",
-                    color: colors.text,
-                    letterSpacing: -0.4,
-                  }}
-                >
-                  {agentName}
-                </Text>
-                <Text
-                  numberOfLines={1}
-                  style={{ fontSize: 11, color: colors.muted, marginBottom: 6 }}
-                >
-                  {status}
-                </Text>
-              </Pressable>
-            </View>
-            <View style={{ position: "absolute", right: 0, top: 16 }}>
-              <IconButton
-                icon={Bell}
-                label={t.app.a11y.notifications(pending)}
-                onPress={() => open({ type: "notifications" })}
-              />
-              {pending > 0 && (
-                <View
-                  pointerEvents="none"
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 4,
-                    position: "absolute",
-                    top: 7,
-                    right: 9,
-                    backgroundColor: colors.blueDark,
-                  }}
-                />
-              )}
-            </View>
-          </View>
-          <View style={{ flex: 1, minHeight: 0 }}>
-            {section !== "chat" && (
-              <ScrollView
-                key={section}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: desktop ? 42 : 22, paddingBottom: 28 }}
-                keyboardShouldPersistTaps="handled"
-              >
-                <Text style={[s.title, { fontSize: 25, marginBottom: 22 }]}>{title?.title}</Text>
-                <ErrorNotice error={error} />
-                <Screen />
-              </ScrollView>
-            )}
+        {desktop ? (
+          <View style={{ flex: 1, flexDirection: "row" }}>
             <View
               style={{
-                display: section === "chat" ? "flex" : "none",
-                flex: 1,
-                paddingHorizontal: desktop ? 42 : 17,
+                width: 280,
+                borderRightWidth: 1,
+                borderRightColor: "#ECECEC",
+                paddingHorizontal: 14,
+                paddingTop: 10,
               }}
             >
-              <AgentStatus />
-              {richThreads ? (
-                <>
-                  <ErrorNotice error={threadsError} />
-                  {threadsError ? (
-                    <Button onPress={retryThreads}>{t.threads.sheet.retryMain}</Button>
-                  ) : threadsLoading ? (
-                    <ActivityIndicator color={colors.blueDark} />
-                  ) : null}
-                  {!threadsLoading && selection.id !== mainId && (
-                    <Text style={[s.small, { textAlign: "center", marginBottom: 8 }]}>
-                      {t.app.chat.sideChat}
-                    </Text>
-                  )}
-                  {visited.map((thread) => (
-                    <View
-                      key={thread.id}
-                      style={{ display: selection.id === thread.id ? "flex" : "none", flex: 1 }}
-                    >
-                      <ChatScreen
-                        thread={thread}
-                        active={section === "chat" && selection.id === thread.id}
-                        prompt={selection.id === thread.id ? prompt : undefined}
-                      />
-                    </View>
-                  ))}
-                </>
-              ) : (
-                <ChatScreen prompt={prompt} active={section === "chat"} />
-              )}
+              <View style={{ flexDirection: "row", gap: 4, marginBottom: 12 }}>
+                {nav.map((item) => (
+                  <NavButton
+                    key={item.id}
+                    item={item}
+                    active={tab === item.id && !room}
+                    onPress={() => setTab(item.id)}
+                  />
+                ))}
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <RoomList onOpen={openRoom} />
+              </ScrollView>
             </View>
+            <View style={{ flex: 1, minHeight: 0, maxWidth: 960 }}>{main}</View>
           </View>
+        ) : (
+          <View style={{ flex: 1, minHeight: 0 }}>{main}</View>
+        )}
+        {!desktop && !room && (
           <View
             style={{
               paddingHorizontal: 22,
               paddingTop: 10,
-              paddingBottom: desktop ? 22 : 7,
+              paddingBottom: 7,
               alignItems: "center",
             }}
           >
@@ -377,7 +405,7 @@ function WorkspaceShell({
               style={{
                 flexDirection: "row",
                 width: "100%",
-                maxWidth: 370,
+                maxWidth: 420,
                 padding: 5,
                 backgroundColor: "#FFF",
                 borderRadius: 40,
@@ -390,31 +418,17 @@ function WorkspaceShell({
                 borderColor: "#F8F8F8",
               }}
             >
-              {nav.map((item) => {
-                const active = section === item.id;
-                return (
-                  <Pressable
-                    key={item.id}
-                    accessibilityRole="tab"
-                    accessibilityLabel={item.label}
-                    accessibilityState={{ selected: active }}
-                    onPress={() => navigate(item.id)}
-                    style={{
-                      flex: 1,
-                      height: 47,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      backgroundColor: active ? "#F0F1F2" : "transparent",
-                      borderRadius: 28,
-                    }}
-                  >
-                    <item.icon size={23} strokeWidth={1.8} color={colors.text} />
-                  </Pressable>
-                );
-              })}
+              {nav.map((item) => (
+                <NavButton
+                  key={item.id}
+                  item={item}
+                  active={tab === item.id}
+                  onPress={() => setTab(item.id)}
+                />
+              ))}
             </View>
           </View>
-        </View>
+        )}
         {!!toast && (
           <View
             pointerEvents="box-none"
@@ -436,7 +450,7 @@ function WorkspaceShell({
               <Text style={{ color: "#FFF", fontSize: 13, flexShrink: 1 }}>{toast}</Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={t.app.a11y.dismissToast}
+                accessibilityLabel={text.dismiss}
                 onPress={clearToast}
               >
                 <X size={16} color="#FFF" />
@@ -444,7 +458,6 @@ function WorkspaceShell({
             </View>
           </View>
         )}
-        {threadsOpen && <ThreadsSheet onClose={() => setThreadsOpen(false)} />}
         {detail && (
           <Details
             key={
@@ -459,5 +472,36 @@ function WorkspaceShell({
         )}
       </SafeAreaView>
     </>
+  );
+}
+
+function NavButton({
+  item,
+  active,
+  onPress,
+}: {
+  item: { id: Tab; label: string; icon: LucideIcon };
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityLabel={item.label}
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      style={{
+        flex: 1,
+        height: 47,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: active ? "#F0F1F2" : "transparent",
+        borderRadius: 28,
+        gap: 2,
+      }}
+    >
+      <item.icon size={21} strokeWidth={1.8} color={colors.text} />
+      <Text style={{ fontSize: 10, color: colors.text }}>{item.label}</Text>
+    </Pressable>
   );
 }

@@ -1,4 +1,5 @@
 // 0Siri 로그인·초대 가입·온보딩 (0SIRI-SPEC §4.1). 서버: apps/server/src/osiri/account-routes.ts
+import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -60,14 +61,14 @@ export function normalizePhone(raw: string) {
   return digits.startsWith("82") ? `0${digits.slice(2)}` : digits;
 }
 
-// --- 토큰 보관 ---
-// 결정: expo-secure-store·async-storage 둘 다 미설치(의존성 추가 금지) → 웹은 localStorage, 네이티브는 메모리(앱 재시작 시 재로그인).
+// --- 토큰 보관 --- 웹 localStorage, 네이티브 expo-secure-store(키체인/키스토어). 둘 다 실패하면 메모리(재로그인).
 const TOKEN_KEY = "osiri.token";
 const webStorage = Platform.OS === "web" && typeof localStorage !== "undefined";
 let memoryToken = "";
 export async function loadToken(): Promise<string> {
   try {
-    return webStorage ? (localStorage.getItem(TOKEN_KEY) ?? "") : memoryToken;
+    if (webStorage) return localStorage.getItem(TOKEN_KEY) ?? "";
+    return (await SecureStore.getItemAsync(TOKEN_KEY)) ?? memoryToken;
   } catch {
     return memoryToken;
   }
@@ -76,12 +77,14 @@ export async function saveToken(token: string): Promise<void> {
   memoryToken = token;
   try {
     if (webStorage) localStorage.setItem(TOKEN_KEY, token);
+    else await SecureStore.setItemAsync(TOKEN_KEY, token);
   } catch {}
 }
 export async function clearToken(): Promise<void> {
   memoryToken = "";
   try {
     if (webStorage) localStorage.removeItem(TOKEN_KEY);
+    else await SecureStore.deleteItemAsync(TOKEN_KEY);
   } catch {}
 }
 export async function logout(api: MuseApi) {
