@@ -104,6 +104,8 @@ function writeLocation(tab: Tab, roomId: string | undefined, storeTab: StoreTab)
       : tab === "store"
         ? `/store?tab=${storeTab}`
         : `/${tab}`;
+  // 설정의 하위 화면(/settings/connections 등)은 설정 화면이 스스로 쓴다 — 여기서 덮으면 직행 링크가 죽는다.
+  if (tab === "settings" && location.pathname.startsWith("/settings")) return;
   if (`${location.pathname}${location.search}` !== path) history.replaceState(null, "", path);
 }
 

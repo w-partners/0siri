@@ -57,6 +57,8 @@ const shutdown = () => {
       .then(() => db.close())
       .then(() => process.exit(0));
   });
+  // 열린 SSE(/api/stream)가 있으면 close 콜백이 영영 안 불려 systemd 가 SIGKILL 까지 기다린다.
+  if ("closeAllConnections" in server) server.closeAllConnections();
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
