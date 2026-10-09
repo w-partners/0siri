@@ -2,10 +2,11 @@
 // 저장은 openmuse 문서 저장소(records)를 그대로 쓴다: owner="system" 아래 users / phone-index / invites / sessions,
 // 사용자 소유 데이터(profiles)는 owner=userId.
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { PASSWORD_MIN, type UserRole } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 
-export type Role = "user" | "operator" | "admin";
+export type Role = UserRole;
 export type Tier = "free" | "package";
 
 export interface User {
@@ -39,7 +40,6 @@ export interface Session {
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // ponytail: 모바일 앱 재로그인 부담을 줄이려 30일. 짧게 바꾸려면 여기만
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const PASSWORD_MIN = 4; // 파일럿(지인 20명) 기준. 마스터가 지정한 관리자 비밀번호 길이가 4다
 
 const digestHex = (value: string) => createHash("sha256").update(value).digest("hex");
 

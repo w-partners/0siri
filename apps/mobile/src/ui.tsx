@@ -2,8 +2,10 @@ import { ArrowUpRight, Check, ChevronRight, type LucideIcon, X } from "lucide-re
 import type { ReactNode } from "react";
 import {
   ActivityIndicator,
+  Appearance,
   Image,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,20 +18,73 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { t } from "./strings";
-export const colors = {
-  canvas: "#FCFCFC",
-  card: "#FFFFFF",
-  text: "#11191C",
-  muted: "#697176",
-  line: "#EEEEF0",
-  blue: "#C8E7FF",
-  blueDark: "#1473C8",
-  sky: "#EDF7FD",
-  green: "#E3F3E8",
-  lavender: "#F0EEFA",
-  orange: "#FDF0DF",
-  danger: "#AA4A45",
+// 색 토큰의 유일한 출처 — «0Siri 종합 기획» §03 공통 디자인 규칙의 팔레트(:root / prefers-color-scheme: dark)를 그대로 옮겼다.
+// ponytail: 다크 모드는 앱을 켤 때의 시스템 설정을 따른다(StyleSheet 가 모듈 로드 시 굳는다).
+// 켜진 채로 바뀌면 웹은 App 이 새로고침하고, 네이티브는 다음 실행부터 — 실시간 전환이 필요해지면 테마 컨텍스트로 올린다.
+const light = {
+  bg: "#F3F5F1",
+  surface: "#FFFFFF",
+  sunk: "#EDF1EC",
+  ink: "#17211B",
+  muted: "#5F7063",
+  line: "#D8E0D6",
+  accent: "#0C6B57",
+  accentSoft: "#E1EFE9",
+  onAccent: "#FFFFFF",
+  brass: "#8F6E25",
+  brassSoft: "#F6EDD8",
+  ok: "#1C7448",
+  okBg: "#E2F2E9",
+  warn: "#8A5F00",
+  warnBg: "#F8EDD2",
+  miss: "#AE332C",
+  missBg: "#F9E4E2",
 };
+const dark: typeof light = {
+  bg: "#0E120E",
+  surface: "#171D17",
+  sunk: "#10150F",
+  ink: "#E8EEE7",
+  muted: "#93A495",
+  line: "#2B352B",
+  accent: "#5CC4A4",
+  accentSoft: "#16302A",
+  onAccent: "#0E120E",
+  brass: "#D8B45C",
+  brassSoft: "#33290F",
+  ok: "#62C792",
+  okBg: "#15301F",
+  warn: "#E2B450",
+  warnBg: "#33290F",
+  miss: "#F08A82",
+  missBg: "#3A1917",
+};
+export const isDark = Appearance.getColorScheme() === "dark";
+const token = isDark ? dark : light;
+export const colors = {
+  ...token,
+  // 아래는 openmuse 원본 화면이 쓰는 옛 이름 — 값은 전부 위 토큰이다(새 색을 만들지 않는다).
+  canvas: token.bg,
+  card: token.surface,
+  text: token.ink,
+  blue: token.accentSoft,
+  blueDark: token.accent,
+  sky: token.accentSoft,
+  green: token.okBg,
+  lavender: token.sunk,
+  orange: token.warnBg,
+  danger: token.miss,
+};
+// 폰트 3종(본문 Pretendard · 제목 Noto Serif KR · 숫자 IBM Plex Mono). 웹은 +html 이 웹폰트를 싣고,
+// 네이티브는 기기에 없으면 시스템 글꼴로 떨어진다(글꼴 파일을 APK 에 싣지 않았다 — 실으면 expo-font 로 한 곳에서).
+export const fonts = Platform.select({
+  web: {
+    body: '"Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif',
+    display: '"Noto Serif KR", serif',
+    mono: '"IBM Plex Mono", ui-monospace, Menlo, monospace',
+  },
+  default: { body: undefined, display: "serif", mono: "monospace" },
+}) as { body: string | undefined; display: string; mono: string };
 export const s = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center" },
   between: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
@@ -43,14 +98,14 @@ export const s = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
   },
-  title: { color: colors.text, fontSize: 23, fontWeight: "600", letterSpacing: -0.7 },
+  title: { color: colors.text, fontSize: 23, fontWeight: "600", letterSpacing: -0.7, fontFamily: fonts.display },
   heading: { color: colors.text, fontSize: 16, fontWeight: "600", letterSpacing: -0.25 },
   card: {
     backgroundColor: colors.card,
-    borderRadius: 23,
-    borderWidth: 0,
+    borderRadius: 10,
+    borderWidth: 1,
     borderColor: colors.line,
-    padding: 20,
+    padding: 18,
   },
   divider: { height: 1, backgroundColor: colors.line, marginVertical: 18 },
   input: {
@@ -61,7 +116,7 @@ export const s = StyleSheet.create({
     paddingVertical: 12,
     color: colors.text,
     fontSize: 16,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.card,
     minHeight: 45,
   },
   field: { gap: 7, marginBottom: 16 },
@@ -75,8 +130,8 @@ export const s = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 24,
   },
-  primary: { backgroundColor: colors.blue },
-  secondary: { backgroundColor: "#F1F2F3" },
+  primary: { backgroundColor: colors.accent },
+  secondary: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
   buttonText: { fontSize: 14, fontWeight: "600" },
   chip: {
     paddingHorizontal: 10,
@@ -85,7 +140,7 @@ export const s = StyleSheet.create({
     alignSelf: "flex-start",
     backgroundColor: colors.canvas,
   },
-  chipText: { fontSize: 10, fontWeight: "600", color: colors.muted },
+  chipText: { fontSize: 10, fontWeight: "600", color: colors.muted, fontFamily: fonts.mono },
   iconBox: {
     width: 42,
     height: 42,
@@ -94,7 +149,7 @@ export const s = StyleSheet.create({
     alignItems: "center",
     backgroundColor: colors.sky,
   },
-  error: { padding: 16, borderRadius: 14, backgroundColor: "#FBEFED", marginVertical: 10, gap: 4 },
+  error: { padding: 16, borderRadius: 14, backgroundColor: colors.missBg, marginVertical: 10, gap: 4 },
   modalShade: {
     flex: 1,
     backgroundColor: "rgba(35,48,44,0.25)",
@@ -134,7 +189,7 @@ export function Button({
   danger?: boolean;
   style?: ViewStyle;
 }) {
-  const color = danger ? colors.danger : colors.text;
+  const color = danger ? colors.danger : primary ? colors.onAccent : colors.text;
   return (
     <Pressable
       accessibilityRole="button"
@@ -180,7 +235,7 @@ export function IconButton({
           alignItems: "center",
           justifyContent: "center",
           borderRadius: 22,
-          backgroundColor: pressed ? colors.line : "#FFFFFF",
+          backgroundColor: pressed ? colors.line : colors.card,
         },
       ]}
     >
@@ -190,6 +245,41 @@ export function IconButton({
 }
 export function Card({ children, style }: { children: ReactNode; style?: ViewStyle }) {
   return <View style={[s.card, style]}>{children}</View>;
+}
+/** 승인 대기 배지 — 기획: «빨간 숫자 배지 하나로 통일». 방 목록·탭·캐릭터가 전부 이것만 쓴다. */
+export function Badge({ count, style }: { count: number; style?: ViewStyle }) {
+  if (count <= 0) return null;
+  return (
+    <View
+      style={[
+        {
+          minWidth: 18,
+          height: 18,
+          paddingHorizontal: 5,
+          borderRadius: 9,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.miss,
+        },
+        style,
+      ]}
+    >
+      <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "700", fontFamily: fonts.mono }}>
+        {count}
+      </Text>
+    </View>
+  );
+}
+/** 로딩 자리 — 기획: «로딩은 스켈레톤». */
+export function Skeleton({ rows = 3, height = 64 }: { rows?: number; height?: number }) {
+  return (
+    <View accessibilityLabel="불러오는 중" style={{ gap: 10 }}>
+      {Array.from({ length: rows }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: 자리 표시라 순서가 곧 정체다
+        <View key={i} style={{ height, borderRadius: 10, backgroundColor: colors.sunk }} />
+      ))}
+    </View>
+  );
 }
 export function Chip({ children, tint }: { children: ReactNode; tint?: string }) {
   return (
@@ -283,7 +373,7 @@ export function Sheet({
                 width: 34,
                 height: 4,
                 borderRadius: 3,
-                backgroundColor: "#D8DBDE",
+                backgroundColor: colors.line,
                 marginTop: 10,
               }}
             />
@@ -334,12 +424,12 @@ export function CheckRow({
           borderRadius: 5,
           borderWidth: 1,
           borderColor: checked ? colors.text : colors.line,
-          backgroundColor: checked ? colors.text : "#FFF",
+          backgroundColor: checked ? colors.accent : colors.card,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        {checked && <Check size={13} color="#FFF" />}
+        {checked && <Check size={13} color={colors.onAccent} />}
       </View>
       <Text style={[s.text, { flex: 1 }]}>{label}</Text>
     </Pressable>

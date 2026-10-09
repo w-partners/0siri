@@ -5,8 +5,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RETENTION_DAYS } from "../../../../packages/domain/src/osiri.ts";
 import type { DockerRunner } from "../computer.ts";
 import type { Store } from "../db.ts";
+import { AppError } from "../errors.ts";
 import { issueWorkerToken } from "./room-routes.ts";
 import type { Room, Rooms } from "./rooms.ts";
 import type { Catalog, Provisioning } from "./store.ts";
@@ -175,11 +177,16 @@ export class Provisioner {
   private async reapArchived() {
     let stopped = 0;
     for (const { value: worker } of await this.db.scan<Worker>("workers")) {
-      let room: Room;
+      let room: Pick<Room, "archived">;
       try {
         room = await this.rooms.get(worker.userId, worker.id);
-      } catch {
-        room = { archived: true } as Room; // 방 자체가 사라졌으면 워커도 내린다
+      } catch (error) {
+        // 방이 정말 없을 때(404)만 워커를 내린다. DB 오류 같은 다른 실패로 컨테이너를 지우지 않는다
+        if (!(error instanceof AppError && error.status === 404)) {
+          this.log(`room lookup failed room=${worker.id}: ${(error as Error).message} — 워커 유지`);
+          continue;
+        }
+        room = { archived: true };
       }
       if (!room.archived) continue;
       const rm = await this.options.docker(["rm", "-f", worker.containerId], {
@@ -195,7 +202,7 @@ export class Provisioner {
         kind: "system",
         actor: "provisioner",
         title: "팀 워커를 종료했습니다",
-        detail: "구독 해지 — 방은 읽기 전용으로 30일 보존",
+        detail: `구독 해지 — 방은 읽기 전용으로 ${RETENTION_DAYS}일 보존`,
       });
       stopped++;
     }

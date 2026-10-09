@@ -3,6 +3,7 @@
 //  인증:  GET /api/me · PATCH /api/me/profile · 관리자 /api/admin/*
 import { Hono } from "hono";
 import { z } from "zod";
+import { USER_ROLES } from "../../../../packages/domain/src/osiri.ts";
 import type { Accounts } from "./accounts.ts";
 
 type Env = { Variables: { owner: string } };
@@ -51,7 +52,7 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
     const body = z
       .object({
         phone: z.string().optional(),
-        role: z.enum(["user", "operator", "admin"]).optional(),
+        role: z.enum(USER_ROLES).optional(),
       })
       .parse(await c.req.json().catch(() => ({})));
     const { token, invite } = await accounts.createInvite(c.get("owner"), body);

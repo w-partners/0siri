@@ -3,10 +3,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import {
+  BOARD_STAGES,
+  GOAL_LEVELS,
+  GOAL_STATUSES,
+  PRESENCE_LABELS,
+  WORKER_PRESENCE_STATES,
+} from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Approvals } from "./approvals.ts";
-import type { EventBus, PresenceState } from "./events.ts";
+import type { EventBus } from "./events.ts";
 import type { Mcp } from "./mcp.ts";
 import type { Rooms, TaskStage } from "./rooms.ts";
 
@@ -19,14 +26,9 @@ export interface RoomDeps {
   mcp?: Mcp;
 }
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const stageSchema = z.enum(["detect", "draft", "geo", "review", "approval", "publish", "done"]);
-const levelSchema = z.enum(["long", "mid", "short", "task"]);
-const presenceLabel: Record<PresenceState, string> = {
-  working: "작업 중",
-  waiting: "승인 대기 중",
-  done: "완료",
-  idle: "휴식 중",
-};
+const stageSchema = z.enum(BOARD_STAGES);
+const levelSchema = z.enum(GOAL_LEVELS);
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** 사용자(소유자 토큰) 라우트 — /api 아래, 인증 미들웨어 뒤에 마운트. */
 export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
@@ -45,7 +47,10 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
   app.get("/rooms/:id/timeline", async (c) => {
     const owner = c.get("owner");
     const roomId = c.req.param("id");
-    const after = c.req.query("after") ? Number(c.req.query("after")) : undefined;
+    const afterRaw = c.req.query("after");
+    const after = afterRaw ? Number(afterRaw) : undefined;
+    if (after !== undefined && !Number.isFinite(after))
+      throw new AppError("after 는 숫자여야 합니다", 422);
     const room = await rooms.get(owner, roomId);
     const digest = after === undefined ? await rooms.digestSince(owner, roomId) : null;
     const messages = await rooms.timeline(owner, roomId, after);
@@ -86,7 +91,7 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
     ).length;
     return c.json({
       presence: board.presence,
-      label: presenceLabel[board.presence as PresenceState] ?? board.presence,
+      label: PRESENCE_LABELS[board.presence],
       flow: board.flow,
       pendingApprovals: pending
         .filter((a) => a.roomId === roomId)
@@ -105,10 +110,26 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
       let id = 0;
       const send = (event: string, data: unknown) =>
         stream.writeSSE({ event, data: JSON.stringify(data), id: String(++id) });
-      await send("board", await rooms.board(owner, roomId));
-      const state = bus.getPresence(owner, roomId);
-      await send("room.presence", { roomId, state, label: presenceLabel[state] });
+      // 첫 상태는 현황판과 같은 값이어야 한다 — 재시작 뒤 버스 메모리는 idle 이어도 승인 대기는 board() 가 안다
+      const board = await rooms.board(owner, roomId);
+      await send("board", board);
+      await send("room.presence", {
+        roomId,
+        state: board.presence,
+        label: PRESENCE_LABELS[board.presence],
+      });
       let open = true;
+      let finish: () => void = () => undefined;
+      const closed = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      // 구독자·하트비트 안의 실패는 삼키지 않는다: 이유를 남기고 스트림을 닫아 클라이언트가 다시 붙게 한다
+      const fail = (error: unknown) => {
+        if (!open) return;
+        open = false;
+        console.error(`[osiri] 방 스트림 종료 room=${roomId}: ${errorText(error)}`);
+        finish();
+      };
       const unsubscribe = bus.subscribe(owner, (event) => {
         if (!open) return;
         if ("roomId" in event && event.roomId !== roomId) return;
@@ -118,19 +139,18 @@ export function roomRoutes({ db, rooms, approvals, bus }: RoomDeps) {
             await send("approval", event);
             await send("board", await rooms.board(owner, roomId));
           } else await send(event.type, event);
-        })();
+        })().catch(fail);
       });
       const heartbeat = setInterval(
-        () => void stream.writeSSE({ event: "ping", data: "" }),
+        () => void stream.writeSSE({ event: "ping", data: "" }).catch(fail),
         25_000,
       );
-      stream.onAbort(() => {
-        open = false;
-        clearInterval(heartbeat);
-        unsubscribe();
-      });
-      // 연결이 끊길 때까지 유지
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      stream.onAbort(finish);
+      // 연결이 끊기거나 전송이 실패할 때까지 유지
+      await closed;
+      open = false;
+      clearInterval(heartbeat);
+      unsubscribe();
     });
   });
 
@@ -276,8 +296,19 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
     if (!mcp) throw new AppError("MCP 연결 기능이 꺼져 있습니다", 503);
     const owner = c.get("owner");
     const servers = await mcp.list(owner);
-    const tools = await Promise.all(servers.map((s) => mcp.toolsFor(owner, s.id).catch(() => [])));
-    return c.json(servers.map((s, i) => ({ id: s.id, name: s.name, tools: tools[i] })));
+    // 도구 목록을 못 읽은 서버는 빈 목록으로 숨기지 않고 서버별 error 로 알린다
+    const listed = await Promise.all(
+      servers.map((s) =>
+        mcp.toolsFor(owner, s.id).then(
+          (tools) => ({ tools }),
+          (error: unknown) => {
+            console.error(`[osiri] MCP 도구 목록 실패 server=${s.id}: ${errorText(error)}`);
+            return { tools: [], error: errorText(error) };
+          },
+        ),
+      ),
+    );
+    return c.json(servers.map((s, i) => ({ id: s.id, name: s.name, ...listed[i] })));
   });
   app.post("/tools/call", async (c) => {
     if (!mcp) throw new AppError("MCP 연결 기능이 꺼져 있습니다", 503);
@@ -303,6 +334,8 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
     });
     return c.json({ id: consumed.id, status: consumed.status });
   });
+  // 현황판 집계 — 워커도 승인 대기 수·지표를 여기서만 읽는다 (재계산 금지)
+  app.get("/board", async (c) => c.json(await rooms.board(c.get("owner"), c.get("roomId"))));
   // 목표 트리 (팀장이 분해해 보고)
   app.get("/goals", async (c) => c.json(await rooms.goals(c.get("owner"), c.get("roomId"))));
   app.post("/goals", async (c) => {
@@ -329,7 +362,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
       .object({
         progress: z.number().min(0).max(100),
         stage: stageSchema.optional(),
-        status: z.enum(["active", "paused", "completed", "blocked"]).optional(),
+        status: z.enum(GOAL_STATUSES).optional(),
         metrics: z
           .object({
             published: z.number().optional(),
@@ -396,7 +429,8 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         summary: z.string().min(1).max(8000),
         metrics: z.object({
           completed_tasks: z.number(),
-          pending_approvals: z.number(),
+          // 승인 대기 수·성과 지표는 워커가 보낸 값을 쓰지 않는다 — 아래에서 board() 값으로 덮는다
+          pending_approvals: z.number().optional(),
           next_week_plan: z.array(z.string()).min(1),
           published: z.number().optional(),
           indexed: z.number().optional(),
@@ -405,11 +439,17 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         actor: z.string().max(60).default("analyst"),
       })
       .parse(await c.req.json());
+    const board = await rooms.board(c.get("owner"), c.get("roomId"));
+    const metrics = {
+      ...body.metrics,
+      pending_approvals: board.pendingApprovals,
+      ...board.metrics,
+    };
     const message = await rooms.post(c.get("owner"), c.get("roomId"), {
       role: "assistant",
       kind: "report",
       text: body.summary,
-      payload: { card: "weekly-report", metrics: body.metrics, actor: body.actor },
+      payload: { card: "weekly-report", metrics, actor: body.actor },
     });
     await rooms.activity(c.get("owner"), {
       roomId: c.get("roomId"),
@@ -417,7 +457,7 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
       actor: body.actor,
       title: "주간 보고 도착",
     });
-    return c.json({ id: message.id });
+    return c.json({ id: message.id, metrics });
   });
   // 타임라인에 카드·텍스트 게시 (팀장 메시지, 현황 카드 등)
   app.post("/messages", async (c) => {
@@ -447,13 +487,13 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
   // 캐릭터 상태 (§5): 작업 중/완료는 워커가 알린다. 승인 대기는 서버가 승인 카드에서 자동 판정
   app.post("/presence", async (c) => {
     const body = z
-      .object({ state: z.enum(["working", "done", "idle"]), label: z.string().max(80).optional() })
+      .object({ state: z.enum(WORKER_PRESENCE_STATES), label: z.string().max(80).optional() })
       .parse(await c.req.json());
     bus.setPresence(
       c.get("owner"),
       c.get("roomId"),
       body.state,
-      body.label ?? presenceLabel[body.state],
+      body.label ?? PRESENCE_LABELS[body.state],
     );
     return c.json({ ok: true });
   });

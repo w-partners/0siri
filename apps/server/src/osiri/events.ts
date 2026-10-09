@@ -1,8 +1,9 @@
 // 0Siri 실시간 이벤트 버스 — 방 현황판·승인 카드·캐릭터 상태를 SSE 로 밀어낸다 (0SIRI-SPEC §4.3 "폴링으로 대체하지 않는다", §5).
 // ponytail: 프로세스 내 EventEmitter. 서버 1대(파일럿 20명) 전제. 다중 인스턴스가 되면 Postgres LISTEN/NOTIFY 로 바꾼다.
 import { EventEmitter } from "node:events";
+import { PRESENCE_LABELS, type PresenceState } from "../../../../packages/domain/src/osiri.ts";
 
-export type PresenceState = "working" | "waiting" | "done" | "idle";
+export type { PresenceState };
 export type RoomEvent =
   | { type: "room.presence"; roomId: string; state: PresenceState; label: string }
   | { type: "approval"; roomId: string; approvalId: string; status: string }
@@ -34,7 +35,7 @@ export class EventBus {
     if (state === "done") {
       const timer = setTimeout(() => {
         if (this.presence.get(key)?.state === "done")
-          this.setPresence(owner, roomId, "idle", "휴식 중");
+          this.setPresence(owner, roomId, "idle", PRESENCE_LABELS.idle);
       }, 4000);
       timer.unref();
     }

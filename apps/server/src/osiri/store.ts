@@ -5,15 +5,21 @@
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
+import {
+  missingTeamRoles,
+  RETENTION_DAYS,
+  STORE_CATEGORY_IDS,
+  type StoreCategory,
+} from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Rooms } from "./rooms.ts";
 
 export const MARKET_FEE_RATE = 0.3; // 앱스토어 벤치마크 30% (§18 결정). 변경은 여기 한 곳.
-export type Category = "legal" | "medical" | "marketing" | "other";
+export type Category = StoreCategory;
 export interface PackageRole {
-  name: string; // yaml 의 에이전트 키 (orchestrator, drafter …)
+  name: string; // yaml 의 에이전트 키 (root, drafter …) — 필수 키는 REQUIRED_TEAM_ROLES
   title: string; // 사용자에게 보이는 역할명
   summary: string;
 }
@@ -56,7 +62,10 @@ export interface Provisioning {
 type Setting = { id: string; value: unknown; updatedAt: string };
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const PRICE_PREFIX = "price:";
+const validPrice = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
 export const publicPackage = (
   { runtime: _runtime, ...pkg }: TeamPackage,
   priceMonthly: number,
@@ -81,6 +90,9 @@ export class Catalog {
     return (await this.db.get<Setting>("system", "settings", key))?.value as T | undefined;
   }
   async setSetting(key: string, value: unknown) {
+    if (value === undefined) throw new AppError("설정 값이 필요합니다", 422);
+    if (key.startsWith(PRICE_PREFIX) && !validPrice(value))
+      throw new AppError("가격은 0 이상의 숫자여야 합니다", 422);
     await this.db.put<Setting>("system", "settings", {
       id: key,
       value,
@@ -90,20 +102,23 @@ export class Catalog {
   async settings() {
     return this.db.list<Setting>("system", "settings");
   }
-  /** 가격: settings `price:<slug>` 없으면 파일럿 무료 */
+  /** 가격: settings `price:<slug>` 없으면 파일럿 무료(§24-1). 저장된 값이 숫자가 아니면 0 으로 덮지 않고 실패한다. */
   async price(pkg: TeamPackage): Promise<number> {
-    const value = await this.setting<number>(`price:${pkg.slug}`);
-    return typeof value === "number" && value >= 0 ? value : 0;
+    const value = await this.setting(`${PRICE_PREFIX}${pkg.slug}`);
+    if (value === undefined) return 0;
+    if (!validPrice(value))
+      throw new AppError(`가격 설정 ${PRICE_PREFIX}${pkg.slug} 값이 올바르지 않습니다`, 500);
+    return value;
   }
 
   // ---- packages ----
   async upsertPackage(input: Omit<TeamPackage, "id" | "createdAt"> & { id?: string }) {
     if (input.roles.length < 3)
       throw new AppError("팀장·전문 역할 2개 이상·검수 역할이 있어야 팀입니다", 422);
-    if (!input.roles.some((r) => /orchestrator|팀장/i.test(`${r.name} ${r.title}`)))
-      throw new AppError("팀장(오케스트레이터) 역할이 필요합니다", 422);
-    if (!input.roles.some((r) => /review|검수/i.test(`${r.name} ${r.title}`)))
-      throw new AppError("검수 역할이 필요합니다", 422);
+    // 런타임(loadTeam)이 요구하는 것과 같은 목록 — 등록은 됐는데 팀이 뜨지 않는 패키지를 막는다
+    const missing = missingTeamRoles(input.roles.map((r) => r.name));
+    if (missing.length)
+      throw new AppError(`팀 필수 역할이 없습니다: ${missing.join(", ")}`, 422);
     if (input.approvalPoints.length === 0)
       throw new AppError("승인 지점을 1개 이상 선언해야 합니다", 422);
     const existing = (await this.db.list<TeamPackage>("system", "packages")).find(
@@ -230,13 +245,24 @@ export class Catalog {
     return Promise.all(
       subs.map(async (s) => {
         const pkg = await this.db.get<TeamPackage>("system", "packages", s.packageId);
-        const board = await this.rooms.board(owner, s.roomId).catch(() => null);
+        // 못 읽은 것은 빈 값으로 숨기지 않는다 — 카드에 error 로 싣고 로그를 남긴다
+        const problems: string[] = [];
+        if (!pkg) problems.push("팀 정보를 찾을 수 없습니다");
+        let board: Awaited<ReturnType<Rooms["board"]>> | undefined;
+        try {
+          board = await this.rooms.board(owner, s.roomId);
+        } catch (error) {
+          problems.push(`현황을 불러오지 못했습니다: ${(error as Error).message}`);
+        }
+        if (problems.length)
+          console.error(`[osiri] 구독 카드 불완전 subscription=${s.id}: ${problems.join(" / ")}`);
         return {
           ...s,
           packageName: pkg?.name ?? "",
           character: pkg?.character ?? "",
           pendingApprovals: board?.pendingApprovals ?? 0,
-          progress: board?.progress ?? {},
+          progress: board?.progress ?? 0,
+          ...(problems.length ? { error: problems.join(" / ") } : {}),
         };
       }),
     );
@@ -250,7 +276,8 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
     c.json(
       await catalog.packages({
         q: c.req.query("q"),
-        category: c.req.query("category") as Category | undefined,
+        // "전체" 는 값이 아니라 필터 없음 — category 를 보내지 않는다
+        category: z.enum(STORE_CATEGORY_IDS).optional().parse(c.req.query("category") || undefined),
         sort: c.req.query("sort") as "performance" | "price" | "newest" | undefined,
       }),
     ),
@@ -288,7 +315,7 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
         slug: z.string().regex(/^[a-z0-9-]+$/),
         name: z.string().min(1).max(60),
         character: z.string().min(1).max(40),
-        category: z.enum(["legal", "medical", "marketing", "other"]),
+        category: z.enum(STORE_CATEGORY_IDS),
         summary: z.string().max(500),
         roles: z.array(
           z.object({ name: z.string(), title: z.string(), summary: z.string().max(200) }),

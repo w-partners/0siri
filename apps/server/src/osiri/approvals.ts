@@ -3,6 +3,7 @@
 //  - 승인은 1회용 approval_token. 토큰은 도구명+입력 해시에 묶이며, 입력이 바뀌면 무효.
 //  - 승인본은 동결(frozenHash). 법률 패키지 발행 승인은 변호사(방 소유자) 본인만 — 운영자·관리자 대리 승인 불가.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { PRESENCE_LABELS } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { EventBus } from "./events.ts";
@@ -45,6 +46,16 @@ export function canonical(value: unknown): string {
 export const inputHash = (toolName: string, input: unknown) =>
   sha(`${toolName}\n${canonical(input)}`);
 
+const STATUS_LABELS: Record<ApprovalStatus, string> = {
+  pending: "대기 중",
+  approved: "승인됨",
+  rejected: "반려됨",
+  expired: "만료됨",
+  consumed: "집행됨",
+};
+const alreadyDecided = (status: ApprovalStatus) =>
+  new AppError(`이미 처리된 승인 요청입니다 (현재 상태: ${STATUS_LABELS[status]})`, 409);
+
 export class Approvals {
   constructor(
     private readonly db: Store,
@@ -58,10 +69,47 @@ export class Approvals {
     if (!approval) throw new AppError("승인 요청을 찾을 수 없습니다", 404);
     return approval;
   }
+  /** 대기 중인 승인. 만료 시각이 지난 것은 여기서 만료 처리하고 목록에서 뺀다 — 결재함·배지 수가 실제와 맞도록. */
   async pending(owner: string): Promise<Approval[]> {
-    return (await this.db.listByStatus<Approval>(owner, "approvals", "pending")).sort((a, b) =>
-      a.createdAt.localeCompare(b.createdAt),
+    const live: Approval[] = [];
+    const expiredRooms = new Set<string>();
+    for (const approval of await this.db.listByStatus<Approval>(owner, "approvals", "pending")) {
+      if (Date.parse(approval.expiresAt) > this.now()) live.push(approval);
+      else if (await this.expire(owner, approval)) expiredRooms.add(approval.roomId);
+    }
+    for (const roomId of expiredRooms)
+      if (!live.some((a) => a.roomId === roomId))
+        this.bus.setPresence(owner, roomId, "idle", PRESENCE_LABELS.idle);
+    return live.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  /** 만료 전이: 상태·카드·감사 로그·이벤트를 결재와 같은 경로로 갱신한다. 이미 다른 상태면 false. */
+  private async expire(owner: string, approval: Approval): Promise<boolean> {
+    const updated = await this.db.compareAndSwap<Approval>(
+      owner,
+      "approvals",
+      approval.id,
+      { status: "pending" },
+      { status: "expired" },
     );
+    if (!updated) return false;
+    if (approval.messageId)
+      await this.rooms.updateMessage(owner, approval.messageId, { payload: { status: "expired" } });
+    await this.rooms.audit(owner, {
+      packageId: null,
+      actor: "system",
+      action: `approval.expire:${approval.toolName}`,
+      approvalId: approval.id,
+      result: "ok",
+    });
+    this.bus.publish(owner, {
+      type: "approval",
+      roomId: approval.roomId,
+      approvalId: approval.id,
+      status: "expired",
+    });
+    this.bus.publish(owner, { type: "board", roomId: approval.roomId });
+    this.bus.publish(owner, { type: "inbox" });
+    return true;
   }
 
   /** external 도구 실행 보류 → 승인 카드 생성 (§15.2, §21 워커 /approvals/request). 같은 도구·입력이 이미 대기 중이면 그것을 돌려준다. */
@@ -145,15 +193,9 @@ export class Approvals {
     const approval = await this.get(owner, id);
     if (options.frozenHash && options.frozenHash !== approval.inputHash)
       throw new AppError("승인 대상이 바뀌었습니다. 최신 내용을 다시 확인하세요", 409);
-    if (approval.status !== "pending") return approval;
+    if (approval.status !== "pending") throw alreadyDecided(approval.status);
     if (Date.parse(approval.expiresAt) <= this.now()) {
-      await this.db.compareAndSwap(
-        owner,
-        "approvals",
-        id,
-        { status: "pending" },
-        { status: "expired" },
-      );
+      await this.expire(owner, approval);
       throw new AppError("승인 요청이 만료되었습니다", 409);
     }
     const token = decision === "approve" ? randomBytes(32).toString("base64url") : undefined;
@@ -172,7 +214,8 @@ export class Approvals {
       { status: "pending", inputHash: approval.inputHash },
       patch,
     );
-    if (!updated) return this.get(owner, id);
+    // 동시에 다른 결재가 먼저 들어갔다 — 옛 상태를 200 으로 돌려주지 않는다
+    if (!updated) throw alreadyDecided((await this.get(owner, id)).status);
     if (approval.messageId)
       await this.rooms.updateMessage(owner, approval.messageId, {
         payload: { status: updated.status, reason: options.reason, decidedAt: updated.decidedAt },
@@ -205,7 +248,7 @@ export class Approvals {
       owner,
       approval.roomId,
       stillPending ? "waiting" : "done",
-      stillPending ? "승인 대기 중" : "결재 완료",
+      stillPending ? PRESENCE_LABELS.waiting : "결재 완료",
     );
     this.bus.publish(owner, {
       type: "approval",

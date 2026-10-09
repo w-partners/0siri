@@ -1,9 +1,19 @@
 // 0Siri 방·타임라인·목표·활동·감사 로그 (0SIRI-SPEC §4.2~4.5, §8, §10, §15.4, §20).
 // 전부 owner=userId 의 records 에 저장한다. 집계(배지·진척·현황판)는 board() 한 곳에서만 계산한다 (§8, §10 "집계는 서버 한 곳").
 import { randomUUID } from "node:crypto";
+import {
+  ACTIVITY_LABELS,
+  type ActivityKind,
+  BOARD_STAGES,
+  type GoalLevel,
+  type GoalStatus,
+  PERSONAL_CHARACTER_ID,
+  PERSONAL_ROOM_TITLE,
+  type TaskStage,
+} from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import type { EventBus } from "./events.ts";
+import type { EventBus, PresenceState } from "./events.ts";
 
 export interface Room {
   id: string;
@@ -28,8 +38,7 @@ export interface RoomMessage {
   payload?: Record<string, unknown>;
   createdAt: string;
 }
-export type GoalLevel = "long" | "mid" | "short" | "task";
-export type TaskStage = "detect" | "draft" | "geo" | "review" | "approval" | "publish" | "done";
+export type { GoalLevel, TaskStage };
 export interface TeamGoal {
   id: string;
   roomId: string;
@@ -37,7 +46,7 @@ export interface TeamGoal {
   level: GoalLevel;
   title: string;
   progress: number; // 0~100
-  status: "active" | "paused" | "completed" | "blocked";
+  status: GoalStatus;
   order: number;
   stage?: TaskStage; // level=task 일 때 흐름 단계
   assignee?: string; // 에이전트 역할명
@@ -49,7 +58,7 @@ export interface TeamGoal {
 export interface Activity {
   id: string;
   roomId?: string;
-  kind: "approval" | "publish" | "report" | "error" | "goal" | "system" | "skill" | "subscription";
+  kind: ActivityKind;
   actor: string;
   title: string;
   detail?: string;
@@ -74,11 +83,12 @@ export interface RoomBoard {
   agents: { actor: string; done: number; errors: number }[];
   goals: { level: GoalLevel; count: number; progress: number }[];
   progress: number; // 방 전체 진척(단기 목표 평균)
-  presence: string;
+  /** 성과 지표 합계 (목표에 보고된 값의 합) — 주간 보고·구독 카드가 이 값을 쓴다 */
+  metrics: { published: number; indexed: number; ai_citations: number };
+  presence: PresenceState;
   nextReportAt?: string;
 }
 
-const STAGES: TaskStage[] = ["detect", "draft", "geo", "review", "approval", "publish", "done"];
 const now = () => new Date().toISOString();
 
 export class Rooms {
@@ -113,7 +123,11 @@ export class Rooms {
     const rooms = await this.db.list<Room>(owner, "rooms");
     const personal = rooms.find((room) => room.packageId === null);
     return (
-      personal ?? this.create(owner, { packageId: null, title: "영시리", character: "yeongsil" })
+      personal ?? this.create(owner, {
+        packageId: null,
+        title: PERSONAL_ROOM_TITLE,
+        character: PERSONAL_CHARACTER_ID,
+      })
     );
   }
   async patch(
@@ -187,19 +201,9 @@ export class Rooms {
       (a) => a.roomId === roomId && a.createdAt > since,
     );
     if (activities.length === 0) return null;
-    const counts = new Map<string, number>();
+    const counts = new Map<ActivityKind, number>();
     for (const a of activities) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1);
-    const labels: Record<string, string> = {
-      approval: "승인 요청",
-      publish: "발행",
-      report: "보고",
-      error: "오류",
-      goal: "목표 갱신",
-      system: "알림",
-      skill: "스킬",
-      subscription: "구독",
-    };
-    return `부재 중 ${activities.length}건: ${[...counts].map(([k, n]) => `${labels[k] ?? k} ${n}`).join(" · ")}`;
+    return `부재 중 ${activities.length}건: ${[...counts].map(([k, n]) => `${ACTIVITY_LABELS[k] ?? k} ${n}`).join(" · ")}`;
   }
 
   // --- 목표 (§8 트리) ---
@@ -318,13 +322,28 @@ export class Rooms {
   async board(owner: string, roomId: string): Promise<RoomBoard> {
     const [goals, approvals, activities] = await Promise.all([
       this.goals(owner, roomId),
-      this.db.listByField<{ status: string }>(owner, "approvals", "roomId", roomId),
+      this.db.listByField<{ status: string; expiresAt?: string }>(
+        owner,
+        "approvals",
+        "roomId",
+        roomId,
+      ),
       this.db.list<Activity>(owner, "activity"),
     ]);
-    const flow = Object.fromEntries(STAGES.map((s) => [s, 0])) as Record<TaskStage, number>;
+    const flow = Object.fromEntries(BOARD_STAGES.map((s) => [s, 0])) as Record<TaskStage, number>;
     for (const goal of goals)
       if (goal.level === "task" && goal.stage && goal.status !== "completed") flow[goal.stage]++;
-    const pendingApprovals = approvals.filter((a) => a.status === "pending").length;
+    // 만료 시각이 지난 승인은 아직 정리(Approvals.pending)되지 않았어도 대기로 세지 않는다
+    const nowMs = Date.now();
+    const pendingApprovals = approvals.filter(
+      (a) => a.status === "pending" && !(a.expiresAt && Date.parse(a.expiresAt) <= nowMs),
+    ).length;
+    const metrics = { published: 0, indexed: 0, ai_citations: 0 };
+    for (const goal of goals) {
+      metrics.published += goal.metrics?.published ?? 0;
+      metrics.indexed += goal.metrics?.indexed ?? 0;
+      metrics.ai_citations += goal.metrics?.ai_citations ?? 0;
+    }
     const agents = new Map<string, { done: number; errors: number }>();
     for (const a of activities)
       if (a.roomId === roomId && a.actor !== "system" && a.actor !== "user") {
@@ -354,6 +373,7 @@ export class Rooms {
       agents: [...agents].map(([actor, v]) => ({ actor, ...v })),
       goals: byLevel,
       progress,
+      metrics,
       presence: pendingApprovals > 0 ? "waiting" : this.bus.getPresence(owner, roomId),
     };
   }

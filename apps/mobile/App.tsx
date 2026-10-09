@@ -1,5 +1,5 @@
-// 0Siri 앱 셸 (0SIRI-SPEC §4.0): 앱은 하단 탭 5개(방·스토어·결재함·목표·설정), 방 안에서는 탭을 숨긴다.
-// 웹은 2단(사이드바 280px + 메인). 로그인은 전화번호+비밀번호(§4.1), 온보딩 4단계 뒤에 셸로 들어온다.
+// 0Siri 앱 셸 («0Siri 종합 기획» §03): 앱은 하단 탭 5개(채팅·목표·활동·스토어·설정) + 채팅,
+// 웹은 2단(사이드바 280px: 방 목록 + 아래 [스토어][활동·결재함][설정] / 메인). 로그인은 전화번호+비밀번호(마스터 결정).
 import { CopilotKitProvider } from "@copilotkit/react-native/headless";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -39,22 +39,24 @@ import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
 import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
-import { Button, colors, ErrorNotice, IconButton, s } from "./src/ui";
+import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
 type Tab = "rooms" | "store" | "inbox" | "goals" | "settings";
 type StoreTab = "explore" | "mine";
 const nav: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: "rooms", label: "채팅", icon: MessageSquare },
-  { id: "store", label: "스토어", icon: Store },
-  { id: "inbox", label: "결재함", icon: Inbox },
   { id: "goals", label: "목표", icon: Target },
+  { id: "inbox", label: "활동", icon: Inbox },
+  { id: "store", label: "스토어", icon: Store },
   { id: "settings", label: "설정", icon: Settings },
 ];
+// 웹 사이드바 아래 진입 3개 (기획 화면 2). 채팅은 방 목록이, 목표는 방 안 상단 탭이 맡는다
+const sideNav: Tab[] = ["store", "inbox", "settings"];
 const titles: Record<Tab, string> = {
   rooms: "내 팀",
   store: "스토어",
-  inbox: "결재함",
+  inbox: "활동 · 결재함",
   goals: "목표",
   settings: "설정",
 };
@@ -63,6 +65,9 @@ const text = {
   retry: "다시 시도",
   dismiss: "닫기",
   notifications: (n: number) => (n ? `알림 ${n}건` : "알림"),
+  sideInbox: "활동·결재함",
+  noPersonal: "개인 방(영시리)을 찾지 못했습니다. 다시 시도해 주세요.",
+  noRoom: "그 방을 찾지 못했습니다. 해지됐거나 주소가 바뀌었을 수 있어요.",
 };
 // 옛 openmuse 섹션 → 0Siri 탭 (agent-ui 등이 navigate("chat") 을 부를 때)
 const legacy: Partial<Record<Section, Tab>> = {
@@ -100,9 +105,29 @@ export default function App() {
       .then(loadToken)
       .then((saved) => setToken(saved || ""));
   }, []);
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    // 기획 폰트 3종 (본문 Pretendard · 제목 Noto Serif KR · 숫자 IBM Plex Mono)
+    for (const href of [
+      "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css",
+      "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Serif+KR:wght@600;700&display=swap",
+    ]) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = href;
+      document.head.appendChild(link);
+    }
+    document.body.style.fontFamily = fonts.body ?? "";
+    document.body.style.backgroundColor = colors.canvas;
+    // 색은 켤 때 굳으므로(ui.tsx), 시스템 다크 설정이 바뀌면 다시 읽는다
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const reload = () => location.reload();
+    media.addEventListener("change", reload);
+    return () => media.removeEventListener("change", reload);
+  }, []);
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
+      <StatusBar style={isDark ? "light" : "dark"} />
       {token === null ? (
         <Loading />
       ) : token ? (
@@ -157,6 +182,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [room, setRoom] = useState<Room>();
   // 기본 채팅 = 개인 방(영시리). 서버가 /api/rooms 호출 때 없으면 만든다
   const [personal, setPersonal] = useState<Room>();
+  const [pending, setPending] = useState(0); // 승인 대기 합계 — 서버가 방마다 센 값을 더한다(탭 배지)
   const [skipOnboarding, setSkipOnboarding] = useState(false);
   const [detail, setDetail] = useState<Detail>();
   const [toast, setToast] = useState("");
@@ -180,15 +206,18 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     return () => clearTimeout(timer);
   }, [toast]);
   // 개인 방(홈 채팅) + 웹 딥링크 /rooms/:id — 한 번의 목록 조회로 둘 다
+  // biome-ignore lint/correctness/useExhaustiveDependencies: tab·room 이 바뀔 때 배지를 다시 센다
   useEffect(() => {
     void api
       .request<Room[]>("/api/rooms")
       .then((rooms) => {
-        setPersonal(rooms.find((r) => r.packageId === null));
-        if (initial.roomId) setRoom(rooms.find((r) => r.id === initial.roomId));
+        const mine = rooms.find((r) => r.packageId === null);
+        setPersonal(mine);
+        setPending(rooms.reduce((sum, r) => sum + r.pendingApprovals, 0));
+        if (!mine) setError(text.noPersonal);
       })
       .catch((e) => setError(String(e)));
-  }, [api, initial.roomId]);
+  }, [api, tab, room]);
   useEffect(() => writeLocation(tab, room?.id, storeTab), [tab, room, storeTab]);
   // 세션 만료(401) 면 로그인으로
   useEffect(() => {
@@ -212,10 +241,15 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
         .then((rooms) => {
           const found = rooms.find((r) => r.id === id);
           if (found) openRoom(found);
+          else setError(text.noRoom);
         })
         .catch((e) => setError(String(e))),
     [api, openRoom],
   );
+  // 웹 딥링크 /rooms/:id — 못 찾으면 openRoomById 가 사유를 띄운다
+  useEffect(() => {
+    if (initial.roomId) openRoomById(initial.roomId);
+  }, [initial.roomId, openRoomById]);
   const open = useCallback((next: Detail) => setDetail(next), []);
   const close = useCallback(() => setDetail(undefined), []);
   const ask = useCallback(() => navigate("rooms"), [navigate]); // ponytail: 옛 "채팅으로 질문" 은 방 목록으로
@@ -267,6 +301,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
             }}
             room={room}
             personal={personal}
+            pending={pending}
             openRoom={openRoom}
             openRoomById={openRoomById}
             closeRoom={() => setRoom(undefined)}
@@ -289,6 +324,7 @@ function Shell({
   setTab,
   room,
   personal,
+  pending,
   openRoom,
   openRoomById,
   closeRoom,
@@ -304,6 +340,7 @@ function Shell({
   setTab: (tab: Tab) => void;
   room?: Room;
   personal?: Room;
+  pending: number;
   openRoom: (room: Room) => void;
   openRoomById: (id: string) => void;
   closeRoom: () => void;
@@ -318,7 +355,7 @@ function Shell({
   const { workspace, open } = useWorkspace();
   const { width } = useWindowDimensions();
   const desktop = width >= 900;
-  const pending = workspace.actions.filter((a) => a.status === "awaiting_review").length;
+  const notices = workspace.actions.filter((a) => a.status === "awaiting_review").length;
   const screen =
     tab === "store" ? (
       <StoreScreen tab={storeTab} onTab={setStoreTab} onOpenRoom={openRoomById} />
@@ -356,10 +393,10 @@ function Shell({
         <View>
           <IconButton
             icon={Bell}
-            label={text.notifications(pending)}
+            label={text.notifications(notices)}
             onPress={() => open({ type: "notifications" })}
           />
-          {pending > 0 && (
+          {notices > 0 && (
             <View
               pointerEvents="none"
               style={{
@@ -369,7 +406,7 @@ function Shell({
                 position: "absolute",
                 top: 7,
                 right: 9,
-                backgroundColor: colors.blueDark,
+                backgroundColor: colors.miss,
               }}
             />
           )}
@@ -390,31 +427,43 @@ function Shell({
               style={{
                 width: 280,
                 borderRightWidth: 1,
-                borderRightColor: "#ECECEC",
+                borderRightColor: colors.line,
+                backgroundColor: colors.sunk,
                 paddingHorizontal: 14,
                 paddingTop: 10,
               }}
             >
-              <View style={{ flexDirection: "row", gap: 4, marginBottom: 12 }}>
-                {nav.map((item) => (
-                  <NavButton
-                    key={item.id}
-                    item={item}
-                    active={tab === item.id && !room}
-                    onPress={() => setTab(item.id)}
-                  />
-                ))}
-              </View>
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <RoomList onOpen={openRoom} />
+              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                <RoomList onOpen={openRoom} activeId={room?.id ?? (tab === "rooms" ? personal?.id : undefined)} />
               </ScrollView>
+              <View
+                style={{
+                  flexDirection: "row",
+                  gap: 4,
+                  paddingVertical: 8,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.line,
+                }}
+              >
+                {nav
+                  .filter((item) => sideNav.includes(item.id))
+                  .map((item) => (
+                    <NavButton
+                      key={item.id}
+                      item={item.id === "inbox" ? { ...item, label: text.sideInbox } : item}
+                      badge={item.id === "inbox" ? pending : 0}
+                      active={tab === item.id && !room}
+                      onPress={() => setTab(item.id)}
+                    />
+                  ))}
+              </View>
             </View>
             <View style={{ flex: 1, minHeight: 0, maxWidth: 960 }}>{main}</View>
           </View>
         ) : (
           <View style={{ flex: 1, minHeight: 0 }}>{main}</View>
         )}
-        {!desktop && !room && (
+        {!desktop && (
           <View
             style={{
               paddingHorizontal: 22,
@@ -429,22 +478,23 @@ function Shell({
                 width: "100%",
                 maxWidth: 420,
                 padding: 5,
-                backgroundColor: "#FFF",
+                backgroundColor: colors.card,
                 borderRadius: 40,
-                shadowColor: "#132631",
+                shadowColor: colors.text,
                 shadowOffset: { width: 0, height: 2 },
                 shadowOpacity: 0.07,
                 shadowRadius: 18,
                 elevation: 3,
                 borderWidth: 1,
-                borderColor: "#F8F8F8",
+                borderColor: colors.line,
               }}
             >
               {nav.map((item) => (
                 <NavButton
                   key={item.id}
                   item={item}
-                  active={tab === item.id}
+                  badge={item.id === "inbox" ? pending : 0}
+                  active={tab === item.id && (!room || item.id === "rooms")}
                   onPress={() => setTab(item.id)}
                 />
               ))}
@@ -469,13 +519,13 @@ function Shell({
               ]}
             >
               <Check size={16} color={colors.blue} />
-              <Text style={{ color: "#FFF", fontSize: 13, flexShrink: 1 }}>{toast}</Text>
+              <Text style={{ color: colors.canvas, fontSize: 13, flexShrink: 1 }}>{toast}</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={text.dismiss}
                 onPress={clearToast}
               >
-                <X size={16} color="#FFF" />
+                <X size={16} color={colors.canvas} />
               </Pressable>
             </View>
           </View>
@@ -500,16 +550,18 @@ function Shell({
 function NavButton({
   item,
   active,
+  badge = 0,
   onPress,
 }: {
   item: { id: Tab; label: string; icon: LucideIcon };
   active: boolean;
+  badge?: number;
   onPress: () => void;
 }) {
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={item.label}
+      accessibilityLabel={badge ? `${item.label} · 승인 대기 ${badge}건` : item.label}
       accessibilityState={{ selected: active }}
       onPress={onPress}
       style={{
@@ -517,13 +569,14 @@ function NavButton({
         height: 47,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: active ? "#F0F1F2" : "transparent",
+        backgroundColor: active ? colors.accentSoft : "transparent",
         borderRadius: 28,
         gap: 2,
       }}
     >
-      <item.icon size={21} strokeWidth={1.8} color={colors.text} />
-      <Text style={{ fontSize: 10, color: colors.text }}>{item.label}</Text>
+      <item.icon size={21} strokeWidth={1.8} color={active ? colors.accent : colors.text} />
+      <Text style={{ fontSize: 10, color: active ? colors.accent : colors.text }}>{item.label}</Text>
+      {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: 3, right: "22%" }} />}
     </Pressable>
   );
 }

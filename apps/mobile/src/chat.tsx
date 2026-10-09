@@ -8,7 +8,14 @@ import {
   useRenderToolCall,
 } from "@copilotkit/react-native/headless";
 import { ArrowDown, ArrowUp, FileText, RotateCcw, Square, X } from "lucide-react-native";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -181,6 +188,9 @@ export function ChatScreen({
   active = true,
   roomId,
   onMood,
+  header,
+  placeholder,
+  answerLabel,
 }: {
   prompt?: { id: number; text: string };
   thread?: Selection;
@@ -189,6 +199,11 @@ export function ChatScreen({
   roomId?: string;
   /** 0Siri 캐릭터 애니메이션용 — 입력 중·생각 중·말하는 중 (영시리 EVE 가 듣는다) */
   onMood?: (mood: Mood) => void;
+  /** 0Siri 팀 방: 승인·보고 카드를 같은 대화 흐름 맨 위에 싣는다(기획 화면 3 — 대화 하나에 카드 인라인). */
+  header?: ReactNode;
+  placeholder?: string;
+  /** 답변마다 «누가 답했는지» 한 줄 (기기에서 답함 · 서버 주력 · 기억에서 찾음). 모르면 undefined. */
+  answerLabel?: (messageId: string) => string | undefined;
 }) {
   const { api, workspace: w, refresh, navigate } = useWorkspace();
   const { data: agentWorkspace, refresh: refreshAgent } = useAgentWorkspace();
@@ -454,6 +469,7 @@ export function ChatScreen({
         }}
         keyboardShouldPersistTaps="handled"
       >
+        {header}
         {!!historyError && (
           <>
             <ErrorNotice error={historyError} />
@@ -528,7 +544,7 @@ export function ChatScreen({
                       borderRadius: 22,
                       borderBottomRightRadius: user ? 7 : 22,
                       borderBottomLeftRadius: user ? 22 : 7,
-                      backgroundColor: user ? colors.blue : "#EEEEF0",
+                      backgroundColor: user ? colors.accentSoft : colors.sunk,
                     }}
                   >
                     {user ? (
@@ -539,6 +555,9 @@ export function ChatScreen({
                       <AssistantResponse content={text} />
                     )}
                   </View>
+                )}
+                {!user && !!text && !!answerLabel?.(message.id) && (
+                  <Text style={[s.small, { marginLeft: 6 }]}>{answerLabel(message.id)}</Text>
                 )}
                 {toolCalls.map((toolCall) => {
                   const toolMessage = messages.find(
@@ -585,7 +604,7 @@ export function ChatScreen({
                 gap: 7,
                 paddingHorizontal: 19,
                 paddingVertical: 18,
-                backgroundColor: "#EEEEF0",
+                backgroundColor: colors.sunk,
                 borderRadius: 28,
               },
             ]}
@@ -721,12 +740,12 @@ export function ChatScreen({
         )}
         <View
           style={{
-            backgroundColor: "#FFF",
+            backgroundColor: colors.card,
             borderRadius: 32,
             borderWidth: 1,
-            borderColor: focused ? "#C7E4F9" : "#EEF0F2",
+            borderColor: focused ? colors.accent : colors.line,
             padding: 8,
-            shadowColor: "#18384B",
+            shadowColor: colors.text,
             shadowOpacity: focused ? 0.1 : 0.06,
             shadowRadius: 20,
             shadowOffset: { width: 0, height: 4 },
@@ -800,9 +819,9 @@ export function ChatScreen({
                     ? historyError
                       ? t.chat.composer.unavailable
                       : t.chat.composer.loading
-                    : t.chat.composer.placeholder
+                    : (placeholder ?? t.chat.composer.placeholder)
               }
-              placeholderTextColor="#949B9F"
+              placeholderTextColor={colors.muted}
               selectionColor={colors.blueDark}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
@@ -844,19 +863,19 @@ export function ChatScreen({
                 width: 44,
                 height: 44,
                 borderRadius: 24,
-                backgroundColor: replying || draft.trim() ? colors.blue : "#F3F5F6",
+                backgroundColor: replying || draft.trim() ? colors.accent : colors.sunk,
                 alignItems: "center",
                 justifyContent: "center",
                 transform: [{ scale: pressed ? 0.94 : 1 }],
               })}
             >
               {replying ? (
-                <Square size={18} fill={colors.text} strokeWidth={0} />
+                <Square size={18} fill={colors.onAccent} strokeWidth={0} />
               ) : (
                 <ArrowUp
                   size={25}
                   strokeWidth={1.8}
-                  color={draft.trim() ? colors.text : "#9CB5C5"}
+                  color={draft.trim() ? colors.onAccent : colors.muted}
                 />
               )}
             </Pressable>
