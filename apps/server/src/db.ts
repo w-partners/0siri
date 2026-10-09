@@ -30,6 +30,20 @@ export class Store {
     );
     return result.rows.map((row) => row.data as T);
   }
+  /** 0Siri: data->>'<field>' = value 로 거른다. field 는 코드 상수만 넣는다(사용자 입력 금지 — SQL 에 직접 들어간다). */
+  async listByField<T = Record<string, unknown>>(
+    owner: string,
+    kind: string,
+    field: string,
+    value: string,
+  ): Promise<T[]> {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) throw new Error(`bad field ${field}`);
+    const result = await this.db.query(
+      `SELECT data FROM records WHERE owner=$1 AND kind=$2 AND data->>'${field}'=$3 ORDER BY updated_at DESC,id`,
+      [owner, kind, value],
+    );
+    return result.rows.map((row) => row.data as T);
+  }
   async listByGoalId<T = Record<string, unknown>>(
     owner: string,
     kind: string,
