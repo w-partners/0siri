@@ -22,3 +22,5 @@
 2026-10-10 | 서버가 웹 빌드를 같은 포트에서 낸다(`WEB_DIST`, SPA 폴백). 웹의 API 기본 주소는 **자기 origin**(expo 개발서버 8081 만 예외) — 포트·도메인을 번들에 박지 않는다 | 단순(웹 서버 하나 덜) · 실측(Metro 캐시가 옛 URL 을 박는 사고)
 2026-10-10 | 웹의 transformers.js 는 번들하지 않고 jsdelivr CDN 에서 런타임 `import()`. 패키지는 타입 전용. Metro 가 onnxruntime-web 의 비리터럴 `import(a)` 를 거부해 번들이 불가능하다 | 실측(export SyntaxError) · 가역(Metro 가 지원하면 번들로)
 2026-10-10 | 이 머신(seoul)에서 0Siri 는 **8788** 포트. 8787 은 `headroom proxy` 가 선점. `HOST=0.0.0.0` 필수(기본 127.0.0.1 은 폰에서 못 붙음) | 실측(`ss -ltnp`)
+2026-10-10 | 공개 도메인 **openagentx.org** = 0Siri. 전용 cloudflared 터널 `osiri-seoul`(기존 /etc/cloudflared 공용 터널은 건드리지 않음) → :8788. DNS 는 Cloudflare API 로 apex·www CNAME(proxied). 서버는 systemd `osiri-server.service`·`osiri-tunnel.service` | 마스터 지시 2026-10-10 · geo-seoul 터널과 같은 패턴 · 가역(레코드 PUT 전 값: www→openagentx.org CNAME, apex A 34.22.90.130 — 둘 다 응답 없던 상태)
+2026-10-10 | APK 배포 호스팅은 tailnet `:8799`(python http.server, scratchpad). 8789 는 openxgram-seoul 터널이 `seoul.openxgram.org` 로 묶어 둔 포트라 쓰면 공개로 새어 나간다 | 실측(`~/.cloudflared/openxgram-seoul.yml`)

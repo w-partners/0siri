@@ -12,6 +12,8 @@
 - 🔴 **포트 8788** — 8787 은 이 머신의 `headroom proxy`(27일째 떠 있음)가 `100.101.237.9:8787` 에 묶고 있다. `.env` 에 `PORT=8788 HOST=0.0.0.0 PUBLIC_API_URL=http://100.101.237.9:8788 WEB_DIST=apps/mobile/dist/web`. HOST 기본 127.0.0.1 이라 폰에서 못 붙는다 — 반드시 0.0.0.0.
 - 웹 빌드: `cd apps/mobile && CI=1 pnpm exec expo export --platform web --output-dir dist/web --clear` → 서버가 같은 포트에서 낸다(`WEB_DIST`). 🔴 `--clear` 없으면 Metro 변환 캐시가 옛 `EXPO_PUBLIC_API_URL` 을 다시 박는다(실측: 8788 로 바꿔 export 했는데 번들에 8787 남음).
 - Android: `scratchpad/build-android.sh` = `expo prebuild --platform android` + `./gradlew assembleRelease --no-daemon`(JDK 17, ANDROID_HOME=~/android-sdk). Bash 훅이 gradle 을 막으므로 스크립트 파일로 돌린다. 1회 빌드 ≈ 30분+ (load 35).
+- 🔵 **도메인 openagentx.org** (마스터 2026-10-10 «도메인은 openagentx.org 로 사용해»): cloudflared 터널 `osiri-seoul`(432d7e42…, `~/.cloudflared/osiri.yml`, 전용 — /etc/cloudflared 의 platformmakers 터널은 안 건드림) → `127.0.0.1:8788`. DNS 는 Cloudflare API 로 apex·www CNAME → `<tunnel>.cfargotunnel.com`(proxied). 🔴 `cloudflared tunnel route dns` 는 이 cert 가 openxgram.org 존에 묶여 있어 `openagentx.org.openxgram.org` 를 만든다 — API 로 해야 한다(실수 1회, 삭제함).
+- 🔵 **systemd**: `osiri-server.service`(0Siri 서버, `.env` 정본, docker 그룹) · `osiri-tunnel.service`. 로그 `data/server.log`. 세션 백그라운드로 띄우지 않는다.
 - UI 렌더 검증: `scratchpad/pw/verify.js` (playwright-core + 시스템 google-chrome 152, headless). Claude-in-Chrome 은 이 머신에 없다.
 - 임베딩 모델 캐시: `~/.cache/osiri-models` (EmbeddingGemma 2 ONNX q8 텍스트 전용 299MB, 첫 호출 때 자동 다운로드). 테스트·서버 공용.
 - 0Siri 테스트만: `pnpm exec tsx --import ./tests/setup.ts --test tests/osiri-*.test.ts`
@@ -36,11 +38,11 @@
 | 7 | 스토어 | ✅ 서버+UI | `tests/osiri-store.test.ts` 2/2. UI `store.tsx`(둘러보기/내 구독, `?tab=`). 스모크 /store/packages 200 — **0건**: 패키지는 관리자가 `POST /api/admin/packages` 로 올려야 노출(법률팀은 «붙일 수 있는 준비까지» 가 범위, 마스터 지시) |
 | 8 | 법률팀 + 목표 + 도커 | ✅ 2026-10-09 | 런타임 `tests/osiri-team.test.ts` 2/2. **프로비저너** `osiri/provisioner.ts` + `tests/osiri-provisioner.test.ts` 2/2(env-file 로 토큰 전달·인자에 시크릿 없음·env-file 삭제·실패 시 status=failed+activity, 재시도 없음·archived 방 → `rm -f`). 이미지 `Dockerfile.team` → `osiri/team-runtime` 2.52GB 빌드 성공, 스모크 run 은 기대대로 `OSIRI_API_URL 이 필요합니다` 로 종료 |
 | 9 | 라우팅 + BYOK + 기기 임베딩 | ✅ 서버+웹 / 네이티브는 서버 폴백 | `tests/osiri-routing.test.ts` 3/3. 기기: 웹 `device-embed.web.ts`(transformers.js **CDN 런타임 로드**, WebGPU→WASM), 네이티브 `device-embed.native.ts` 는 **스텁(항상 실패→서버 폴백)**. `tier0.ts` 기기 우선→실패 시 `/api/memories?q=` + `POST /api/usage/device {tier:0, reason:"fallback:…"}` + "서버에서 답함" 배지. 스모크: usage/device 200 (reason=fallback:smoke 기록됨). 설정 탭 «기기 실측» 패널은 브라우저에서 눌러야 수치가 나온다 — [확인 필요] headless 실측은 미실시 |
-| 10 | Android APK + 실기기 | 🔄 빌드 중 2026-10-10 | prebuild EXIT=0(`android-prebuild.log`). gradle assembleRelease 진행 중. 폰은 influencer(zalman) `device_lease.py` 가 점유 → APK 를 `http://100.101.237.9:8789/` 로 내고 influencer-primary 에게 설치 위임 예정 |
+| 10 | Android APK + 실기기 | ✅ APK · ⏳ 설치 위임 | APK v0.2.0 `app.osiri.mobile`(aapt 확인), 번들에 서버주소 1건. 호스팅 `http://100.101.237.9:8799/app-release.apk`(8789 는 openxgram 터널이 쓰는 포트라 피함). 폰은 influencer(zalman) 점유 → influencer-primary 에 위임: webhook 3회 타임아웃 → vault `관제/zalman/_에이전트/influencer-primary/결재/RPT-20261010-01`. 공개 도메인 https://openagentx.org 로 UI 검증 20장·콘솔 0 (`pw/verify-www.log`) |
 
 ## 남은 일 (2026-10-10 기준)
-1. gradle 완료 → APK 번들에 8787 이 박혀 있지 않은지 확인(`unzip -p app-release.apk assets/index.android.bundle | grep -c 8787` = 0) → 아니면 Metro 캐시 비우고 재빌드.
-2. APK 를 tailnet HTTP 로 내고(`python3 -m http.server 8789`) influencer-primary 에 설치 위임(`scratchpad/msg-apk.txt`) → 읽음확인·설치 결과 회신 받기.
-3. 웹 UI 렌더 검증(`pw/verify.js`) 전 화면 통과 → 스크린샷 증거를 vault RR 에 첨부.
+1. influencer-primary(zalman) portal 복구 뒤 APK 설치 회신 받기 — 설치 후 실기기 로그인→방→승인 흐름 확인.
+2. 모델 티어 2~4 가 실제 어떤 모델인지는 `.env` MODEL_TIER* 가 정본 — 운영 전 마스터와 단가(`MODEL_PRICES_KRW`) 확정.
+3. Android `usesCleartextTraffic` 는 도메인이 생겼으므로 끌 수 있다(tailnet 직결 테스트가 끝나면).
 4. 네이티브 기기 임베딩(LiteRT-LM 또는 onnxruntime-react-native)은 미착수 — 현재는 전부 서버 폴백(배지로 드러남). 스펙 §11.2 실측 후 `deviceLlmEnabled` 판단.
 5. 서브에이전트가 보고한 서버 공백: 승인 decide 에 "revise" 없음 · 승인 카드 payload 에 inputHash 없음 · `RoomBoard.nextReportAt` 미기록 · BYOK 공급자 목록 API 없음 · 구독별 월 사용량 없음.
