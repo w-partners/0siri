@@ -15,7 +15,10 @@ import {
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
+import { measureDevice } from "./device-embed";
+import type { DeviceReport } from "./device-embed.types";
 import { Block, Choice, LoadState, useAction, useLoad, won } from "./store";
+import { type SearchResult, searchMemories } from "./tier0";
 
 const text = {
   save: "저장",
@@ -83,6 +86,18 @@ const text = {
   searchCount: (n: number) => `검색 결과 ${n}건`,
   score: (n: number) => `유사도 ${Math.round(n * 100)}%`,
   newMemory: "새 기억",
+  servedDevice: "기기에서 검색함",
+  servedServer: "서버에서 검색함",
+  fallbackReason: (r: string) => `기기 임베딩을 쓰지 못해 서버로 넘겼습니다: ${r}`,
+  deviceTitle: "기기 임베딩 실측",
+  deviceHint:
+    "이 기기에서 EmbeddingGemma 2(q8)를 돌려 속도·품질을 잽니다. 모델(약 170MB)은 처음 한 번 내려받습니다.",
+  deviceMeasure: "실측 시작",
+  deviceUnavailable: "이 기기에서는 기기 임베딩을 쓸 수 없습니다 — 검색은 서버에서 합니다",
+  deviceResult: (r: DeviceReport) =>
+    `${r.backend} · 로드 ${r.loadMs}ms · 문장당 ${r.embedMsPer}ms · ${r.dim}차원` +
+    (r.memoryMb ? ` · 메모리 ${r.memoryMb}MB` : "") +
+    (r.top1 ? ` · 한국어 top-1 ${r.top1.hits}/${r.top1.total}` : ""),
   noMemories: "저장된 기억이 없습니다",
   noMemoriesHint: "대화 중 쌓이거나 아래에서 직접 추가할 수 있습니다.",
   admin: "관리자",
@@ -652,10 +667,13 @@ function Mcp() {
 function Memories() {
   const { api, notify } = useWorkspace();
   const [q, setQ] = useState("");
-  const list = useLoad(
-    () => api.request<MemoryItem[]>(`/api/memories?${new URLSearchParams({ q, limit: "20" })}`),
-    q,
-  );
+  // 티어 0: 기기 임베딩으로 검색하고, 안 되면 서버로 — 어느 쪽인지 배지로 보인다 (§11.1)
+  const list = useLoad<SearchResult>(async () => {
+    const all = await api.request<MemoryItem[]>("/api/memories?limit=200");
+    if (!q.trim()) return { items: all, servedBy: "server" };
+    return searchMemories(api, q.trim(), all, 20);
+  }, q);
+  const served = q.trim() && list.data && !list.loading ? list.data.servedBy : undefined;
   const [draft, setDraft] = useState("");
   const act = useAction();
   const status = !q.trim()
@@ -664,24 +682,33 @@ function Memories() {
       ? text.searching
       : list.error
         ? ""
-        : list.data?.length
-          ? text.searchCount(list.data.length)
+        : list.data?.items.length
+          ? text.searchCount(list.data.items.length)
           : text.searchEmpty;
   return (
     <>
       <Text style={s.small}>{text.memoryScope}</Text>
       <Field label={text.memorySearch} value={q} onChangeText={setQ} />
-      {!!status && <Text style={s.small}>{status}</Text>}
+      {!!status && (
+        <Text style={s.small}>
+          {status}
+          {served === "device" && ` · ${text.servedDevice}`}
+          {served === "server" && ` · ${text.servedServer}`}
+        </Text>
+      )}
+      {served === "server" && !!list.data?.reason && (
+        <Text style={s.small}>{text.fallbackReason(list.data.reason)}</Text>
+      )}
       <LoadState
         loading={list.loading}
         error={list.error}
         retry={list.retry}
         empty={
           !q.trim() &&
-          list.data?.length === 0 && { title: text.noMemories, detail: text.noMemoriesHint }
+          list.data?.items.length === 0 && { title: text.noMemories, detail: text.noMemoriesHint }
         }
       >
-        {list.data?.map((m) => (
+        {list.data?.items.map((m) => (
           <View key={m.id} style={[s.row, { gap: 8, paddingVertical: 6 }]}>
             <View style={{ flex: 1, gap: 3 }}>
               <Text style={s.text}>{m.text}</Text>
@@ -723,7 +750,36 @@ function Memories() {
       >
         {text.add}
       </Button>
+      <DevicePanel />
     </>
+  );
+}
+
+/** 9단계 기기 실측 (§22-9): 로드·지연·메모리·한국어 top-1. 통과 전엔 티어 1 플래그를 켜지 않는다 */
+function DevicePanel() {
+  const [report, setReport] = useState<DeviceReport>();
+  const act = useAction();
+  return (
+    <View style={{ gap: 6, marginTop: 10 }}>
+      <Block title={text.deviceTitle}>
+        <Text style={s.small}>{text.deviceHint}</Text>
+      </Block>
+      <Button
+        small
+        busy={act.busy}
+        onPress={() => act.run(async () => setReport(await measureDevice()))}
+      >
+        {text.deviceMeasure}
+      </Button>
+      <ErrorNotice error={act.error} />
+      {report && (
+        <Text style={s.small}>
+          {report.available
+            ? text.deviceResult(report)
+            : `${text.deviceUnavailable} · ${report.reason ?? ""}`}
+        </Text>
+      )}
+    </View>
   );
 }
 

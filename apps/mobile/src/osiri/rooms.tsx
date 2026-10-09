@@ -13,7 +13,7 @@ import type {
   TaskStage,
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
-import { API_URL } from "../api";
+import { apiBase } from "../api";
 import { ChatScreen } from "../chat";
 import {
   Button,
@@ -169,7 +169,7 @@ export function useRoomStream(roomId: string, handlers: StreamHandlers) {
       let delay = 1000;
       while (!stopped) {
         try {
-          const res = await streamFetch(`${API_URL}/api/rooms/${roomId}/stream`, {
+          const res = await streamFetch(`${apiBase()}/api/rooms/${roomId}/stream`, {
             headers: { Authorization: `Bearer ${api.token}`, Accept: "text/event-stream" },
             signal: controller.signal,
           });

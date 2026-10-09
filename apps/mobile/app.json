@@ -9,10 +9,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.openmuse.mobile"
+      "bundleIdentifier": "app.osiri.mobile"
     },
     "android": {
-      "package": "app.openmuse.mobile"
+      "package": "app.osiri.mobile"
     },
     "web": {
       "bundler": "metro",
@@ -22,7 +22,15 @@
       "expo-document-picker",
       "@config-plugins/react-native-blob-util",
       "@config-plugins/react-native-pdf",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ]
   }
 }

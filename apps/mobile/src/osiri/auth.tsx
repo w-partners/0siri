@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
-import { API_URL, type MuseApi } from "../api";
+import { API_URL, apiBase, type MuseApi, setApiBase } from "../api";
 import { readApiPayload } from "../api-response";
 import { Button, Card, colors, ErrorNotice, Field, Mascot, s } from "../ui";
 
@@ -51,6 +51,8 @@ const text = {
   skip: "건너뛰기",
   start: "시작하기",
   loading: "불러오는 중…",
+  advanced: "서버 주소 바꾸기",
+  server: "서버 주소 (비우면 기본값)",
 };
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -87,6 +89,26 @@ export async function clearToken(): Promise<void> {
     else await SecureStore.deleteItemAsync(TOKEN_KEY);
   } catch {}
 }
+// 서버 주소 (빌드 기본값 대신 쓸 때만 저장)
+const API_KEY = "osiri.apiUrl";
+export async function loadApiBase(): Promise<void> {
+  try {
+    const saved = webStorage
+      ? (localStorage.getItem(API_KEY) ?? "")
+      : ((await SecureStore.getItemAsync(API_KEY)) ?? "");
+    setApiBase(saved);
+  } catch {}
+}
+export async function saveApiBase(url: string): Promise<void> {
+  setApiBase(url);
+  try {
+    if (webStorage) {
+      if (url) localStorage.setItem(API_KEY, url);
+      else localStorage.removeItem(API_KEY);
+    } else if (url) await SecureStore.setItemAsync(API_KEY, url);
+    else await SecureStore.deleteItemAsync(API_KEY);
+  } catch {}
+}
 export async function logout(api: MuseApi) {
   await api.request("/api/auth/logout", {}).catch(() => undefined);
   await clearToken();
@@ -118,7 +140,7 @@ export function useMe(api: MuseApi) {
 // --- 로그인 ---
 type AuthResult = { token: string; user: PublicUser };
 async function publicPost(path: string, body: unknown) {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${apiBase()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -134,6 +156,8 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [advanced, setAdvanced] = useState(false);
+  const [server, setServer] = useState(apiBase() === API_URL ? "" : apiBase());
 
   const submit = async () => {
     const normalized = normalizePhone(phone);
@@ -142,6 +166,7 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
     setBusy(true);
     setError("");
     try {
+      await saveApiBase(server.trim());
       const result = invite
         ? await publicPost("/api/auth/invite/accept", {
             token: inviteToken.trim(),
@@ -220,6 +245,23 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
             >
               {invite ? text.inviteClose : text.inviteToggle}
             </Button>
+            <Button
+              small
+              style={{ backgroundColor: "transparent" }}
+              onPress={() => setAdvanced(!advanced)}
+            >
+              {text.advanced}
+            </Button>
+            {advanced ? (
+              <Field
+                label={text.server}
+                value={server}
+                onChangeText={setServer}
+                autoCapitalize="none"
+                keyboardType="url"
+                placeholder={API_URL}
+              />
+            ) : null}
             <View style={s.divider} />
             {notice ? (
               <View style={[s.error, { backgroundColor: colors.sky }]}>
