@@ -49,8 +49,8 @@ after(async () => {
 });
 
 test("전화번호 정규화 — 하이픈·+82 허용, 형식 오류 거절", () => {
-  assert.equal(normalizePhone("010-3442-4668"), "01034424668");
-  assert.equal(normalizePhone("+82 10 3442 4668"), "01034424668");
+  assert.equal(normalizePhone("010-1234-5678"), "01012345678");
+  assert.equal(normalizePhone("+82 10 1234 5678"), "01012345678");
   assert.throws(() => normalizePhone("12345"), /형식/);
 });
 
