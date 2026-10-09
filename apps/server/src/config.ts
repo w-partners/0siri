@@ -25,7 +25,7 @@ if (existsSync(".env")) {
 }
 // Capture the full setup/activation funnel while preserving explicit SDK opt-outs
 // and any deployment-specific sampling rate. Config loads before runtime imports.
-process.env.COPILOTKIT_TELEMETRY_SAMPLE_RATE ??= "1";
+process.env.COPILOTKIT_TELEMETRY_DISABLED ??= "true";
 
 export interface Config {
   mode: "sample" | "live";
@@ -149,7 +149,7 @@ export function readConfig(): Config {
     agentBackend: backend,
     agentUrl: process.env.AGENT_URL,
     agentToken: process.env.AGENT_TOKEN,
-    intelligenceApiKey: required("CPK_INTELLIGENCE_API_KEY", intelligenceKeyRequiredMessage),
+    intelligenceApiKey: process.env.CPK_INTELLIGENCE_API_KEY?.trim() || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
     googleRedirectUri: `${publicUrl}/api/google/callback`,

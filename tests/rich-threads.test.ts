@@ -198,3 +198,42 @@ test("workspace reports Rich Threads configuration without disclosing the projec
   assert.equal(JSON.parse(body).runtime.richThreads, true);
   assert.ok(!body.includes("test-project-key-never-sent"));
 });
+
+test("without an Intelligence key the app boots and keeps chat in its own store", async () => {
+  const store = await createStore();
+  try {
+    const { app: alone } = await createApp(store, {
+      mode: "sample",
+      port: 8787,
+      host: "127.0.0.1",
+      publicUrl: "http://localhost:8787",
+      dataDir: directory,
+      agentBackend: "sample",
+      googleRedirectUri: "http://localhost:8787/api/google/callback",
+      allowedOrigins: ["http://localhost:8081"],
+    });
+    const session = await alone.request("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const own = {
+      Authorization: `Bearer ${(await session.json()).token}`,
+      "Content-Type": "application/json",
+    };
+    const workspace = await alone.request("/api/workspace", { headers: own });
+    assert.equal((await workspace.json()).runtime.richThreads, false);
+    assert.equal((await alone.request("/api/main-thread", { headers: own })).status, 404);
+    const messages = [{ id: "m1", role: "user", content: "안녕" }];
+    const saved = await alone.request("/api/conversation", {
+      method: "PUT",
+      headers: own,
+      body: JSON.stringify({ messages }),
+    });
+    assert.equal(saved.status, 200);
+    const loaded = await (await alone.request("/api/conversation", { headers: own })).json();
+    assert.deepEqual(loaded.messages, messages);
+  } finally {
+    await store.close();
+  }
+});

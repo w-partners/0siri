@@ -29,7 +29,7 @@ export function makeRuntime(
   config: Config,
   service: AgentService,
   auth: Auth,
-  intelligence: CopilotKitIntelligence,
+  intelligence?: CopilotKitIntelligence,
 ) {
   // Built on first use, then shared so live mode reuses one TypeSafe client across requests.
   let jevAdapter: JevAdapter | undefined;
@@ -55,16 +55,19 @@ export function makeRuntime(
               sharedJevAdapter(),
             ),
   });
-  const runtime = new CopilotRuntime({
-    agents,
-    intelligence,
-    // The shared CopilotKit sink carries this tag onto existing PostHog events.
-    telemetryProperties: { accessibility_title: "OpenMuse" },
-    identifyUser: async (request) => ({
-      id: await auth.owner(request.headers.get("authorization") ?? undefined),
-      name: "OpenMuse user",
-    }),
-    generateThreadNames: false,
-  });
+  // The shared CopilotKit sink carries this tag onto existing PostHog events.
+  const base = { agents, telemetryProperties: { accessibility_title: "OpenMuse" } };
+  // Without an Intelligence key the runtime keeps no threads; chat history lives in /api/conversation.
+  const runtime = intelligence
+    ? new CopilotRuntime({
+        ...base,
+        intelligence,
+        identifyUser: async (request) => ({
+          id: await auth.owner(request.headers.get("authorization") ?? undefined),
+          name: "OpenMuse user",
+        }),
+        generateThreadNames: false,
+      })
+    : new CopilotRuntime(base);
   return createCopilotHonoHandler({ runtime, basePath: "/api/copilotkit" });
 }
