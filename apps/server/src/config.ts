@@ -39,6 +39,9 @@ export interface Config {
   /** 0Siri 관리자 시드 (ADMIN_PHONE/ADMIN_PASSWORD). 둘 다 있을 때만 만든다 */
   adminPhone?: string;
   adminPassword?: string;
+  /** 0Siri 8단계: 구독 큐를 docker run 으로 비우는 프로비저너 (TEAM_PROVISIONER_ENABLED, 기본 켬) */
+  teamProvisionerEnabled?: boolean;
+  registryUrl?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -147,6 +150,8 @@ export function readConfig(): Config {
     encryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
     adminPhone: process.env.ADMIN_PHONE?.trim() || undefined,
     adminPassword: process.env.ADMIN_PASSWORD || undefined,
+    teamProvisionerEnabled: process.env.TEAM_PROVISIONER_ENABLED !== "false",
+    registryUrl: process.env.REGISTRY_URL?.trim() || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

@@ -1,7 +1,9 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
+import { runDocker } from "./computer.ts";
 import { readConfig } from "./config.ts";
 import { createStore } from "./db.ts";
+import { modelEnvFrom, Provisioner } from "./osiri/provisioner.ts";
 
 const config = readConfig();
 const db = await createStore({
@@ -9,13 +11,21 @@ const db = await createStore({
   databaseUrl: config.databaseUrl,
 });
 await db.recoverInterruptedActions();
-const { app, agent } = await createApp(db, config);
+const { app, agent, osiri } = await createApp(db, config);
 if (config.taskWorkerEnabled) agent.start();
+const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
+  docker: runDocker,
+  apiUrl: config.publicUrl,
+  registryUrl: config.registryUrl,
+  modelEnv: modelEnvFrom(process.env),
+});
+if (config.teamProvisionerEnabled) provisioner.start();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, () =>
   console.log(`OpenMuse ${config.mode} API ready at ${config.publicUrl}`),
 );
 const shutdown = () => {
   server.close(() => {
+    provisioner.stop();
     void agent
       .stop()
       .then(() => db.close())
