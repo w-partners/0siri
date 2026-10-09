@@ -97,7 +97,7 @@ test("expired and disconnected proposals never reach the provider", async () => 
   now += 31 * 60 * 1000;
   await assert.rejects(
     service.decide("expired-user", expired.id, expired.hash, "approve"),
-    /expired/i,
+    /만료/,
   );
   const revoked = await service.propose("revoked-user", email);
   connected = false;
@@ -282,7 +282,7 @@ test("an expired stale review cannot overwrite a concurrently executing action",
   await executing.promise;
   now += 31 * 60 * 1000;
   resumeRead.resolve();
-  await stale.catch((error) => assert.match(error.message, /expired/i));
+  await stale.catch((error) => assert.match(error.message, /만료/));
   const saved = await db.get<ActionProposal>("expiry-race", "actions", proposal.id);
   finishExecution.resolve("sent");
   await approval;
