@@ -40,9 +40,11 @@ before(async () => {
     category: "legal",
     summary: "",
     roles: [
-      { name: "orchestrator", title: "팀장", summary: "" },
+      { name: "root", title: "팀장", summary: "" },
       { name: "drafter", title: "초안", summary: "" },
       { name: "reviewer", title: "검수", summary: "" },
+      { name: "publisher", title: "발행", summary: "" },
+      { name: "analyst", title: "보고", summary: "" },
     ],
     approvalPoints: ["발행"],
     reportCadence: "weekly",

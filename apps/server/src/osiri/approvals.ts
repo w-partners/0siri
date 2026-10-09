@@ -13,6 +13,7 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "
 export interface Approval {
   id: string;
   roomId: string;
+  goalId?: string; // 이 승인을 기다리는 목표 (워커가 승인 단계에서 이어 갈 때 찾는다)
   toolName: string;
   input: unknown;
   inputHash: string; // sha256(canonical json) — 동결 해시
@@ -112,11 +113,20 @@ export class Approvals {
     return true;
   }
 
+  /** 한 목표에 걸린 승인 전부(오래된 순). 만료 시각이 지난 대기 건은 먼저 만료 처리한다. */
+  async forGoal(owner: string, roomId: string, goalId: string): Promise<Approval[]> {
+    await this.pending(owner);
+    return (await this.db.listByField<Approval>(owner, "approvals", "roomId", roomId))
+      .filter((a) => a.goalId === goalId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
   /** external 도구 실행 보류 → 승인 카드 생성 (§15.2, §21 워커 /approvals/request). 같은 도구·입력이 이미 대기 중이면 그것을 돌려준다. */
   async request(
     owner: string,
     input: {
       roomId: string;
+      goalId?: string;
       toolName: string;
       input: unknown;
       title: string;
@@ -133,6 +143,7 @@ export class Approvals {
     const approval: Approval = {
       id: randomUUID(),
       roomId: input.roomId,
+      goalId: input.goalId,
       toolName: input.toolName,
       input: input.input,
       inputHash: hash,

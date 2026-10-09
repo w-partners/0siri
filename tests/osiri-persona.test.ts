@@ -33,9 +33,11 @@ test("개인 방 → 영시리, 팀 방 → 팀장 + 승인 지점, 낯선 스�
     category: "legal",
     summary: "판례 감지부터 발행까지",
     roles: [
-      { name: "orchestrator", title: "팀장", summary: "" },
+      { name: "root", title: "팀장", summary: "" },
       { name: "drafter", title: "초안", summary: "" },
       { name: "reviewer", title: "검수", summary: "" },
+      { name: "publisher", title: "발행", summary: "" },
+      { name: "analyst", title: "보고", summary: "" },
     ],
     approvalPoints: ["발행 전 변호사 승인"],
     reportCadence: "weekly",

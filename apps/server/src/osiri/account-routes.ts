@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { USER_ROLES } from "../../../../packages/domain/src/osiri.ts";
+import { AppError } from "../errors.ts";
 import type { Accounts } from "./accounts.ts";
 
 type Env = { Variables: { owner: string } };
@@ -49,12 +50,21 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
   });
   app.post("/admin/invites", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
+    // 본문 없이 부르는 것은 허용(기본 초대). 본문이 있는데 JSON 이 아니면 조용히 기본 초대를 만들지 않고 400
+    const raw = (await c.req.text()).trim();
+    let parsed: unknown = {};
+    if (raw)
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new AppError("요청 본문이 올바른 JSON 이 아닙니다", 400);
+      }
     const body = z
       .object({
         phone: z.string().optional(),
         role: z.enum(USER_ROLES).optional(),
       })
-      .parse(await c.req.json().catch(() => ({})));
+      .parse(parsed);
     const { token, invite } = await accounts.createInvite(c.get("owner"), body);
     return c.json({ token, url: `${publicUrl}/invite/${token}`, expiresAt: invite.expiresAt });
   });

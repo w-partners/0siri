@@ -71,6 +71,8 @@ export async function createApp(
   const catalog = new Catalog(db, rooms);
   const routing = new Routing(db, rooms);
   const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing };
+  // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
+  agent.osiri = { memories, routing };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -396,6 +398,12 @@ export async function createApp(
         rewriteRequestPath: (path) => path.replace(/^\/releases/, ""),
       }),
     );
+  else
+    console.log(
+      "[osiri] RELEASES_DIR 미설정 — /releases/* 는 404 (앱 자동 업데이트 파일을 내지 않습니다)",
+    );
+  // 없는 릴리스 파일·미설정일 때 SPA index.html 이 대신 나가면 앱이 HTML 을 latest.json 으로 읽는다
+  app.all("/releases/*", (c) => c.json({ error: "릴리스 파일을 찾을 수 없습니다" }, 404));
   // 0Siri: 웹 빌드(expo export --platform web)를 같은 포트에서 낸다. SPA 라 모르는 경로는 index.html.
   if (config.webDist) {
     app.use("/*", serveStatic({ root: config.webDist }));

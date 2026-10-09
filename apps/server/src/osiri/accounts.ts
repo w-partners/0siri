@@ -119,7 +119,15 @@ export class Accounts {
 
   /** 서버 기동 시 관리자 보장. 전화·비밀번호는 환경변수에서만 온다 (코드에 박지 않음). */
   async ensureAdmin(phone?: string, password?: string): Promise<User | null> {
-    if (!phone || !password) return null;
+    // 하나만 있으면 설정 실수다 — 관리자 없이 조용히 뜨지 않는다
+    if (Boolean(phone) !== Boolean(password))
+      throw new Error(
+        `ADMIN_PHONE 과 ADMIN_PASSWORD 는 둘 다 있어야 합니다 (${phone ? "ADMIN_PASSWORD" : "ADMIN_PHONE"} 없음)`,
+      );
+    if (!phone || !password) {
+      console.log("[osiri] ADMIN_PHONE/ADMIN_PASSWORD 미설정 — 관리자 계정을 만들지 않습니다");
+      return null;
+    }
     const existing = await this.userByPhone(normalizePhone(phone));
     if (existing) {
       if (existing.role !== "admin")

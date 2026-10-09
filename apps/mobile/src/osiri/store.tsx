@@ -1,87 +1,129 @@
-// 0Siri 스토어 (0SIRI-SPEC §4.6, §6): 탐색 / 내 구독. 탭 URL 동기화는 코디네이터가 맡는다.
-import { Store } from "lucide-react-native";
+// 0Siri 화면 6 · 스토어 («0Siri 종합 기획» §03): 탐색 / 내 구독. 계약: docs/0siri-api-contract.md «스토어». 탭 URL 동기화는 App 이 맡는다.
+import { Search, Store } from "lucide-react-native";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
-import { Button, Card, Chip, colors, dateLabel, Empty, ErrorNotice, Field, Sheet, s } from "../ui";
+import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import {
+  STORE_CATEGORIES,
+  STORE_CATEGORY_ALL_LABEL,
+  STORE_CATEGORY_LABELS,
+  type StoreCategory,
+} from "../../../../packages/domain/src/osiri";
+import type { Catalog, publicPackage, Subscription } from "../../../server/src/osiri/store.ts";
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  colors,
+  dateLabel,
+  Empty,
+  ErrorNotice,
+  Field,
+  fonts,
+  Sheet,
+  Skeleton,
+  s,
+} from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
 
+// 계약(docs/0siri-api-contract.md «스토어»)에 있고 서버 타입에는 아직 없는 필드만 여기서 덧붙인다.
+type Pkg = Omit<ReturnType<typeof publicPackage>, "reportCadence"> & {
+  subscribed: boolean;
+  roomId: string | null;
+  reviewing: boolean;
+  reportCadence: string;
+  dataHandling: string;
+  conversionRate: number | null;
+};
+type Sub = Omit<Awaited<ReturnType<Catalog["cards"]>>[number], "status"> & {
+  status: Subscription["status"] | "ended";
+  paymentMethod: string | null;
+  endsAt: string | null;
+};
+type SubscribeResult = Awaited<ReturnType<Catalog["subscribe"]>>;
+type StoreTab = "explore" | "mine";
+
 const text = {
-  explore: "탐색",
-  mine: "내 구독",
+  tabs: { explore: "탐색", mine: "내 구독" } satisfies Record<StoreTab, string>,
   search: "검색",
-  searchHint: "팀 이름·직군·역할",
-  all: "전체",
-  categories: { legal: "법률", medical: "의료", marketing: "마케팅", other: "기타" },
-  sorts: { performance: "성과", price: "가격", newest: "최신" },
-  members: (n: number) => `${n}명 구성`,
-  verified: "검증",
+  searchHint: "팀 이름 · 역할 · 분야 검색",
+  verified: "검증된 팀",
+  reviewing: "입점 심사 중",
+  agents: "에이전트",
+  people: "명",
+  unit: "월 구독",
   free: "무료",
   perMonth: (won: number) => `${won.toLocaleString("ko-KR")}원/월`,
-  published: "발행",
-  indexed: "색인",
-  citations: "AI 인용",
-  detail: "상세",
-  roles: "역할 구성",
+  conversion: "발행→인용 전환율",
+  measuring: "측정 중",
+  roles: "역할표",
   approvals: "승인 지점",
   approvalsHint: "아래 행위는 사용자의 승인 없이는 실행되지 않습니다.",
-  metrics: "성과 지표",
+  cadence: "보고 주기",
+  cadences: { weekly: "주간" } as Record<string, string>,
+  dataHandling: "데이터 처리 방식",
+  metrics: "공개 성과 지표",
   notice: "운영자 공지",
+  disclosure: "공개 범위",
+  disclosed: "공개: 역할 구성 · 승인 지점 · 보고 주기 · 성과 지표",
+  undisclosed: "비공개: 프롬프트 전문 · 검수 규칙",
   subscribe: "구독하기",
+  confirmTitle: "구독 확인",
+  confirmBody: (name: string) =>
+    `「${name}」 구독을 시작합니다. 팀 방이 만들어지고 팀장이 첫 인사를 보냅니다.`,
+  confirm: "구독 확정",
+  priorTitle: "이전에 구독했던 팀입니다",
+  priorBody: "기존 방과 기억을 복원할지, 새로 시작할지 골라 주세요.",
+  restore: "복원",
+  fresh: "새로 시작",
   subscribed: (name: string) => `${name} 구독을 시작했습니다`,
+  subscribedBody: "팀 방을 만들었습니다. 내 구독 탭에도 추가됐습니다.",
+  noRoom: "구독 중인 팀인데 방 정보를 받지 못했습니다.",
   openRoom: "방으로 이동",
   manage: "구독 관리",
   retry: "다시 시도",
-  emptyExplore: "표시할 팀이 없습니다",
-  emptyExploreHint: "검색어나 카테고리를 바꿔 보세요.",
-  emptyMine: "구독 중인 팀이 없습니다",
+  close: "닫기",
+  back: "돌아가기",
+  pickTeam: "팀을 고르면 상세가 여기에 보입니다.",
+  pickSub: "구독을 고르면 관리 패널이 여기에 보입니다.",
+  emptyExplore: "검색 결과가 없습니다",
+  emptyExploreHint: "다른 단어로 검색",
+  showAll: "전체 목록 보기",
+  emptyMine: "아직 구독한 팀이 없습니다",
   emptyMineHint: "탐색 탭에서 팀을 구독하면 여기에 모입니다.",
+  goExplore: "탐색에서 첫 팀 고르기",
+  status: { active: "구독 중", cancelled: "해지 예정", ended: "종료" } satisfies Record<
+    Sub["status"],
+    string
+  >,
   nextBilling: "다음 결제",
-  pending: (n: number) => `승인 대기 ${n}건`,
-  progress: (n: number) => `진척 ${n}%`,
-  active: "구독 중",
-  cancelled: "해지됨",
-  retainedUntil: "데이터 보존",
-  plan: "요금제",
-  planChange: "요금제 변경은 준비 중입니다.",
+  until: (date: string) => `${date}까지 유지`,
+  pending: "승인 대기",
+  progress: "진척",
+  price: "요금",
+  billingDate: "결제일",
+  paymentMethod: "결제 수단",
+  noPaymentMethod: "등록된 결제 수단이 없습니다",
+  none: "없음",
   cancel: "해지",
-  // §6.2 해지 고지 — 방은 읽기 전용, 데이터 30일 보존
-  cancelNotice:
-    "해지하면 이 팀의 방은 읽기 전용으로 남고, 데이터는 30일 동안 보존된 뒤 삭제됩니다. 계속할까요?",
+  cancelNotice: "기간 말까지 유지 · 방 읽기 전용 동결",
   cancelConfirm: "해지 확정",
   cancelDone: (name: string) => `${name} 구독을 해지했습니다`,
-  back: "돌아가기",
+  resume: "재개",
+  resumeDone: (name: string) => `${name} 구독을 재개했습니다`,
 };
+const statusTint: Record<Sub["status"], string> = {
+  active: colors.okBg,
+  cancelled: colors.warnBg,
+  ended: colors.sunk,
+};
+const MINE = "/api/subscriptions/mine";
 
-type CategoryKey = keyof typeof text.categories; // 서버 store.ts Category 와 같은 값 — 라벨이 필요해 여기 둔다
-type Sort = keyof typeof text.sorts;
-interface Pkg {
-  id: string;
-  slug: string;
-  name: string;
-  character: string;
-  category: CategoryKey;
-  summary: string;
-  roles: { name: string; title: string; summary: string }[];
-  approvalPoints: string[];
-  verified: boolean;
-  metrics: { published: number; indexed: number; ai_citations: number };
-  operatorNotice?: string;
-  priceMonthly: number;
-  roleCount: number;
-}
-interface Sub {
-  id: string;
-  packageId: string;
-  roomId: string;
-  status: "active" | "cancelled";
-  priceMonthly: number;
-  nextBillingAt: string;
-  dataRetainedUntil?: string;
-  packageName: string;
-  character: string;
-  pendingApprovals: number;
-  progress: number | Record<string, never>; // 서버가 현황판 없으면 {} 로 준다
+/** 웹 넓은 화면(좌: 목록 / 우: 상세) 기준. auth.tsx 도 같은 기준을 쓴다. */
+const WIDE_MIN = 900;
+export function useWide() {
+  return useWindowDimensions().width >= WIDE_MIN;
 }
 
 /** 로딩·오류·재시도를 한 곳에서. settings.tsx 도 이걸 가져다 쓴다 (사본 금지). */
@@ -121,7 +163,7 @@ export function useAction() {
     try {
       await fn();
     } catch (e) {
-      setError((e as Error).message);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -129,7 +171,7 @@ export function useAction() {
   return { busy, error, run };
 }
 
-/** 로딩·오류+재시도·빈 상태 공통 래퍼. */
+/** 로딩(스켈레톤)·오류+재시도·빈 상태(다음 행동 버튼) 공통 래퍼. */
 export function LoadState({
   loading,
   error,
@@ -140,10 +182,11 @@ export function LoadState({
   loading: boolean;
   error?: string;
   retry: () => void;
-  empty?: { title: string; detail: string } | false;
+  /** action = 빈 상태의 «다음 행동» 버튼 */
+  empty?: { title: string; detail: string; action?: ReactNode } | false;
   children: ReactNode;
 }) {
-  if (loading) return <ActivityIndicator color={colors.blueDark} style={{ padding: 24 }} />;
+  if (loading) return <Skeleton rows={3} height={132} />;
   if (error)
     return (
       <View style={{ gap: 10 }}>
@@ -153,7 +196,12 @@ export function LoadState({
         </Button>
       </View>
     );
-  if (empty) return <Empty icon={Store} title={empty.title} detail={empty.detail} />;
+  if (empty)
+    return (
+      <Empty icon={Store} title={empty.title} detail={empty.detail}>
+        {empty.action}
+      </Empty>
+    );
   return <>{children}</>;
 }
 
@@ -169,7 +217,7 @@ export function Choice({
 }) {
   return (
     <Pressable accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress}>
-      <Chip tint={selected ? colors.blue : undefined}>{label}</Chip>
+      <Chip tint={selected ? colors.accentSoft : undefined}>{label}</Chip>
     </Pressable>
   );
 }
@@ -185,261 +233,647 @@ export function Block({ title, children }: { title: string; children: ReactNode 
 }
 
 export const won = (n: number) => (n === 0 ? text.free : text.perMonth(n));
+
+/** 숫자·퍼센트·개수는 모노로 (자리 흔들림 방지). Text 안에 끼워 쓴다. */
+function Num({ children }: { children: ReactNode }) {
+  return <Text style={{ fontFamily: fonts.mono }}>{children}</Text>;
+}
+const percent = (value: number) => `${Math.round(value)}%`;
+
+/** 좁으면 시트, 넓으면 목록 오른쪽 패널. */
+function Panel({
+  wide,
+  title,
+  subtitle,
+  onClose,
+  children,
+}: {
+  wide: boolean;
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  if (!wide)
+    return (
+      <Sheet title={title} subtitle={subtitle} onClose={onClose}>
+        {children}
+      </Sheet>
+    );
+  return (
+    <ScrollView
+      style={sidePanel}
+      contentContainerStyle={{ padding: 20, gap: 16 }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={[s.between, { gap: 12, alignItems: "flex-start" }]}>
+        <View style={{ flex: 1, gap: 4 }}>
+          <Text style={s.title}>{title}</Text>
+          {!!subtitle && <Text style={s.muted}>{subtitle}</Text>}
+        </View>
+        <Button small onPress={onClose}>
+          {text.close}
+        </Button>
+      </View>
+      {children}
+    </ScrollView>
+  );
+}
+const sidePanel = {
+  width: 420,
+  flexGrow: 0,
+  borderLeftWidth: 1,
+  borderLeftColor: colors.line,
+  backgroundColor: colors.card,
+} as const;
+function PanelHint({ children }: { children: string }) {
+  return (
+    <View style={[sidePanel, { padding: 24, justifyContent: "center" }]}>
+      <Text style={[s.muted, { textAlign: "center" }]}>{children}</Text>
+    </View>
+  );
+}
+
 export function StoreScreen({
   tab,
   onTab,
   onOpenRoom,
 }: {
-  tab: "explore" | "mine";
-  onTab: (t: "explore" | "mine") => void;
+  tab: StoreTab;
+  onTab: (t: StoreTab) => void;
   onOpenRoom: (roomId: string) => void;
 }) {
+  const { api } = useWorkspace();
+  // 내 구독은 두 탭이 같이 본다: 탭 제목의 개수 · 탐색의 «해지했던 팀» 판정 · 내 구독 목록
+  const subs = useLoad(() => api.request<Sub[]>(MINE));
+  const refreshSubs = async () => subs.setData(await api.request<Sub[]>(MINE));
+  const count = subs.data?.filter((sub) => sub.status !== "ended").length;
+
   return (
     <View style={{ flex: 1 }}>
-      <View style={[s.row, { gap: 8, paddingHorizontal: 16, paddingTop: 12 }]}>
-        {(["explore", "mine"] as const).map((t) => (
-          <Button key={t} small primary={tab === t} onPress={() => onTab(t)}>
-            {text[t]}
-          </Button>
-        ))}
+      <View
+        accessibilityRole="tablist"
+        style={[s.row, { gap: 8, paddingHorizontal: 16, paddingTop: 12 }]}
+      >
+        {(Object.keys(text.tabs) as StoreTab[]).map((t) => {
+          const selected = tab === t;
+          return (
+            <Pressable
+              key={t}
+              accessibilityRole="tab"
+              accessibilityState={{ selected }}
+              onPress={() => onTab(t)}
+              style={[
+                s.button,
+                selected ? s.primary : s.secondary,
+                { minHeight: 38, paddingVertical: 7, paddingHorizontal: 13 },
+              ]}
+            >
+              <Text style={[s.buttonText, { color: selected ? colors.onAccent : colors.text }]}>
+                {text.tabs[t]}
+                {t === "mine" && count !== undefined && (
+                  <>
+                    {" · "}
+                    <Num>{count}</Num>
+                  </>
+                )}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
-      {tab === "explore" ? <Explore onOpenRoom={onOpenRoom} /> : <Mine onOpenRoom={onOpenRoom} />}
+      {tab === "explore" ? (
+        <Explore subs={subs} refreshSubs={refreshSubs} onOpenRoom={onOpenRoom} />
+      ) : (
+        <Mine
+          subs={subs}
+          refreshSubs={refreshSubs}
+          onOpenRoom={onOpenRoom}
+          onExplore={() => onTab("explore")}
+        />
+      )}
     </View>
   );
 }
 
-function Explore({ onOpenRoom }: { onOpenRoom: (roomId: string) => void }) {
-  const { api, notify } = useWorkspace();
-  const [q, setQ] = useState("");
-  const [category, setCategory] = useState<CategoryKey | "">("");
-  const [sort, setSort] = useState<Sort>("performance");
-  const params = new URLSearchParams({ q, category, sort }).toString();
-  const list = useLoad(() => api.request<Pkg[]>(`/api/store/packages?${params}`), params);
-  const [detail, setDetail] = useState<Pkg>();
-  const [roomId, setRoomId] = useState<string>();
-  const act = useAction();
+type SubsLoad = ReturnType<typeof useLoad<Sub[]>>;
 
-  const subscribe = (pkg: Pkg) =>
-    act.run(async () => {
-      const result = await api.request<{ roomId: string }>("/api/subscriptions", {
-        packageId: pkg.id,
-      });
-      setRoomId(result.roomId);
-      notify(text.subscribed(pkg.name));
-    });
-  const close = () => {
-    setDetail(undefined);
-    setRoomId(undefined);
-  };
-
+/** 공개 지표: 발행→인용 전환율. null = 아직 측정 전 → «측정 중» 칩. */
+function Conversion({ rate }: { rate: number | null }) {
   return (
-    <ScrollView
-      contentContainerStyle={{ padding: 16, gap: 12 }}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Field label={text.search} placeholder={text.searchHint} value={q} onChangeText={setQ} />
-      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-        <Choice label={text.all} selected={category === ""} onPress={() => setCategory("")} />
-        {(Object.keys(text.categories) as CategoryKey[]).map((c) => (
-          <Choice
-            key={c}
-            label={text.categories[c]}
-            selected={category === c}
-            onPress={() => setCategory(c)}
-          />
-        ))}
-      </View>
-      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-        {(Object.keys(text.sorts) as Sort[]).map((k) => (
-          <Choice key={k} label={text.sorts[k]} selected={sort === k} onPress={() => setSort(k)} />
-        ))}
-      </View>
-      <LoadState
-        loading={list.loading}
-        error={list.error}
-        retry={list.retry}
-        empty={
-          list.data?.length === 0 && { title: text.emptyExplore, detail: text.emptyExploreHint }
-        }
-      >
-        {list.data?.map((pkg) => (
-          <Card key={pkg.id} style={{ gap: 10 }}>
-            <View style={[s.row, { gap: 12 }]}>
-              <CharacterAvatar character={pkg.character} size={42} />
-              <View style={{ flex: 1, gap: 3 }}>
-                <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-                  <Text style={s.heading}>{pkg.name}</Text>
-                  {pkg.verified && <Chip tint={colors.green}>{text.verified}</Chip>}
-                </View>
-                <Text style={s.small}>
-                  {text.categories[pkg.category]} · {text.members(pkg.roleCount)} ·{" "}
-                  {won(pkg.priceMonthly)}
-                </Text>
-              </View>
-            </View>
-            <Text style={s.text}>{pkg.summary}</Text>
-            <Metrics metrics={pkg.metrics} />
-            <Button small onPress={() => setDetail(pkg)}>
-              {text.detail}
-            </Button>
-          </Card>
-        ))}
-      </LoadState>
-      {detail && (
-        <Sheet title={detail.name} subtitle={detail.summary} onClose={close}>
-          <View style={{ gap: 16 }}>
-            <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-              <Chip>{text.categories[detail.category]}</Chip>
-              {detail.verified && <Chip tint={colors.green}>{text.verified}</Chip>}
-              <Chip tint={colors.orange}>{won(detail.priceMonthly)}</Chip>
-            </View>
-            <Block title={text.roles}>
-              {detail.roles.map((r) => (
-                <Text key={r.name} style={s.text}>
-                  <Text style={{ fontWeight: "600" }}>{r.title}</Text> · {r.summary}
-                </Text>
-              ))}
-            </Block>
-            <Block title={text.approvals}>
-              <Text style={s.small}>{text.approvalsHint}</Text>
-              {detail.approvalPoints.map((p) => (
-                <Text key={p} style={s.text}>
-                  · {p}
-                </Text>
-              ))}
-            </Block>
-            <Block title={text.metrics}>
-              <Metrics metrics={detail.metrics} />
-            </Block>
-            {!!detail.operatorNotice && (
-              <Block title={text.notice}>
-                <Text style={s.text}>{detail.operatorNotice}</Text>
-              </Block>
-            )}
-            <ErrorNotice error={act.error} />
-            {roomId ? (
-              <Button primary onPress={() => onOpenRoom(roomId)}>
-                {text.openRoom}
-              </Button>
-            ) : (
-              <Button primary busy={act.busy} onPress={() => subscribe(detail)}>
-                {text.subscribe}
-              </Button>
-            )}
-          </View>
-        </Sheet>
+    <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+      <Text style={s.small}>{text.conversion}</Text>
+      {rate === null ? (
+        <Chip>{text.measuring}</Chip>
+      ) : (
+        <Text style={[s.text, { fontFamily: fonts.mono, fontWeight: "600" }]}>{percent(rate)}</Text>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
-function Mine({ onOpenRoom }: { onOpenRoom: (roomId: string) => void }) {
-  const { api, notify } = useWorkspace();
-  const list = useLoad(() => api.request<Sub[]>("/api/subscriptions/mine"));
-  const [managing, setManaging] = useState<Sub>();
-  const [confirming, setConfirming] = useState(false);
-  const act = useAction();
+/** 팀 이름 줄: 대표 캐릭터 + 이름 + 검증 배지(미검증이면 아무것도 없음) + «에이전트 N명 · 월 구독». */
+function TeamHead({ pkg, size }: { pkg: Pkg; size: number }) {
+  return (
+    <View style={[s.row, { gap: 12 }]}>
+      <CharacterAvatar character={pkg.character} size={size} />
+      <View style={{ flex: 1, gap: 3 }}>
+        <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+          <Text style={s.heading}>{pkg.name}</Text>
+          {pkg.verified && <Chip tint={colors.okBg}>{text.verified}</Chip>}
+          {pkg.reviewing && <Chip tint={colors.warnBg}>{text.reviewing}</Chip>}
+        </View>
+        <Text style={s.small}>
+          {STORE_CATEGORY_LABELS[pkg.category]} · {text.agents} <Num>{pkg.roleCount}</Num>
+          {text.people} · {text.unit}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
-  const close = () => {
-    setManaging(undefined);
-    setConfirming(false);
+function matches(pkg: Pkg, q: string, category: StoreCategory | "") {
+  if (category && pkg.category !== category) return false;
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return [
+    pkg.name,
+    pkg.summary,
+    STORE_CATEGORY_LABELS[pkg.category],
+    ...pkg.roles.flatMap((role) => [role.title, role.summary]),
+  ].some((field) => field.toLowerCase().includes(needle));
+}
+
+function Explore({
+  subs,
+  refreshSubs,
+  onOpenRoom,
+}: {
+  subs: SubsLoad;
+  refreshSubs: () => Promise<void>;
+  onOpenRoom: (roomId: string) => void;
+}) {
+  const { api } = useWorkspace();
+  const wide = useWide();
+  const [q, setQ] = useState("");
+  const [serverQ, setServerQ] = useState("");
+  const [category, setCategory] = useState<StoreCategory | "">("");
+  // 입력은 화면에서 즉시 거르고(matches), 서버 검색은 잠깐 멈췄을 때 병행한다
+  useEffect(() => {
+    const timer = setTimeout(() => setServerQ(q.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [q]);
+  const path = `/api/store/packages?${new URLSearchParams({ q: serverQ, category })}`;
+  const list = useLoad(() => api.request<Pkg[]>(path), path);
+  const [open, setOpen] = useState<{ id: string; confirm: boolean }>();
+
+  const shown = list.data?.filter((pkg) => matches(pkg, q, category));
+  const detail = open && list.data?.find((pkg) => pkg.id === open.id);
+  const showAll = () => {
+    setQ("");
+    setCategory("");
   };
-  const cancel = (sub: Sub) =>
-    act.run(async () => {
-      const updated = await api.request<Sub>(`/api/subscriptions/${sub.id}/cancel`, {});
-      list.setData((list.data ?? []).map((x) => (x.id === sub.id ? { ...x, ...updated } : x)));
-      notify(text.cancelDone(sub.packageName));
-      close();
-    });
+  const afterSubscribe = async () => {
+    list.setData(await api.request<Pkg[]>(path));
+    await refreshSubs();
+  };
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-      <LoadState
-        loading={list.loading}
-        error={list.error}
-        retry={list.retry}
-        empty={list.data?.length === 0 && { title: text.emptyMine, detail: text.emptyMineHint }}
+    <View style={{ flex: 1, flexDirection: wide ? "row" : "column" }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 16, gap: 12 }}
+        keyboardShouldPersistTaps="handled"
       >
-        {list.data?.map((sub) => (
-          <Card key={sub.id} style={{ gap: 10 }}>
-            <View style={[s.row, { gap: 12 }]}>
-              <CharacterAvatar character={sub.character} size={42} />
-              <View style={{ flex: 1, gap: 3 }}>
-                <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-                  <Text style={s.heading}>{sub.packageName}</Text>
-                  <Chip tint={sub.status === "active" ? colors.green : colors.line}>
-                    {sub.status === "active" ? text.active : text.cancelled}
-                  </Chip>
-                </View>
-                <Text style={s.small}>
-                  {won(sub.priceMonthly)}
-                  {sub.status === "active" &&
-                    ` · ${text.nextBilling} ${dateLabel(sub.nextBillingAt)}`}
-                  {sub.status === "cancelled" &&
-                    !!sub.dataRetainedUntil &&
-                    ` · ${text.retainedUntil} ~${dateLabel(sub.dataRetainedUntil)}`}
-                </Text>
-                <Text style={s.small}>
-                  {text.pending(sub.pendingApprovals)}
-                  {typeof sub.progress === "number" && ` · ${text.progress(sub.progress)}`}
-                </Text>
+        <Field label={text.search} placeholder={text.searchHint} value={q} onChangeText={setQ} />
+        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Choice
+            label={STORE_CATEGORY_ALL_LABEL}
+            selected={category === ""}
+            onPress={() => setCategory("")}
+          />
+          {STORE_CATEGORIES.map((c) => (
+            <Choice
+              key={c}
+              label={STORE_CATEGORY_LABELS[c]}
+              selected={category === c}
+              onPress={() => setCategory(c)}
+            />
+          ))}
+        </View>
+        {/* 이미 받은 목록이 있으면 다시 읽는 동안에도 보여 준다 — 스켈레톤은 처음 읽을 때만 */}
+        <LoadState
+          loading={list.loading && !list.data}
+          error={list.error}
+          retry={list.retry}
+          empty={false}
+        >
+          {shown?.length === 0 ? (
+            <Empty icon={Search} title={text.emptyExplore} detail={text.emptyExploreHint}>
+              <Button onPress={showAll}>{text.showAll}</Button>
+            </Empty>
+          ) : (
+            shown?.map((pkg) => (
+              <Pressable
+                key={pkg.id}
+                accessibilityRole="button"
+                accessibilityLabel={pkg.name}
+                accessibilityState={{ disabled: pkg.reviewing, selected: open?.id === pkg.id }}
+                disabled={pkg.reviewing}
+                onPress={() => setOpen({ id: pkg.id, confirm: false })}
+              >
+                <Card
+                  style={{
+                    gap: 10,
+                    opacity: pkg.reviewing ? 0.55 : 1,
+                    ...(open?.id === pkg.id ? { borderColor: colors.accent } : null),
+                  }}
+                >
+                  <TeamHead pkg={pkg} size={42} />
+                  <Text style={s.text}>{pkg.summary}</Text>
+                  <Conversion rate={pkg.conversionRate} />
+                  {pkg.reviewing ? (
+                    <Button small disabled onPress={() => undefined}>
+                      {text.reviewing}
+                    </Button>
+                  ) : pkg.subscribed && pkg.roomId ? (
+                    <Button small onPress={() => onOpenRoom(pkg.roomId as string)}>
+                      {`${text.status.active} · ${text.openRoom}`}
+                    </Button>
+                  ) : (
+                    <Button
+                      small
+                      primary
+                      onPress={() => setOpen({ id: pkg.id, confirm: !pkg.subscribed })}
+                    >
+                      {text.subscribe}
+                    </Button>
+                  )}
+                </Card>
+              </Pressable>
+            ))
+          )}
+        </LoadState>
+      </ScrollView>
+      {detail ? (
+        <Panel
+          wide={wide}
+          title={detail.name}
+          subtitle={detail.summary}
+          onClose={() => setOpen(undefined)}
+        >
+          <PackageDetail
+            key={`${detail.id}:${open.confirm}`}
+            pkg={detail}
+            startConfirm={open.confirm}
+            subs={subs}
+            onSubscribed={afterSubscribe}
+            onOpenRoom={onOpenRoom}
+          />
+        </Panel>
+      ) : wide ? (
+        <PanelHint>{text.pickTeam}</PanelHint>
+      ) : null}
+    </View>
+  );
+}
+
+function PackageDetail({
+  pkg,
+  startConfirm,
+  subs,
+  onSubscribed,
+  onOpenRoom,
+}: {
+  pkg: Pkg;
+  startConfirm: boolean;
+  subs: SubsLoad;
+  onSubscribed: () => Promise<void>;
+  onOpenRoom: (roomId: string) => void;
+}) {
+  const { api, notify } = useWorkspace();
+  const [confirming, setConfirming] = useState(startConfirm);
+  const [restore, setRestore] = useState<boolean>();
+  const [createdRoom, setCreatedRoom] = useState<string>();
+  const act = useAction();
+  const refresh = useAction();
+  // 해지했던 팀을 다시 구독하는가 — 그러면 기존 방·기억을 복원할지 새로 시작할지 묻는다
+  const prior = subs.data?.some((sub) => sub.packageId === pkg.id && sub.status !== "active");
+
+  const subscribe = () =>
+    act.run(async () => {
+      let result: SubscribeResult;
+      try {
+        result = await api.request<SubscribeResult>("/api/subscriptions", {
+          packageId: pkg.id,
+          ...(prior ? { restore } : null),
+        });
+      } catch (e) {
+        setConfirming(false); // 실패하면 확인 전 단계로 되돌리고, 서버가 준 사유(등급 미달이면 구독 안내 문장)를 보인다
+        throw e;
+      }
+      setCreatedRoom(result.roomId);
+      notify(text.subscribed(pkg.name));
+      void refresh.run(onSubscribed);
+    });
+  const roomId = createdRoom ?? (pkg.subscribed ? pkg.roomId : null);
+
+  return (
+    <View style={{ gap: 16 }}>
+      <TeamHead pkg={pkg} size={56} />
+      <Block title={text.roles}>
+        {pkg.roles.map((role) => (
+          <View
+            key={role.name}
+            style={{
+              flexDirection: "row",
+              gap: 12,
+              paddingVertical: 8,
+              borderBottomWidth: 1,
+              borderBottomColor: colors.line,
+            }}
+          >
+            <Text style={[s.text, { width: 96, fontWeight: "600" }]}>{role.title}</Text>
+            <Text style={[s.muted, { flex: 1 }]}>{role.summary}</Text>
+          </View>
+        ))}
+      </Block>
+      <Block title={text.approvals}>
+        <Text style={s.small}>{text.approvalsHint}</Text>
+        {pkg.approvalPoints.map((point) => (
+          <Text key={point} style={s.text}>
+            · {point}
+          </Text>
+        ))}
+      </Block>
+      <Block title={text.cadence}>
+        <Text style={s.text}>{text.cadences[pkg.reportCadence] ?? pkg.reportCadence}</Text>
+      </Block>
+      <Block title={text.dataHandling}>
+        <Text style={s.text}>{pkg.dataHandling}</Text>
+      </Block>
+      <Block title={text.metrics}>
+        <Conversion rate={pkg.conversionRate} />
+      </Block>
+      {!!pkg.operatorNotice && (
+        <Block title={text.notice}>
+          <Text style={s.text}>{pkg.operatorNotice}</Text>
+        </Block>
+      )}
+      <Block title={text.disclosure}>
+        <Text style={s.small}>{text.disclosed}</Text>
+        <Text style={s.small}>{text.undisclosed}</Text>
+      </Block>
+      <ErrorNotice error={act.error || refresh.error} />
+      {roomId ? (
+        <View style={{ gap: 8 }}>
+          {createdRoom ? (
+            <Text style={s.text}>
+              {text.subscribed(pkg.name)}. {text.subscribedBody}
+            </Text>
+          ) : null}
+          <Button primary onPress={() => onOpenRoom(roomId)}>
+            {text.openRoom}
+          </Button>
+        </View>
+      ) : pkg.subscribed ? (
+        <View style={{ gap: 8 }}>
+          <ErrorNotice error={text.noRoom} />
+          <Button busy={refresh.busy} onPress={() => void refresh.run(onSubscribed)}>
+            {text.retry}
+          </Button>
+        </View>
+      ) : pkg.reviewing ? (
+        <Button disabled onPress={() => undefined}>
+          {text.reviewing}
+        </Button>
+      ) : !confirming ? (
+        <Button primary onPress={() => setConfirming(true)}>
+          {text.subscribe}
+        </Button>
+      ) : subs.data === undefined ? (
+        // 내 구독을 못 읽으면 «해지했던 팀인지»를 모른다 — 모르는 채로 구독을 보내지 않는다
+        <LoadState loading={subs.loading} error={subs.error} retry={subs.retry}>
+          {null}
+        </LoadState>
+      ) : (
+        <Card style={{ gap: 12, borderColor: colors.accent }}>
+          <Text style={s.heading}>{text.confirmTitle}</Text>
+          <Text style={s.text}>{text.confirmBody(pkg.name)}</Text>
+          {prior ? (
+            <Block title={text.priorTitle}>
+              <Text style={s.small}>{text.priorBody}</Text>
+              <View style={[s.row, { gap: 8 }]}>
+                <Choice
+                  label={text.restore}
+                  selected={restore === true}
+                  onPress={() => setRestore(true)}
+                />
+                <Choice
+                  label={text.fresh}
+                  selected={restore === false}
+                  onPress={() => setRestore(false)}
+                />
               </View>
-            </View>
-            <View style={[s.row, { gap: 8 }]}>
-              <Button small primary onPress={() => onOpenRoom(sub.roomId)}>
-                {text.openRoom}
-              </Button>
-              {sub.status === "active" && (
-                <Button small onPress={() => setManaging(sub)}>
+            </Block>
+          ) : null}
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Button
+              primary
+              busy={act.busy}
+              disabled={prior && restore === undefined}
+              onPress={() => void subscribe()}
+            >
+              {text.confirm}
+            </Button>
+            <Button disabled={act.busy} onPress={() => setConfirming(false)}>
+              {text.back}
+            </Button>
+          </View>
+        </Card>
+      )}
+    </View>
+  );
+}
+
+function Mine({
+  subs,
+  refreshSubs,
+  onOpenRoom,
+  onExplore,
+}: {
+  subs: SubsLoad;
+  refreshSubs: () => Promise<void>;
+  onOpenRoom: (roomId: string) => void;
+  onExplore: () => void;
+}) {
+  const wide = useWide();
+  const [managingId, setManagingId] = useState<string>();
+  const managing = subs.data?.find((sub) => sub.id === managingId);
+
+  return (
+    <View style={{ flex: 1, flexDirection: wide ? "row" : "column" }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
+        <LoadState
+          loading={subs.loading && !subs.data}
+          error={subs.error}
+          retry={subs.retry}
+          empty={
+            subs.data?.length === 0 && {
+              title: text.emptyMine,
+              detail: text.emptyMineHint,
+              action: (
+                <Button primary onPress={onExplore}>
+                  {text.goExplore}
+                </Button>
+              ),
+            }
+          }
+        >
+          {subs.data?.map((sub) => (
+            <Card
+              key={sub.id}
+              style={{
+                gap: 10,
+                ...(managingId === sub.id ? { borderColor: colors.accent } : null),
+              }}
+            >
+              <View style={[s.row, { gap: 12 }]}>
+                <CharacterAvatar character={sub.character} size={42} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                    <Text style={s.heading}>{sub.packageName}</Text>
+                    <Chip tint={statusTint[sub.status]}>{text.status[sub.status]}</Chip>
+                  </View>
+                  <SubTerm sub={sub} />
+                  <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                    <Text style={s.small}>{text.pending}</Text>
+                    {sub.pendingApprovals > 0 ? (
+                      <Badge count={sub.pendingApprovals} />
+                    ) : (
+                      <Text style={s.small}>{text.none}</Text>
+                    )}
+                    <Text style={s.small}>· {text.progress}</Text>
+                    {typeof sub.progress === "number" ? (
+                      <Text style={[s.small, { fontFamily: fonts.mono, color: colors.text }]}>
+                        {percent(sub.progress)}
+                      </Text>
+                    ) : (
+                      <Chip>{text.measuring}</Chip>
+                    )}
+                  </View>
+                </View>
+              </View>
+              <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                <Button small primary onPress={() => onOpenRoom(sub.roomId)}>
+                  {text.openRoom}
+                </Button>
+                <Button small onPress={() => setManagingId(sub.id)}>
                   {text.manage}
                 </Button>
-              )}
-            </View>
-          </Card>
-        ))}
-      </LoadState>
-      {managing && (
-        <Sheet title={text.manage} subtitle={managing.packageName} onClose={close}>
-          <View style={{ gap: 16 }}>
-            <Block title={text.plan}>
-              <Text style={s.text}>{won(managing.priceMonthly)}</Text>
-              <Text style={s.small}>{text.planChange}</Text>
-            </Block>
-            <ErrorNotice error={act.error} />
-            {confirming ? (
-              <>
-                <Text style={s.text}>{text.cancelNotice}</Text>
-                <View style={[s.row, { gap: 8 }]}>
-                  <Button danger busy={act.busy} onPress={() => cancel(managing)}>
-                    {text.cancelConfirm}
-                  </Button>
-                  <Button onPress={() => setConfirming(false)}>{text.back}</Button>
-                </View>
-              </>
-            ) : (
-              <Button danger onPress={() => setConfirming(true)}>
-                {text.cancel}
-              </Button>
-            )}
-          </View>
-        </Sheet>
-      )}
-    </ScrollView>
+              </View>
+            </Card>
+          ))}
+        </LoadState>
+      </ScrollView>
+      {managing ? (
+        <Panel
+          wide={wide}
+          title={text.manage}
+          subtitle={managing.packageName}
+          onClose={() => setManagingId(undefined)}
+        >
+          <Manage key={managing.id} sub={managing} refreshSubs={refreshSubs} />
+        </Panel>
+      ) : wide ? (
+        <PanelHint>{text.pickSub}</PanelHint>
+      ) : null}
+    </View>
   );
 }
 
-function Metrics({ metrics }: { metrics: Pkg["metrics"] }) {
+/** 구독 기간 한 줄: 구독 중 = 다음 결제일, 해지 예정 = 기간 말, 종료 = 없음(상태 칩이 말한다). */
+function SubTerm({ sub }: { sub: Sub }) {
+  if (sub.status === "ended") return null;
+  const date = sub.status === "active" ? sub.nextBillingAt : sub.endsAt;
+  if (!date) return null;
+  const label = dateLabel(date);
   return (
-    <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-      <Chip>
-        {text.published} {metrics.published}
-      </Chip>
-      <Chip>
-        {text.indexed} {metrics.indexed}
-      </Chip>
-      <Chip>
-        {text.citations} {metrics.ai_citations}
-      </Chip>
+    <Text style={[s.small, { fontFamily: fonts.mono }]}>
+      {sub.status === "active" ? `${text.nextBilling} ${label}` : text.until(label)}
+    </Text>
+  );
+}
+
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <View style={[s.between, { gap: 12 }]}>
+      <Text style={s.muted}>{label}</Text>
+      {children}
+    </View>
+  );
+}
+
+function Manage({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<void> }) {
+  const { api, notify } = useWorkspace();
+  const [confirming, setConfirming] = useState(false);
+  const act = useAction();
+  const change = (action: "cancel" | "resume", done: string) =>
+    act.run(async () => {
+      await api.request(`/api/subscriptions/${sub.id}/${action}`, {});
+      notify(done);
+      setConfirming(false);
+      await refreshSubs();
+    });
+
+  return (
+    <View style={{ gap: 16 }}>
+      <View style={{ gap: 10 }}>
+        <Row label={text.price}>
+          <Text style={[s.text, { fontFamily: fonts.mono }]}>{won(sub.priceMonthly)}</Text>
+        </Row>
+        <Row label={text.billingDate}>
+          {sub.status === "active" ? (
+            <Text style={[s.text, { fontFamily: fonts.mono }]}>{dateLabel(sub.nextBillingAt)}</Text>
+          ) : (
+            <Chip tint={statusTint[sub.status]}>{text.status[sub.status]}</Chip>
+          )}
+        </Row>
+        <Row label={text.paymentMethod}>
+          <Text style={s.text}>{sub.paymentMethod ?? text.noPaymentMethod}</Text>
+        </Row>
+      </View>
+      <SubTerm sub={sub} />
+      <ErrorNotice error={act.error} />
+      {sub.status === "cancelled" ? (
+        <Button
+          primary
+          busy={act.busy}
+          onPress={() => void change("resume", text.resumeDone(sub.packageName))}
+        >
+          {text.resume}
+        </Button>
+      ) : sub.status === "ended" ? null : confirming ? (
+        <>
+          <Text style={s.text}>{text.cancelNotice}</Text>
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Button
+              danger
+              busy={act.busy}
+              onPress={() => void change("cancel", text.cancelDone(sub.packageName))}
+            >
+              {text.cancelConfirm}
+            </Button>
+            <Button disabled={act.busy} onPress={() => setConfirming(false)}>
+              {text.back}
+            </Button>
+          </View>
+        </>
+      ) : (
+        <Button danger onPress={() => setConfirming(true)}>
+          {text.cancel}
+        </Button>
+      )}
     </View>
   );
 }

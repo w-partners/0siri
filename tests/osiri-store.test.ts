@@ -34,10 +34,12 @@ const legalTeam = {
   category: "legal",
   summary: "판례·법령 감지부터 GEO 콘텐츠 발행까지",
   roles: [
-    { name: "orchestrator", title: "팀장", summary: "목표 분해·배분" },
+    { name: "root", title: "팀장", summary: "목표 분해·배분" },
     { name: "drafter", title: "초안 생성", summary: "법령 근거 초안" },
     { name: "geo", title: "GEO 최적화", summary: "AI 검색 인용 구조" },
     { name: "reviewer", title: "검수·컴플라이언스", summary: "인용·광고 규정" },
+    { name: "publisher", title: "발행", summary: "승인된 것만 발행" },
+    { name: "analyst", title: "성과 분석", summary: "주간 보고" },
   ],
   approvalPoints: ["발행 전 변호사 승인"],
   verified: true,
@@ -90,7 +92,7 @@ test("패키지 등록 검증 — 검수 역할·승인 지점 없으면 거절,
   };
   assert.equal(pkg.runtime, undefined, "팀 YAML·이미지는 비공개");
   assert.equal(pkg.priceMonthly, 0, "기본 파일럿 무료");
-  assert.equal(pkg.roleCount, 4);
+  assert.equal(pkg.roleCount, 6);
 });
 
 test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·롤백), 해지", async () => {

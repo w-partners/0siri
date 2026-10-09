@@ -31,6 +31,8 @@ import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Files } from "../files.ts";
 import { backgroundFailure } from "../log.ts";
+import type { Memories } from "../osiri/memories.ts";
+import type { Routing } from "../osiri/routing.ts";
 import { SearchService } from "../search.ts";
 import type { WorkspaceService } from "../workspace.ts";
 import { analyzeSpending } from "./finance.ts";
@@ -52,6 +54,8 @@ const terminal = new Set(["succeeded", "failed", "cancelled"]);
 export class AgentService {
   readonly worker: TaskWorker;
   readonly search: SearchService;
+  /** 0Siri: 기억(pgvector)·모델 라우팅. app.ts 가 꽂는다 — 없으면(업스트림 단독 테스트) 엔진은 라우팅 없이 config.model 로 돈다. */
+  osiri?: { memories: Memories; routing: Routing };
   private maintenance?: ReturnType<typeof setInterval>;
   private refreshing = false;
   constructor(

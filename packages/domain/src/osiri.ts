@@ -104,11 +104,11 @@ export type RouteKind = (typeof ROUTE_KINDS)[number];
 /** 답변 출처 (§11.1 배지, 메시지 answered_by.source) */
 export const ANSWER_SOURCES = ["device", "server", "byok"] as const;
 export type AnswerSource = (typeof ANSWER_SOURCES)[number];
-export const ANSWER_SOURCE_LABELS: Record<AnswerSource, string> = {
+export const ANSWER_SOURCE_LABELS = {
   device: "기기에서 답함",
   server: "서버에서 답함",
   byok: "내 모델 계정으로 답함",
-};
+} as const satisfies Record<AnswerSource, string>;
 
 // ---- 임베딩 (§11 티어 0, §22-5) ----
 export const EMBED_MODEL_ID = "onnx-community/embeddinggemma-2-ONNX";

@@ -189,6 +189,7 @@ export function ChatScreen({
   roomId,
   onMood,
   header,
+  footer,
   placeholder,
   answerLabel,
 }: {
@@ -201,6 +202,8 @@ export function ChatScreen({
   onMood?: (mood: Mood) => void;
   /** 0Siri 팀 방: 승인·보고 카드를 같은 대화 흐름 맨 위에 싣는다(기획 화면 3 — 대화 하나에 카드 인라인). */
   header?: ReactNode;
+  /** 대화 끝(가장 최근 자리)에 붙는 카드 — 지금 결정해야 하는 승인 카드 */
+  footer?: ReactNode;
   placeholder?: string;
   /** 답변마다 «누가 답했는지» 한 줄 (기기에서 답함 · 서버 주력 · 기억에서 찾음). 모르면 undefined. */
   answerLabel?: (messageId: string) => string | undefined;
@@ -464,7 +467,7 @@ export function ChatScreen({
         }}
         scrollEventThrottle={100}
         onContentSizeChange={() => {
-          if (active && visible.length > 0 && followLatest.current)
+          if (active && (visible.length > 0 || !!footer) && followLatest.current)
             list.current?.scrollToEnd({ animated: false });
         }}
         keyboardShouldPersistTaps="handled"
@@ -570,6 +573,7 @@ export function ChatScreen({
             );
           })
         )}
+        {footer}
         {!richThreads && (
           <>
             {!!agentWorkspace?.artifacts.length && (

@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { t } from "./strings";
+
 // 색 토큰의 유일한 출처 — «0Siri 종합 기획» §03 공통 디자인 규칙의 팔레트(:root / prefers-color-scheme: dark)를 그대로 옮겼다.
 // ponytail: 다크 모드는 앱을 켤 때의 시스템 설정을 따른다(StyleSheet 가 모듈 로드 시 굳는다).
 // 켜진 채로 바뀌면 웹은 App 이 새로고침하고, 네이티브는 다음 실행부터 — 실시간 전환이 필요해지면 테마 컨텍스트로 올린다.
@@ -98,7 +99,13 @@ export const s = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
   },
-  title: { color: colors.text, fontSize: 23, fontWeight: "600", letterSpacing: -0.7, fontFamily: fonts.display },
+  title: {
+    color: colors.text,
+    fontSize: 23,
+    fontWeight: "600",
+    letterSpacing: -0.7,
+    fontFamily: fonts.display,
+  },
   heading: { color: colors.text, fontSize: 16, fontWeight: "600", letterSpacing: -0.25 },
   card: {
     backgroundColor: colors.card,
@@ -149,7 +156,13 @@ export const s = StyleSheet.create({
     alignItems: "center",
     backgroundColor: colors.sky,
   },
-  error: { padding: 16, borderRadius: 14, backgroundColor: colors.missBg, marginVertical: 10, gap: 4 },
+  error: {
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: colors.missBg,
+    marginVertical: 10,
+    gap: 4,
+  },
   modalShade: {
     flex: 1,
     backgroundColor: "rgba(35,48,44,0.25)",

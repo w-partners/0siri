@@ -117,8 +117,7 @@ export class Catalog {
       throw new AppError("팀장·전문 역할 2개 이상·검수 역할이 있어야 팀입니다", 422);
     // 런타임(loadTeam)이 요구하는 것과 같은 목록 — 등록은 됐는데 팀이 뜨지 않는 패키지를 막는다
     const missing = missingTeamRoles(input.roles.map((r) => r.name));
-    if (missing.length)
-      throw new AppError(`팀 필수 역할이 없습니다: ${missing.join(", ")}`, 422);
+    if (missing.length) throw new AppError(`팀 필수 역할이 없습니다: ${missing.join(", ")}`, 422);
     if (input.approvalPoints.length === 0)
       throw new AppError("승인 지점을 1개 이상 선언해야 합니다", 422);
     const existing = (await this.db.list<TeamPackage>("system", "packages")).find(
@@ -277,7 +276,10 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
       await catalog.packages({
         q: c.req.query("q"),
         // "전체" 는 값이 아니라 필터 없음 — category 를 보내지 않는다
-        category: z.enum(STORE_CATEGORY_IDS).optional().parse(c.req.query("category") || undefined),
+        category: z
+          .enum(STORE_CATEGORY_IDS)
+          .optional()
+          .parse(c.req.query("category") || undefined),
         sort: c.req.query("sort") as "performance" | "price" | "newest" | undefined,
       }),
     ),

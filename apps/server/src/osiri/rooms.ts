@@ -123,7 +123,8 @@ export class Rooms {
     const rooms = await this.db.list<Room>(owner, "rooms");
     const personal = rooms.find((room) => room.packageId === null);
     return (
-      personal ?? this.create(owner, {
+      personal ??
+      this.create(owner, {
         packageId: null,
         title: PERSONAL_ROOM_TITLE,
         character: PERSONAL_CHARACTER_ID,

@@ -271,10 +271,12 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
         summary: z.string().max(4000),
         evidence: z.string().max(20000).optional(),
         actor: z.string().min(1).max(60),
+        goal_id: z.string().max(100).optional(),
       })
       .parse(await c.req.json());
     const approval = await approvals.request(c.get("owner"), {
       roomId: c.get("roomId"),
+      goalId: body.goal_id,
       toolName: body.toolName,
       input: body.input,
       title: body.title,
@@ -283,6 +285,23 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
       requestedBy: body.actor,
     });
     return c.json({ id: approval.id, status: approval.status, inputHash: approval.inputHash });
+  });
+  // 목표에 걸린 승인 목록(오래된 순) — 워커가 승인 단계에 멈춘 목표를 이어 갈 때 상태를 확인한다
+  app.get("/approvals", async (c) => {
+    const goalId = c.req.query("goal_id");
+    if (!goalId) throw new AppError("goal_id 가 필요합니다", 422);
+    const linked = await approvals.forGoal(c.get("owner"), c.get("roomId"), goalId);
+    return c.json(
+      linked.map(({ id, status, toolName, input, title, summary, evidence }) => ({
+        id,
+        status,
+        toolName,
+        input,
+        title,
+        summary,
+        evidence,
+      })),
+    );
   });
   // 워커 폴링: 승인되면 1회용 토큰을 한 번만 돌려준다
   app.get("/approvals/:id", async (c) => {

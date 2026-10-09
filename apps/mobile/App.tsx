@@ -31,9 +31,17 @@ import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
 import { LoginScreen, loadApiBase, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
-import { CharacterAvatar } from "./src/osiri/eve";
+import { CharacterAvatar, type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { InboxScreen } from "./src/osiri/inbox";
-import { type Room, RoomList, RoomScreen } from "./src/osiri/rooms";
+import {
+  type Room,
+  RoomList,
+  RoomScreen,
+  refreshRooms,
+  resetRooms,
+  useRooms,
+  useRoomsLive,
+} from "./src/osiri/rooms";
 import { SettingsScreen } from "./src/osiri/settings";
 import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
@@ -67,6 +75,7 @@ const text = {
   notifications: (n: number) => (n ? `알림 ${n}건` : "알림"),
   sideInbox: "활동·결재함",
   noPersonal: "개인 방(영시리)을 찾지 못했습니다. 다시 시도해 주세요.",
+  settingsFailed: "캐릭터 설정을 읽지 못해 기본 모습으로 보여 드려요",
   noRoom: "그 방을 찾지 못했습니다. 해지됐거나 주소가 바뀌었을 수 있어요.",
 };
 // 옛 openmuse 섹션 → 0Siri 탭 (agent-ui 등이 navigate("chat") 을 부를 때)
@@ -180,9 +189,11 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
   const [room, setRoom] = useState<Room>();
+  // 방 목록은 rooms.tsx 의 한 벌을 본다 (사이드바·탭 배지·홈 채팅·딥링크가 같은 값)
+  const { rooms, error: roomsError } = useRooms();
   // 기본 채팅 = 개인 방(영시리). 서버가 /api/rooms 호출 때 없으면 만든다
-  const [personal, setPersonal] = useState<Room>();
-  const [pending, setPending] = useState(0); // 승인 대기 합계 — 서버가 방마다 센 값을 더한다(탭 배지)
+  const personal = rooms?.find((r) => r.packageId === null);
+  const pending = rooms?.reduce((sum, r) => sum + r.pendingApprovals, 0) ?? 0; // 탭 배지
   const [skipOnboarding, setSkipOnboarding] = useState(false);
   const [detail, setDetail] = useState<Detail>();
   const [toast, setToast] = useState("");
@@ -205,19 +216,13 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     const timer = setTimeout(() => setToast(""), 5500);
     return () => clearTimeout(timer);
   }, [toast]);
-  // 개인 방(홈 채팅) + 웹 딥링크 /rooms/:id — 한 번의 목록 조회로 둘 다
-  // biome-ignore lint/correctness/useExhaustiveDependencies: tab·room 이 바뀔 때 배지를 다시 센다
   useEffect(() => {
-    void api
-      .request<Room[]>("/api/rooms")
-      .then((rooms) => {
-        const mine = rooms.find((r) => r.packageId === null);
-        setPersonal(mine);
-        setPending(rooms.reduce((sum, r) => sum + r.pendingApprovals, 0));
-        if (!mine) setError(text.noPersonal);
-      })
-      .catch((e) => setError(String(e)));
-  }, [api, tab, room]);
+    if (rooms && !rooms.some((r) => r.packageId === null)) setError(text.noPersonal);
+  }, [rooms]);
+  // 열려 있는 방의 배지·상태도 목록이 바뀌면 따라간다
+  useEffect(() => {
+    setRoom((open) => (open && rooms?.find((r) => r.id === open.id)) || open);
+  }, [rooms]);
   useEffect(() => writeLocation(tab, room?.id, storeTab), [tab, room, storeTab]);
   // 세션 만료(401) 면 로그인으로
   useEffect(() => {
@@ -236,14 +241,12 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   }, []);
   const openRoomById = useCallback(
     (id: string) =>
-      void api
-        .request<Room[]>("/api/rooms")
-        .then((rooms) => {
-          const found = rooms.find((r) => r.id === id);
-          if (found) openRoom(found);
-          else setError(text.noRoom);
-        })
-        .catch((e) => setError(String(e))),
+      void refreshRooms(api).then((list) => {
+        // 조회 실패(null)는 목록이 사유를 보인다 — 여기서는 «없는 방» 만 말한다
+        const found = list?.find((r) => r.id === id);
+        if (found) openRoom(found);
+        else if (list) setError(text.noRoom);
+      }),
     [api, openRoom],
   );
   // 웹 딥링크 /rooms/:id — 못 찾으면 openRoomById 가 사유를 띄운다
@@ -310,8 +313,16 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
             detail={detail}
             toast={toast}
             clearToast={() => setToast("")}
-            error={error}
-            onLogout={() => void logout(api).then(onLogout)}
+            error={error || (rooms ? "" : roomsError)}
+            onLogout={() =>
+              void logout(api)
+                .then((warning) => {
+                  resetRooms();
+                  if (warning) console.warn(`[0siri] ${warning}`);
+                  onLogout();
+                })
+                .catch((e) => setError(String(e)))
+            }
           />
         </ThreadsProvider>
       </AgentWorkspaceProvider>
@@ -352,7 +363,15 @@ function Shell({
   error: string;
   onLogout: () => void;
 }) {
-  const { workspace, open } = useWorkspace();
+  const { workspace, open, api, notify } = useWorkspace();
+  useRoomsLive(); // 로그인해 있는 동안 방 목록을 살아 있게 (첫 조회 + 사용자 스트림)
+  // 캐릭터 끄기·반응 강도 (화면 11) — 서버 설정이 정본
+  useEffect(() => {
+    void api
+      .request<{ character: CharacterPref }>("/api/settings")
+      .then((v) => setCharacterPref(v.character))
+      .catch((e) => notify(`${text.settingsFailed}: ${e instanceof Error ? e.message : e}`));
+  }, [api, notify]);
   const { width } = useWindowDimensions();
   const desktop = width >= 900;
   const notices = workspace.actions.filter((a) => a.status === "awaiting_review").length;
@@ -360,9 +379,9 @@ function Shell({
     tab === "store" ? (
       <StoreScreen tab={storeTab} onTab={setStoreTab} onOpenRoom={openRoomById} />
     ) : tab === "inbox" ? (
-      <InboxScreen />
+      <InboxScreen onOpenRoom={openRoomById} />
     ) : tab === "goals" ? (
-      <TeamGoalsScreen />
+      <TeamGoalsScreen onOpenRoom={openRoomById} />
     ) : tab === "settings" ? (
       <SettingsScreen onLogout={onLogout} />
     ) : (
@@ -434,7 +453,10 @@ function Shell({
               }}
             >
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                <RoomList onOpen={openRoom} activeId={room?.id ?? (tab === "rooms" ? personal?.id : undefined)} />
+                <RoomList
+                  onOpen={openRoom}
+                  activeId={room?.id ?? (tab === "rooms" ? personal?.id : undefined)}
+                />
               </ScrollView>
               <View
                 style={{
@@ -575,7 +597,9 @@ function NavButton({
       }}
     >
       <item.icon size={21} strokeWidth={1.8} color={active ? colors.accent : colors.text} />
-      <Text style={{ fontSize: 10, color: active ? colors.accent : colors.text }}>{item.label}</Text>
+      <Text style={{ fontSize: 10, color: active ? colors.accent : colors.text }}>
+        {item.label}
+      </Text>
       {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: 3, right: "22%" }} />}
     </Pressable>
   );

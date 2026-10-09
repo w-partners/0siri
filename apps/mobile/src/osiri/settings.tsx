@@ -1,6 +1,32 @@
-// 0Siri 설정 (0SIRI-SPEC §4.7, §4.8, §4.11 · S7/S8/S11): 한 화면 스크롤, 섹션마다 독립 로드·오류·재시도.
-import { useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+// 0Siri 화면 11 · 설정 (모델 · 사용량 · 과금). 계약: docs/0siri-api-contract.md «설정 (화면 11)».
+// 짧은 한 장 + 하위 화면(연결 7 · 기억 8 · 스킬 9 · 운영자 콘솔 10 …). 웹은 /settings/<sub> 로 주소에 남긴다.
+import {
+  Activity,
+  ArrowLeft,
+  Brain,
+  LogOut,
+  type LucideIcon,
+  Plug,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  User,
+  UserCog,
+} from "lucide-react-native";
+import { useEffect, useState } from "react";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import {
+  EMBED_DOWNLOAD_MB,
+  EMBED_MODEL_ID,
+  FIXED_TIERS,
+  type ModelTier,
+  RETENTION_DAYS,
+  TIER_LABELS,
+  USER_ROLES,
+  type UserRole,
+} from "../../../../packages/domain/src/osiri";
+import type { Invite, PublicUser } from "../../../server/src/osiri/accounts.ts";
+import type { Routing } from "../../../server/src/osiri/routing.ts";
 import {
   Button,
   Card,
@@ -10,266 +36,821 @@ import {
   dateLabel,
   ErrorNotice,
   Field,
+  LinkRow,
   SectionHeading,
-  Sheet,
   s,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { measureDevice } from "./device-embed";
-import type { DeviceReport } from "./device-embed.types";
-import { Block, Choice, LoadState, useAction, useLoad, won } from "./store";
-import { type SearchResult, searchMemories } from "./tier0";
+import type { Me } from "./auth";
+import {
+  Confirm,
+  ConnectionsScreen,
+  column,
+  columns,
+  KEY_PROVIDERS,
+  Loaded,
+  type ModelKey,
+  mono,
+  PROVIDER_LABELS,
+} from "./connections";
+import { deviceAvailable, embedOnDevice, measureDevice } from "./device-embed";
+import { MemoryScreen } from "./memory";
+import { OperatorScreen } from "./operator";
+import { SkillsScreen } from "./skills";
+import { Block, Choice, useAction, useLoad, won } from "./store";
+
+// ---- 계약 타입 (서버 타입에 아직 없는 것만 한 번 선언 — 서버가 내보내면 그쪽을 type-import 한다) ----
+const ANSWER_MODE_LABELS = { auto: "자동", device: "항상 기기", server: "항상 서버" } as const;
+type AnswerMode = keyof typeof ANSWER_MODE_LABELS;
+const INTENSITY_LABELS = { motion: "동작", face: "표정만", text: "문구만" } as const;
+type Intensity = keyof typeof INTENSITY_LABELS;
+/** 계약 «설정»: GET /settings */
+interface AppSettings {
+  tier: { label: string; subscription: string | null; nextBillingAt: string | null };
+  answerMode: AnswerMode;
+  autoEconomy: boolean;
+  fixedModel: string | null;
+  monthlyCapKrw: number | null;
+  notifications: { approvals: boolean; weeklyReport: boolean };
+  character: { enabled: boolean; intensity: Intensity };
+}
+/** 계약 «설정»: GET /billing/usage. percent 는 상한 대비 0~100, null = 측정 중 */
+interface BillingUsage {
+  costKrw: number;
+  capKrw: number | null;
+  percent: number | null;
+  byok: boolean;
+  savedKrw: number | null;
+}
+type MonthUsage = Awaited<ReturnType<Routing["month"]>>;
+
+// ---- 하위 화면 ----
+const SUBS = ["connections", "memory", "skills", "operator", "admin", "profile", "usage"] as const;
+type Sub = (typeof SUBS)[number];
+const isSub = (value: string | undefined): value is Sub => SUBS.some((sub) => sub === value);
+const SUB_TITLES: Record<Sub, string> = {
+  connections: "연결",
+  memory: "기억",
+  skills: "스킬",
+  operator: "운영자 콘솔",
+  admin: "관리자",
+  profile: "프로필",
+  usage: "사용량 상세",
+};
+/** 역할이 있어야 열리는 하위 화면 — 메뉴와 주소 진입이 같은 표를 본다 */
+const SUB_ROLES: Partial<Record<Sub, UserRole[]>> = {
+  operator: ["operator", "admin"],
+  admin: ["admin"],
+};
+function readSub(): Sub | undefined {
+  if (Platform.OS !== "web" || typeof location === "undefined") return undefined;
+  const [, first, second] = location.pathname.split("/");
+  return first === "settings" && isSub(second) ? second : undefined;
+}
+function writeSub(sub: Sub | undefined) {
+  if (Platform.OS !== "web" || typeof history === "undefined") return;
+  const path = sub ? `/settings/${sub}` : "/settings";
+  if (location.pathname !== path) history.replaceState(null, "", path);
+}
+
+// ---- 기기 모델 2층 ----
+/** 큰 층 표기 — 기획 화면 11 의 값. 이 빌드에는 내려받을 실물이 없어 다른 정의처가 없다 */
+const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" };
+/** transformers.js 가 브라우저에 모델을 두는 캐시 이름 (device-embed.web.ts 가 그 라이브러리로 받는다) */
+const MODEL_CACHE = "transformers-cache";
+const LAYER_STATE_LABELS = {
+  unknown: "확인 전",
+  none: "미다운로드",
+  downloading: "다운로드 중",
+  ready: "준비됨",
+  unsupported: "미지원 기기",
+  oom: "메모리 부족",
+} as const;
+type LayerState = keyof typeof LAYER_STATE_LABELS;
+const layerTint: Partial<Record<LayerState, string>> = {
+  ready: colors.okBg,
+  downloading: colors.accentSoft,
+  unsupported: colors.warnBg,
+  oom: colors.missBg,
+};
+const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+// ponytail: 메모리 부족은 런타임이 던진 오류 문장으로만 가린다 — 런타임이 종류를 알려 주면 그걸로 바꾼다
+const isOutOfMemory = (e: unknown) =>
+  e instanceof RangeError || /out of memory|allocation failed|bad_alloc/i.test(reasonOf(e));
+const modelCached = async (cache: Cache) =>
+  (await cache.keys()).filter((request) => request.url.includes(EMBED_MODEL_ID));
 
 const text = {
+  back: "설정",
   save: "저장",
   saved: "저장했습니다",
   add: "추가",
+  cancel: "취소",
+  roles: { user: "사용자", operator: "운영자", admin: "관리자" } satisfies Record<UserRole, string>,
+  tierTitle: "등급 · 구독",
+  subscribed: (name: string) => `${name} 구독 중`,
+  noSubscription: "구독 중인 팀이 없습니다",
+  goStore: "스토어 보기",
+  nextBilling: "다음 결제일",
+  noBilling: "예정된 결제가 없습니다",
+  modelTitle: "답변 방식 · 모델",
+  answerMode: "답변 방식",
+  answerModeHints: {
+    auto: "자동: 티어 0 임베딩 신호 → 티어 1 기기 답변 → 서버 경량·주력·최고로 상향",
+    device:
+      "항상 기기: 가능한 작업은 기기에서 끝내고, 도구·웹·긴 작업은 실행 전에 서버 상향 확인을 띄웁니다",
+    server: "항상 서버: 기기 답변을 쓰지 않습니다",
+  } satisfies Record<AnswerMode, string>,
+  autoEconomy: "가성비 자동 라우팅",
+  fixedModel: "모델 직접 고르기",
+  fixedNone: "고르지 않음",
+  fixedCurrent: (model: string) => `지금 고정된 모델: ${model}`,
+  deviceTitle: "기기 모델",
+  smallLayer: "작은 층 · 임베딩젬마 2",
+  smallLayerHint: `기본 다운로드 ${EMBED_DOWNLOAD_MB}MB · 기억 검색·분류 신호`,
+  status: "상태",
+  download: "받기",
   remove: "삭제",
-  profile: "프로필",
+  removeSmall:
+    "작은 층을 지우면 기억 검색은 서버 임베딩으로 대체됩니다. 이미 올라온 모델은 이 화면을 새로 고칠 때까지 메모리에 남습니다.",
+  cacheUnreadable: "이 환경은 모델 저장소를 조회할 수 없어 내려받았는지 확인하지 못합니다",
+  smallStates: {
+    unknown: "아직 확인하지 않았습니다",
+    none: "내려받지 않았습니다 — 기억 검색은 서버 임베딩으로 합니다",
+    downloading: "내려받는 중입니다",
+    ready: "이 기기에 있습니다 — 기억 검색을 기기에서 합니다",
+    unsupported: "이 기기에서는 쓸 수 없습니다 — 기억 검색은 서버 임베딩으로 합니다",
+    oom: "메모리가 모자라 올리지 못했습니다 — 기억 검색은 서버 임베딩으로 합니다",
+  } satisfies Record<LayerState, string>,
+  bigLayer: `큰 층 · ${BIG_LAYER.name}`,
+  bigLayerHint: `${BIG_LAYER.size} · 사용자가 켜면 Wi-Fi로 다운로드 · 기기 대화 답변`,
+  turnOn: "켜기",
+  bigUnavailable: "이 빌드에서는 아직 받을 수 없습니다",
+  bigReason:
+    "기기 LLM 런타임(LiteRT-LM)이 아직 앱에 들어 있지 않습니다. 그때까지 대화 답변은 서버가 합니다.",
+  bigRule:
+    "받을 수 있게 되면 [켜기]를 눌러야만 내려받고, Wi-Fi 가 아니면 시작 전에 확인을 요구합니다.",
+  usageTitle: "이번 달 사용량 (공용 열쇠 기준)",
+  percentOfCap: (n: number) => `상한의 ${Math.round(n)}%`,
+  spent: (cost: string, cap: string) => `${cost} / ${cap}`,
+  noCap: "월 상한이 없습니다 — 상한을 정하면 사용량 비율이 보입니다",
+  measuring: "측정 중",
+  byokUsage: "본인 계정 청구 · 상한 제외",
+  warn80: "월 상한의 80%를 넘었습니다",
+  capReached: "월 상한에 도달해 공용 경로가 멈췄습니다 — 내 API 키를 등록하거나 상한을 올려 주세요",
+  cap: "월 예산 상한 (원, 비우면 없음)",
+  capInvalid: "월 상한은 0 이상의 숫자여야 합니다",
+  saving: "라우팅으로 아낀 금액",
+  byokRule: "자기 키 사용분은 상한에서 제외 · 본인 계정으로 직접 청구",
+  krw: (n: number) => `${n.toLocaleString("ko-KR")}원`,
+  keysTitle: "내 API 키",
+  keyActive: (label: string, last4: string | null) =>
+    last4 === null ? `${label} 활성` : `${label} 활성 (•••• ${last4})`,
+  noKeys: "등록된 키 없음 — 공용 열쇠로 동작 중",
+  manageKeys: "관리: 연결 화면",
+  notifyTitle: "알림",
+  notifyApprovals: "승인 대기",
+  notifyWeekly: "주간 보고",
+  characterTitle: "캐릭터",
+  characterOn: "캐릭터 표시",
+  intensity: "반응 강도",
+  menuTitle: "더 보기",
+  menu: {
+    connections: "MCP 도구 · 모델 계정(내 API 키)",
+    memory: "에이전트가 나에 대해 아는 사실 · 개인 스킬",
+    skills: "스킬 초안 승인 · 버전",
+    operator: "패키지 버전 · 지표 · 공지",
+    admin: "초대 · 사용자 · 패키지 가격",
+    profile: "표시 이름 · 소개",
+    usage: "호출 · 토큰 · 등급별",
+  } satisfies Record<Sub, string>,
+  deleteData: "데이터 삭제",
+  deleteHint: `계정과 모든 데이터를 ${RETENTION_DAYS}일 안에 삭제합니다`,
+  deleteConfirm: `데이터 삭제를 요청하면 ${RETENTION_DAYS}일 안에 계정·기억·대화가 모두 지워지고 되돌릴 수 없습니다.`,
+  deleteAction: "삭제 요청",
+  deleteAccepted: (date: string) =>
+    `삭제 요청을 접수했습니다. ${RETENTION_DAYS}일 안에(${date}까지) 모두 삭제되고 증적이 남습니다.`,
+  logout: "로그아웃",
+  forbidden: "이 화면을 볼 권한이 없습니다",
+  // 프로필 · 사용량 상세 · 관리자 (기존 기능을 하위 화면으로 옮겼다)
   phone: "전화번호",
   displayName: "표시 이름",
   credential: "소개 한 줄",
   credentialHint: "예: ○○법률사무소 변호사",
-  routing: "가성비 라우팅",
-  autoEconomy: "가성비 자동 (난이도에 맞는 등급으로 자동 배정)",
-  deviceLlm: "기기 내 경량 모델 사용 (티어 1)",
-  fixedTier: "난이도 고정",
-  auto: "자동",
-  tier: (n: number) => ({ 0: "스크립트", 1: "기기", 3: "주력" })[n] ?? `티어 ${n}`,
-  monthlyCap: "월 상한 (원, 비우면 없음)",
-  capInvalid: "월 상한은 0 이상의 숫자여야 합니다",
-  usage: "사용량·절감액",
   month: (m: string) => `${m} 기준`,
   calls: "호출",
   tokens: "토큰 (입력/출력)",
   cost: "지출",
-  saving: "절감액",
-  measuring: "측정 중",
   scriptSaved: "스크립트 대체",
   byokCalls: "내 계정(BYOK) 호출",
   times: (n: number) => `${n}회`,
-  krw: (n: number) => `${n.toLocaleString("ko-KR")}원`,
   byTier: "등급별",
-  byok: "모델 계정 (BYOK)",
-  byokHint:
-    "키는 암호화해 저장하고 끝 4자리만 표시합니다. 이 계정으로 나가는 호출은 내 요금에 들어가지 않습니다.",
-  providers: { openai: "OpenAI", anthropic: "Anthropic", google: "Google" },
-  apiKey: "API 키",
-  connect: "연결",
-  connected: "연결했습니다",
-  disconnect: "해제",
-  oauth: "구독 계정으로 연결 (OAuth)",
-  noAccounts: "연결된 모델 계정이 없습니다",
-  noAccountsHint: "제공자를 고르고 API 키를 넣으면 검증 후 연결됩니다.",
-  mcp: "연결 (MCP)",
-  mcpHint: "헤더 값은 저장 후 다시 보이지 않습니다. 이름만 표시합니다.",
-  name: "이름",
-  url: "URL",
-  riskDefault: "기본 위험도",
-  risks: { read: "읽기", write: "쓰기", external: "외부 발행" },
-  headerName: "헤더 이름",
-  headerValue: "헤더 값",
-  addHeader: "헤더 추가",
-  headers: "헤더",
-  tools: "도구 보기",
-  toolsOf: (name: string) => `${name} 도구`,
-  undeclared: "(기본값)",
-  noTools: "도구가 없습니다",
-  noToolsHint: "서버가 도구를 하나도 내놓지 않았습니다.",
-  noServers: "연결된 MCP 서버가 없습니다",
-  noServersHint: "아래에서 서버를 추가하세요.",
-  memories: "기억",
-  memoryScope: "이 기억은 이 사용자에게만 적용됩니다.",
-  memorySearch: "기억 검색",
-  searching: "임베딩 검색 중…",
-  searchEmpty: "검색 결과가 없습니다",
-  searchCount: (n: number) => `검색 결과 ${n}건`,
-  score: (n: number) => `유사도 ${Math.round(n * 100)}%`,
-  newMemory: "새 기억",
-  servedDevice: "기기에서 검색함",
-  servedServer: "서버에서 검색함",
-  fallbackReason: (r: string) => `기기 임베딩을 쓰지 못해 서버로 넘겼습니다: ${r}`,
-  deviceTitle: "기기 임베딩 실측",
-  deviceHint:
-    "이 기기에서 EmbeddingGemma 2(q8)를 돌려 속도·품질을 잽니다. 모델(약 170MB)은 처음 한 번 내려받습니다.",
-  deviceMeasure: "실측 시작",
-  deviceUnavailable: "이 기기에서는 기기 임베딩을 쓸 수 없습니다 — 검색은 서버에서 합니다",
-  deviceResult: (r: DeviceReport) =>
-    `${r.backend} · 로드 ${r.loadMs}ms · 문장당 ${r.embedMsPer}ms · ${r.dim}차원` +
-    (r.memoryMb ? ` · 메모리 ${r.memoryMb}MB` : "") +
-    (r.top1 ? ` · 한국어 top-1 ${r.top1.hits}/${r.top1.total}` : ""),
-  noMemories: "저장된 기억이 없습니다",
-  noMemoriesHint: "대화 중 쌓이거나 아래에서 직접 추가할 수 있습니다.",
-  admin: "관리자",
   invite: "초대 만들기",
   inviteUrl: "초대 링크",
   inviteToken: "초대 토큰 (한 번만 표시됩니다)",
   expires: "만료",
-  role: "역할",
-  roles: { user: "사용자", operator: "운영자", admin: "관리자" },
   phoneOptional: "전화번호 (선택)",
   invites: "초대 목록",
   used: "사용됨",
   unused: "미사용",
-  noInvites: "초대가 없습니다",
-  noInvitesHint: "위에서 초대를 만들면 여기에 보입니다.",
+  noInvites: "초대가 없습니다 — 위에서 초대를 만들면 여기에 보입니다",
   users: "사용자 목록",
-  noUsers: "사용자가 없습니다",
-  noUsersHint: "초대를 수락한 사용자가 여기에 보입니다.",
+  noUsers: "사용자가 없습니다 — 초대를 수락한 사용자가 여기에 보입니다",
   prices: "패키지 가격",
   slug: "패키지 슬러그",
   price: "월 가격 (원, 0 = 무료)",
   priceInvalid: "가격은 0 이상의 숫자여야 합니다",
   noPrices: "설정된 가격이 없습니다 (전부 파일럿 무료)",
-  logout: "로그아웃",
-  logoutFailed: (m: string) => `서버 로그아웃 실패: ${m}`,
-};
-
-type RoleKey = keyof typeof text.roles; // 서버 accounts.ts Role 과 같은 값
-type ProviderKey = keyof typeof text.providers; // 서버 routing.ts Provider 와 같은 값 — 목록 API 가 없어 여기 적는다
-type RiskKind = keyof typeof text.risks;
-interface MeInfo {
-  user: { id: string; phone: string; role: RoleKey; tier: string; createdAt: string };
-  profile: { displayName: string; credentialText?: string };
-}
-interface RoutingPrefs {
-  autoEconomy: boolean;
-  fixedTier?: 2 | 3 | 4;
-  monthlyCapKrw?: number;
-  deviceLlmEnabled: boolean;
-}
-interface MonthUsage {
-  month: string;
-  calls: number;
-  tokensIn: number;
-  tokensOut: number;
-  costKrw: number;
-  savedKrw: number | null;
-  savingsStatus: "measured" | "measuring";
-  scriptSavedCalls: number;
-  byokCalls: number;
-  byTier: { tier: number; calls: number; tokens: number }[];
-}
-interface ByokAccount {
-  id: ProviderKey;
-  last4: string;
-  validatedAt: string;
-}
-interface McpItem {
-  id: string;
-  name: string;
-  url: string;
-  riskDefault: RiskKind;
-  headerNames: string[];
-}
-interface ToolItem {
-  name: string;
-  description: string;
-  risk: RiskKind;
-  declared: boolean;
-}
-interface MemoryItem {
-  id: string;
-  text: string;
-  source: string;
-  createdAt: string;
-  score?: number;
-}
-interface InviteItem {
-  id: string;
-  phone?: string;
-  role: RoleKey;
-  expiresAt: number;
-  usedBy?: string;
-}
-interface UserItem {
-  id: string;
-  phone: string;
-  role: RoleKey;
-  tier: string;
-}
-
-const riskTint: Record<RiskKind, string> = {
-  read: colors.green,
-  write: colors.orange,
-  external: colors.lavender,
 };
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
-  const { api, notify } = useWorkspace();
-  const me = useLoad(() => api.request<MeInfo>("/api/me"));
-  const logout = useAction();
+  const { api } = useWorkspace();
+  const me = useLoad(() => api.request<Me>("/api/me"));
+  const [sub, setSub] = useState(readSub);
+  useEffect(() => writeSub(sub), [sub]);
   return (
     <ScrollView
-      contentContainerStyle={{ padding: 16, gap: 28 }}
+      contentContainerStyle={{ padding: 16, gap: 20 }}
       keyboardShouldPersistTaps="handled"
     >
-      <Section title={text.profile}>
-        <LoadState loading={me.loading} error={me.error} retry={me.retry}>
-          {me.data && <Profile me={me.data} onSaved={me.setData} />}
-        </LoadState>
-      </Section>
-      <Section title={text.routing}>
-        <Routing />
-      </Section>
-      <Section title={text.usage}>
-        <Usage />
-      </Section>
-      <Section title={text.byok}>
-        <Byok />
-      </Section>
-      <Section title={text.mcp}>
-        <Mcp />
-      </Section>
-      <Section title={text.memories}>
-        <Memories />
-      </Section>
-      {me.data?.user.role === "admin" && (
-        <Section title={text.admin}>
-          <Admin />
-        </Section>
-      )}
-      <Section title={text.logout}>
-        <Button
-          danger
-          busy={logout.busy}
-          onPress={() =>
-            logout.run(async () => {
-              // 서버 로그아웃이 실패해도 화면은 나간다 — 토큰이 이미 죽은 경우 갇히지 않게. 실패는 알린다.
-              try {
-                await api.request("/api/auth/logout", {});
-              } catch (e) {
-                notify(text.logoutFailed((e as Error).message));
-              }
-              onLogout();
-            })
-          }
+      {sub && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setSub(undefined)}
+          style={[s.row, { gap: 8 }]}
         >
-          {text.logout}
-        </Button>
-      </Section>
+          <ArrowLeft size={16} color={colors.muted} />
+          <Text style={s.small}>{text.back}</Text>
+          <Text style={[s.text, { fontWeight: "600" }]}>{SUB_TITLES[sub]}</Text>
+        </Pressable>
+      )}
+      <Loaded state={me} rows={4} height={88}>
+        {(account) =>
+          sub ? (
+            <SubScreen sub={sub} me={account} onProfile={me.setData} />
+          ) : (
+            <Main me={account} open={setSub} onLogout={onLogout} />
+          )
+        }
+      </Loaded>
     </ScrollView>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+const allowed = (sub: Sub, role: UserRole) => SUB_ROLES[sub]?.includes(role) ?? true; // 표에 없으면 누구나
+
+function SubScreen({ sub, me, onProfile }: { sub: Sub; me: Me; onProfile: (me: Me) => void }) {
+  if (!allowed(sub, me.user.role)) return <ErrorNotice error={text.forbidden} />;
+  switch (sub) {
+    case "connections":
+      return <ConnectionsScreen />;
+    case "memory":
+      return <MemoryScreen />;
+    case "skills":
+      return <SkillsScreen />;
+    case "operator":
+      return <OperatorScreen />;
+    case "admin":
+      return <Admin />;
+    case "profile":
+      return <Profile me={me} onSaved={onProfile} />;
+    case "usage":
+      return <UsageDetail />;
+  }
+}
+
+function Main({ me, open, onLogout }: { me: Me; open: (sub: Sub) => void; onLogout: () => void }) {
+  const { api } = useWorkspace();
+  const settings = useLoad(() => api.request<AppSettings>("/api/settings"));
+  const usage = useLoad(() => api.request<BillingUsage>("/api/billing/usage"));
   return (
-    <View>
-      <SectionHeading title={title} />
-      <Card style={{ gap: 12 }}>{children}</Card>
+    <View style={columns}>
+      <View style={column}>
+        <Loaded state={settings} rows={3} height={110}>
+          {(data) => (
+            <>
+              <TierCard tier={data.tier} />
+              <ModelCard
+                settings={data}
+                onSaved={(next) => {
+                  settings.setData(next);
+                  usage.retry(); // 상한이 바뀌면 비율도 바뀐다 — 서버가 다시 계산한 값을 읽는다
+                }}
+                usage={usage}
+                openConnections={() => open("connections")}
+              />
+            </>
+          )}
+        </Loaded>
+        <DeviceCard />
+      </View>
+      <View style={column}>
+        <KeysCard openConnections={() => open("connections")} />
+        <Loaded state={settings} rows={1} height={110}>
+          {(data) => <PreferencesCard settings={data} onSaved={settings.setData} />}
+        </Loaded>
+        <Menu role={me.user.role} open={open} onLogout={onLogout} />
+      </View>
     </View>
   );
 }
 
-function Profile({ me, onSaved }: { me: MeInfo; onSaved: (me: MeInfo) => void }) {
+function TierCard({ tier }: { tier: AppSettings["tier"] }) {
+  const { navigate } = useWorkspace();
+  return (
+    <View>
+      <SectionHeading title={text.tierTitle} />
+      <Card style={{ gap: 10 }}>
+        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Chip tint={colors.accentSoft}>{tier.label}</Chip>
+          <Text style={[s.text, { fontWeight: "600" }]}>
+            {tier.subscription === null ? text.noSubscription : text.subscribed(tier.subscription)}
+          </Text>
+        </View>
+        <View style={s.between}>
+          <Text style={s.small}>{text.nextBilling}</Text>
+          <Text style={[s.text, mono]}>
+            {tier.nextBillingAt === null ? text.noBilling : dateLabel(tier.nextBillingAt)}
+          </Text>
+        </View>
+        {tier.subscription === null && (
+          <Button small onPress={() => navigate("store")}>
+            {text.goStore}
+          </Button>
+        )}
+      </Card>
+    </View>
+  );
+}
+
+type UsageState = ReturnType<typeof useLoad<BillingUsage>>;
+
+function ModelCard({
+  settings,
+  onSaved,
+  usage,
+  openConnections,
+}: {
+  settings: AppSettings;
+  onSaved: (next: AppSettings) => void;
+  usage: UsageState;
+  openConnections: () => void;
+}) {
   const { api, notify } = useWorkspace();
-  const [displayName, setDisplayName] = useState(me.profile.displayName);
-  const [credentialText, setCredentialText] = useState(me.profile.credentialText ?? "");
   const act = useAction();
+  const [cap, setCap] = useState<string>();
+  // 서버가 받아들인 뒤에 서버 값을 다시 읽어 보인다 (낙관적 표시 없음)
+  const patch = (body: Partial<Pick<AppSettings, "answerMode" | "autoEconomy" | "fixedModel">>) =>
+    act.run(async () => {
+      await api.request("/api/settings/model", body, "PATCH");
+      onSaved(await api.request<AppSettings>("/api/settings"));
+    });
+  const saveCap = () =>
+    act.run(async () => {
+      const raw = (cap ?? "").trim();
+      const value = raw === "" ? null : Number(raw);
+      if (value !== null && (!Number.isFinite(value) || value < 0))
+        throw new Error(text.capInvalid);
+      await api.request("/api/settings/model", { monthlyCapKrw: value }, "PATCH");
+      onSaved(await api.request<AppSettings>("/api/settings"));
+      setCap(undefined);
+      notify(text.saved);
+    });
+  const fixedTier = FIXED_TIERS.find((tier) => String(tier) === settings.fixedModel);
   return (
     <>
+      <View>
+        <SectionHeading title={text.modelTitle} />
+        <Card style={{ gap: 12 }}>
+          <Block title={text.answerMode}>
+            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+              {(Object.keys(ANSWER_MODE_LABELS) as AnswerMode[]).map((mode) => (
+                <Choice
+                  key={mode}
+                  label={ANSWER_MODE_LABELS[mode]}
+                  selected={settings.answerMode === mode}
+                  onPress={() => patch({ answerMode: mode })}
+                />
+              ))}
+            </View>
+            <Text style={s.small}>{text.answerModeHints[settings.answerMode]}</Text>
+          </Block>
+          <CheckRow
+            label={text.autoEconomy}
+            checked={settings.autoEconomy}
+            onPress={() => patch({ autoEconomy: !settings.autoEconomy })}
+          />
+          {!settings.autoEconomy && (
+            <Block title={text.fixedModel}>
+              <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                <Choice
+                  label={text.fixedNone}
+                  selected={settings.fixedModel === null}
+                  onPress={() => patch({ fixedModel: null })}
+                />
+                {FIXED_TIERS.map((tier) => (
+                  <Choice
+                    key={tier}
+                    label={TIER_LABELS[tier]}
+                    selected={fixedTier === tier}
+                    onPress={() => patch({ fixedModel: String(tier) })}
+                  />
+                ))}
+              </View>
+              {settings.fixedModel !== null && fixedTier === undefined && (
+                <Text style={[s.small, mono]}>{text.fixedCurrent(settings.fixedModel)}</Text>
+              )}
+            </Block>
+          )}
+          <ErrorNotice error={act.error} />
+        </Card>
+      </View>
+      <View>
+        <SectionHeading title={text.usageTitle} />
+        <Card style={{ gap: 12 }}>
+          <Loaded state={usage} rows={2} height={36}>
+            {(u) => <UsageSummary usage={u} openConnections={openConnections} />}
+          </Loaded>
+          <Field
+            label={text.cap}
+            keyboardType="numeric"
+            value={cap ?? (settings.monthlyCapKrw === null ? "" : String(settings.monthlyCapKrw))}
+            onChangeText={setCap}
+          />
+          <Button small busy={act.busy} disabled={cap === undefined} onPress={saveCap}>
+            {text.save}
+          </Button>
+          <Text style={s.small}>{text.byokRule}</Text>
+        </Card>
+      </View>
+    </>
+  );
+}
+
+function UsageSummary({
+  usage,
+  openConnections,
+}: {
+  usage: BillingUsage;
+  openConnections: () => void;
+}) {
+  const { percent } = usage;
+  const level =
+    percent === null ? undefined : percent >= 100 ? "miss" : percent >= 80 ? "warn" : undefined;
+  return (
+    <>
+      {usage.byok ? (
+        // 자기 키 활성: 사용량 바 대신 이 한 줄
+        <Chip tint={colors.okBg}>{text.byokUsage}</Chip>
+      ) : usage.capKrw === null ? (
+        <Text style={s.small}>{text.noCap}</Text>
+      ) : percent === null ? (
+        <Chip>{text.measuring}</Chip>
+      ) : (
+        <>
+          {level && (
+            <View
+              accessibilityRole="alert"
+              style={{
+                gap: 8,
+                padding: 12,
+                borderRadius: 10,
+                backgroundColor: level === "miss" ? colors.missBg : colors.warnBg,
+              }}
+            >
+              <Text style={[s.text, { color: level === "miss" ? colors.miss : colors.warn }]}>
+                {level === "miss" ? text.capReached : text.warn80}
+              </Text>
+              {level === "miss" && (
+                <Button small onPress={openConnections}>
+                  {text.manageKeys}
+                </Button>
+              )}
+            </View>
+          )}
+          <View style={s.between}>
+            <Text style={[s.text, mono, { fontWeight: "600" }]}>{text.percentOfCap(percent)}</Text>
+            <Text style={[s.small, mono]}>
+              {text.spent(text.krw(usage.costKrw), text.krw(usage.capKrw))}
+            </Text>
+          </View>
+          <View
+            accessibilityRole="progressbar"
+            accessibilityValue={{ min: 0, max: 100, now: Math.round(percent) }}
+            style={{ height: 8, borderRadius: 4, backgroundColor: colors.sunk, overflow: "hidden" }}
+          >
+            <View
+              style={{
+                width: `${Math.min(Math.max(percent, 0), 100)}%`,
+                height: 8,
+                backgroundColor:
+                  level === "miss" ? colors.miss : level === "warn" ? colors.warn : colors.accent,
+              }}
+            />
+          </View>
+        </>
+      )}
+      <View style={s.between}>
+        <Text style={s.small}>{text.saving}</Text>
+        {usage.savedKrw === null ? (
+          <Chip>{text.measuring}</Chip>
+        ) : (
+          <Text style={[s.text, mono]}>{text.krw(usage.savedKrw)}</Text>
+        )}
+      </View>
+    </>
+  );
+}
+
+function KeysCard({ openConnections }: { openConnections: () => void }) {
+  const { api } = useWorkspace();
+  const keys = useLoad(() => api.request<ModelKey[]>("/api/model-keys"));
+  return (
+    <View>
+      <SectionHeading title={text.keysTitle} />
+      <Card style={{ gap: 8 }}>
+        <Loaded state={keys} rows={1}>
+          {(items) => {
+            const active = KEY_PROVIDERS.flatMap((provider) =>
+              items.filter((item) => item.provider === provider && item.status === "active"),
+            );
+            return active.length === 0 ? (
+              <Text style={s.small}>{text.noKeys}</Text>
+            ) : (
+              active.map((item) => (
+                <Text key={item.provider} style={[s.text, mono]}>
+                  {text.keyActive(PROVIDER_LABELS[item.provider], item.last4)}
+                </Text>
+              ))
+            );
+          }}
+        </Loaded>
+        <Button small onPress={openConnections}>
+          {text.manageKeys}
+        </Button>
+      </Card>
+    </View>
+  );
+}
+
+function DeviceCard() {
+  const [state, setState] = useState<LayerState>("unknown");
+  const [detail, setDetail] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [bigOpen, setBigOpen] = useState(false);
+  const act = useAction();
+  const inspect = () =>
+    act.run(async () => {
+      setDetail("");
+      if (!deviceAvailable()) {
+        const report = await measureDevice(); // 쓸 수 없는 이유를 기기 쪽에서 받아 그대로 보인다
+        setState("unsupported");
+        setDetail(report.reason ?? "");
+        return;
+      }
+      if (typeof caches === "undefined") {
+        setState("unknown");
+        setDetail(text.cacheUnreadable);
+        return;
+      }
+      const files = await modelCached(await caches.open(MODEL_CACHE));
+      setState(files.length > 0 ? "ready" : "none");
+    });
+  useEffect(() => {
+    void inspect();
+  }, []);
+  const download = () =>
+    act.run(async () => {
+      setDetail("");
+      setState("downloading");
+      try {
+        await embedOnDevice(["상태 확인"], "query"); // 첫 호출이 모델을 내려받아 올린다
+        setState("ready");
+      } catch (e) {
+        setState(isOutOfMemory(e) ? "oom" : "none");
+        throw e; // 사유는 아래 ErrorNotice 에 보인다
+      }
+    });
+  const remove = () =>
+    act.run(async () => {
+      const cache = await caches.open(MODEL_CACHE);
+      for (const request of await modelCached(cache)) await cache.delete(request);
+      setConfirming(false);
+      setState("none");
+    });
+  const canRemove = state === "ready" && typeof caches !== "undefined";
+  return (
+    <View>
+      <SectionHeading title={text.deviceTitle} />
+      <Card style={{ gap: 14 }}>
+        <View style={{ gap: 6 }}>
+          <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+            <Text style={[s.text, { fontWeight: "600" }]}>{text.smallLayer}</Text>
+            <Chip tint={layerTint[state]}>{LAYER_STATE_LABELS[state]}</Chip>
+          </View>
+          <Text style={[s.small, mono]}>{text.smallLayerHint}</Text>
+          <Text style={s.small}>{text.smallStates[state]}</Text>
+          {!!detail && <Text style={s.small}>{detail}</Text>}
+          <ErrorNotice error={act.error} />
+          {confirming ? (
+            <Confirm
+              message={text.removeSmall}
+              action={text.remove}
+              busy={act.busy}
+              onCancel={() => setConfirming(false)}
+              onConfirm={remove}
+            />
+          ) : (
+            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+              <Button small busy={act.busy && state !== "downloading"} onPress={inspect}>
+                {text.status}
+              </Button>
+              {(state === "none" || state === "oom" || state === "downloading") && (
+                <Button small primary busy={state === "downloading"} onPress={download}>
+                  {text.download}
+                </Button>
+              )}
+              <Button small danger disabled={!canRemove} onPress={() => setConfirming(true)}>
+                {text.remove}
+              </Button>
+            </View>
+          )}
+        </View>
+        <View style={{ gap: 6, paddingTop: 14, borderTopWidth: 1, borderColor: colors.line }}>
+          <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+            <Text style={[s.text, { fontWeight: "600" }]}>{text.bigLayer}</Text>
+            <Chip>{LAYER_STATE_LABELS.none}</Chip>
+          </View>
+          <Text style={[s.small, mono]}>{text.bigLayerHint}</Text>
+          <Text style={[s.small, { color: colors.warn }]}>{text.bigUnavailable}</Text>
+          {bigOpen && (
+            <>
+              <Text style={s.small}>{text.bigReason}</Text>
+              <Text style={s.small}>{text.bigRule}</Text>
+            </>
+          )}
+          <View style={[s.row, { gap: 8 }]}>
+            {/* 받을 실물이 없다 — 눌리는 척하지 않는다 */}
+            <Button small disabled onPress={() => undefined}>
+              {text.turnOn}
+            </Button>
+            <Button small onPress={() => setBigOpen(!bigOpen)}>
+              {text.status}
+            </Button>
+          </View>
+        </View>
+      </Card>
+    </View>
+  );
+}
+
+function PreferencesCard({
+  settings,
+  onSaved,
+}: {
+  settings: AppSettings;
+  onSaved: (next: AppSettings) => void;
+}) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const patch = (body: Partial<Pick<AppSettings, "notifications" | "character">>) =>
+    act.run(async () => {
+      await api.request("/api/settings", body, "PATCH");
+      onSaved(await api.request<AppSettings>("/api/settings"));
+    });
+  const { notifications, character } = settings;
+  return (
+    <View>
+      <SectionHeading title={`${text.notifyTitle} · ${text.characterTitle}`} />
+      <Card style={{ gap: 10 }}>
+        <Block title={text.notifyTitle}>
+          <CheckRow
+            label={text.notifyApprovals}
+            checked={notifications.approvals}
+            onPress={() =>
+              patch({ notifications: { ...notifications, approvals: !notifications.approvals } })
+            }
+          />
+          <CheckRow
+            label={text.notifyWeekly}
+            checked={notifications.weeklyReport}
+            onPress={() =>
+              patch({
+                notifications: { ...notifications, weeklyReport: !notifications.weeklyReport },
+              })
+            }
+          />
+        </Block>
+        <Block title={text.characterTitle}>
+          <CheckRow
+            label={text.characterOn}
+            checked={character.enabled}
+            onPress={() => patch({ character: { ...character, enabled: !character.enabled } })}
+          />
+          {character.enabled && (
+            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+              <Text style={s.small}>{text.intensity}</Text>
+              {(Object.keys(INTENSITY_LABELS) as Intensity[]).map((intensity) => (
+                <Choice
+                  key={intensity}
+                  label={INTENSITY_LABELS[intensity]}
+                  selected={character.intensity === intensity}
+                  onPress={() => patch({ character: { ...character, intensity } })}
+                />
+              ))}
+            </View>
+          )}
+        </Block>
+        <ErrorNotice error={act.error} />
+      </Card>
+    </View>
+  );
+}
+
+const MENU: { sub: Sub; icon: LucideIcon }[] = [
+  { sub: "connections", icon: Plug },
+  { sub: "memory", icon: Brain },
+  { sub: "skills", icon: Sparkles },
+  { sub: "operator", icon: ShieldCheck },
+  { sub: "admin", icon: UserCog },
+  { sub: "profile", icon: User },
+  { sub: "usage", icon: Activity },
+];
+
+function Menu({
+  role,
+  open,
+  onLogout,
+}: {
+  role: UserRole;
+  open: (sub: Sub) => void;
+  onLogout: () => void;
+}) {
+  const { api } = useWorkspace();
+  const [confirming, setConfirming] = useState(false);
+  const [deleteAfter, setDeleteAfter] = useState<string>();
+  const remove = useAction();
+  return (
+    <View>
+      <SectionHeading title={text.menuTitle} />
+      <Card>
+        {MENU.filter((item) => allowed(item.sub, role)).map((item) => (
+          <LinkRow
+            key={item.sub}
+            icon={item.icon}
+            title={SUB_TITLES[item.sub]}
+            detail={text.menu[item.sub]}
+            onPress={() => open(item.sub)}
+          />
+        ))}
+        {deleteAfter ? (
+          <View style={{ padding: 12, borderRadius: 10, backgroundColor: colors.warnBg }}>
+            <Text style={s.text}>{text.deleteAccepted(dateLabel(deleteAfter))}</Text>
+          </View>
+        ) : confirming ? (
+          <Confirm
+            message={text.deleteConfirm}
+            action={text.deleteAction}
+            busy={remove.busy}
+            error={remove.error}
+            onCancel={() => setConfirming(false)}
+            onConfirm={() =>
+              remove.run(async () => {
+                const result = await api.request<{ deleteAfter: string }>(
+                  "/api/account/delete",
+                  {},
+                );
+                setDeleteAfter(result.deleteAfter);
+                setConfirming(false);
+              })
+            }
+          />
+        ) : (
+          <LinkRow
+            icon={Trash2}
+            tint={colors.missBg}
+            title={text.deleteData}
+            detail={text.deleteHint}
+            onPress={() => setConfirming(true)}
+          />
+        )}
+        {/* 로그아웃은 부모(App)가 한 번만 한다 — 여기서 서버를 직접 부르지 않는다 */}
+        <LinkRow icon={LogOut} title={text.logout} onPress={onLogout} />
+      </Card>
+    </View>
+  );
+}
+
+// ---- 하위: 프로필 ----
+function Profile({ me, onSaved }: { me: Me; onSaved: (me: Me) => void }) {
+  const { api, notify } = useWorkspace();
+  const [displayName, setDisplayName] = useState(me.profile.displayName);
+  const [credentialText, setCredentialText] = useState(me.profile.credentialText ?? ""); // 선택 필드
+  const act = useAction();
+  return (
+    <Card style={{ gap: 12 }}>
       <Text style={s.small}>
-        {text.phone} · {me.user.phone} · {text.roles[me.user.role]}
+        {text.phone} · <Text style={mono}>{me.user.phone}</Text> · {text.roles[me.user.role]}
       </Text>
       <Field label={text.displayName} value={displayName} onChangeText={setDisplayName} />
       <Field
@@ -285,7 +866,7 @@ function Profile({ me, onSaved }: { me: MeInfo; onSaved: (me: MeInfo) => void })
         busy={act.busy}
         onPress={() =>
           act.run(async () => {
-            const profile = await api.request<MeInfo["profile"]>(
+            const profile = await api.request<Me["profile"]>(
               "/api/me/profile",
               { displayName, credentialText },
               "PATCH",
@@ -297,630 +878,215 @@ function Profile({ me, onSaved }: { me: MeInfo; onSaved: (me: MeInfo) => void })
       >
         {text.save}
       </Button>
-    </>
+    </Card>
   );
 }
 
-function Routing() {
-  const { api, notify } = useWorkspace();
-  const prefs = useLoad(() => api.request<RoutingPrefs>("/api/settings/routing"));
-  const [cap, setCap] = useState<string>();
-  const act = useAction();
-  const patch = (body: Partial<Record<keyof RoutingPrefs, boolean | number | null>>) =>
-    act.run(async () => {
-      prefs.setData(await api.request<RoutingPrefs>("/api/settings/routing", body, "PATCH"));
-      notify(text.saved);
-    });
-  const saveCap = () => {
-    if (cap === undefined) return;
-    if (cap.trim() === "") return patch({ monthlyCapKrw: null });
-    const n = Number(cap);
-    if (!Number.isFinite(n) || n < 0)
-      return act.run(async () => Promise.reject(new Error(text.capInvalid)));
-    return patch({ monthlyCapKrw: n });
-  };
-  return (
-    <LoadState loading={prefs.loading} error={prefs.error} retry={prefs.retry}>
-      {prefs.data && (
-        <>
-          <CheckRow
-            label={text.autoEconomy}
-            checked={prefs.data.autoEconomy}
-            onPress={() => patch({ autoEconomy: !prefs.data?.autoEconomy })}
-          />
-          <CheckRow
-            label={text.deviceLlm}
-            checked={prefs.data.deviceLlmEnabled}
-            onPress={() => patch({ deviceLlmEnabled: !prefs.data?.deviceLlmEnabled })}
-          />
-          <Block title={text.fixedTier}>
-            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-              <Choice
-                label={text.auto}
-                selected={!prefs.data.fixedTier}
-                onPress={() => patch({ fixedTier: null })}
-              />
-              {([2, 3, 4] as const).map((tier) => (
-                <Choice
-                  key={tier}
-                  label={text.tier(tier)}
-                  selected={prefs.data?.fixedTier === tier}
-                  onPress={() => patch({ fixedTier: tier })}
-                />
-              ))}
-            </View>
-          </Block>
-          <Field
-            label={text.monthlyCap}
-            keyboardType="numeric"
-            defaultValue={
-              prefs.data.monthlyCapKrw === undefined ? "" : String(prefs.data.monthlyCapKrw)
-            }
-            onChangeText={setCap}
-          />
-          <ErrorNotice error={act.error} />
-          <Button small busy={act.busy} disabled={cap === undefined} onPress={saveCap}>
-            {text.save}
-          </Button>
-        </>
-      )}
-    </LoadState>
-  );
-}
-
-function Usage() {
-  const { api } = useWorkspace();
-  const usage = useLoad(() => api.request<MonthUsage>("/api/usage"));
-  const u = usage.data;
-  return (
-    <LoadState loading={usage.loading} error={usage.error} retry={usage.retry}>
-      {u && (
-        <>
-          <Text style={s.small}>{text.month(u.month)}</Text>
-          <Row label={text.calls} value={text.times(u.calls)} />
-          <Row
-            label={text.tokens}
-            value={`${u.tokensIn.toLocaleString("ko-KR")} / ${u.tokensOut.toLocaleString("ko-KR")}`}
-          />
-          <Row label={text.cost} value={text.krw(u.costKrw)} />
-          <Row
-            label={text.saving}
-            value={
-              u.savingsStatus === "measured" && u.savedKrw !== null
-                ? text.krw(u.savedKrw)
-                : text.measuring
-            }
-          />
-          <Row label={text.scriptSaved} value={text.times(u.scriptSavedCalls)} />
-          <Row label={text.byokCalls} value={text.times(u.byokCalls)} />
-          <Block title={text.byTier}>
-            {u.byTier.map((row) => (
-              <Row
-                key={row.tier}
-                label={text.tier(row.tier)}
-                value={`${text.times(row.calls)} · ${row.tokens.toLocaleString("ko-KR")}`}
-              />
-            ))}
-          </Block>
-        </>
-      )}
-    </LoadState>
-  );
-}
-
+// ---- 하위: 사용량 상세 ----
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <View style={s.between}>
       <Text style={s.small}>{label}</Text>
-      <Text style={s.text}>{value}</Text>
+      <Text style={[s.text, mono]}>{value}</Text>
     </View>
   );
 }
 
-function Byok() {
-  const { api, notify } = useWorkspace();
-  const list = useLoad(() => api.request<ByokAccount[]>("/api/connections/model-account"));
-  const [provider, setProvider] = useState<ProviderKey>("openai");
-  const [apiKey, setApiKey] = useState("");
-  const act = useAction();
-  const oauth = useAction();
+function UsageDetail() {
+  const { api } = useWorkspace();
+  const usage = useLoad(() => api.request<MonthUsage>("/api/usage"));
   return (
-    <>
-      <Text style={s.small}>{text.byokHint}</Text>
-      <LoadState
-        loading={list.loading}
-        error={list.error}
-        retry={list.retry}
-        empty={list.data?.length === 0 && { title: text.noAccounts, detail: text.noAccountsHint }}
-      >
-        {list.data?.map((a) => (
-          <View key={a.id} style={s.between}>
-            <Text style={s.text}>
-              {text.providers[a.id] ?? a.id} · ····{a.last4} · {dateLabel(a.validatedAt)}
-            </Text>
-            <Button
-              small
-              danger
-              onPress={() =>
-                act.run(async () => {
-                  await api.request(`/api/connections/model-account/${a.id}`, undefined, "DELETE");
-                  list.retry();
-                })
-              }
-            >
-              {text.disconnect}
-            </Button>
-          </View>
-        ))}
-      </LoadState>
-      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-        {(Object.keys(text.providers) as ProviderKey[]).map((p) => (
-          <Choice
-            key={p}
-            label={text.providers[p]}
-            selected={provider === p}
-            onPress={() => setProvider(p)}
-          />
-        ))}
-      </View>
-      <Field
-        label={text.apiKey}
-        secureTextEntry
-        autoCapitalize="none"
-        value={apiKey}
-        onChangeText={setApiKey}
-      />
-      <ErrorNotice error={act.error} />
-      <Button
-        small
-        primary
-        busy={act.busy}
-        disabled={apiKey.length < 8}
-        onPress={() =>
-          act.run(async () => {
-            await api.request("/api/connections/model-account", { provider, apiKey });
-            setApiKey(""); // 검증 뒤 키는 화면에 남기지 않는다
-            list.retry();
-            notify(text.connected);
-          })
-        }
-      >
-        {text.connect}
-      </Button>
-      <ErrorNotice error={oauth.error} />
-      <Button
-        small
-        busy={oauth.busy}
-        onPress={() => oauth.run(() => api.request("/api/connections/model-account/oauth", {}))}
-      >
-        {text.oauth}
-      </Button>
-    </>
-  );
-}
-
-function Mcp() {
-  const { api, notify } = useWorkspace();
-  const list = useLoad(() => api.request<McpItem[]>("/api/connections/mcp"));
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
-  const [risk, setRisk] = useState<RiskKind>("external");
-  const [headers, setHeaders] = useState<{ id: number; name: string; value: string }[]>([]);
-  const nextId = useRef(0);
-  const [toolsFor, setToolsFor] = useState<McpItem>();
-  const tools = useLoad(
-    () =>
-      toolsFor
-        ? api.request<ToolItem[]>(`/api/connections/mcp/${toolsFor.id}/tools`)
-        : Promise.resolve([]),
-    toolsFor?.id ?? "",
-  );
-  const act = useAction();
-  const setHeader = (id: number, patch: Partial<{ name: string; value: string }>) =>
-    setHeaders((rows) => rows.map((h) => (h.id === id ? { ...h, ...patch } : h)));
-  return (
-    <>
-      <LoadState
-        loading={list.loading}
-        error={list.error}
-        retry={list.retry}
-        empty={list.data?.length === 0 && { title: text.noServers, detail: text.noServersHint }}
-      >
-        {list.data?.map((server) => (
-          <View key={server.id} style={{ gap: 6, paddingVertical: 6 }}>
-            <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-              <Text style={[s.text, { fontWeight: "600" }]}>{server.name}</Text>
-              <Chip tint={riskTint[server.riskDefault]}>{text.risks[server.riskDefault]}</Chip>
-            </View>
-            <Text style={s.small}>{server.url}</Text>
-            {server.headerNames.length > 0 && (
-              <Text style={s.small}>
-                {text.headers}: {server.headerNames.join(", ")}
-              </Text>
-            )}
-            <View style={[s.row, { gap: 8 }]}>
-              <Button small onPress={() => setToolsFor(server)}>
-                {text.tools}
-              </Button>
-              <Button
-                small
-                danger
-                onPress={() =>
-                  act.run(async () => {
-                    await api.request(`/api/connections/mcp/${server.id}`, undefined, "DELETE");
-                    list.retry();
-                  })
-                }
-              >
-                {text.remove}
-              </Button>
-            </View>
-          </View>
-        ))}
-      </LoadState>
-      <Text style={s.small}>{text.mcpHint}</Text>
-      <Field label={text.name} value={name} onChangeText={setName} />
-      <Field label={text.url} autoCapitalize="none" value={url} onChangeText={setUrl} />
-      {headers.map((h) => (
-        <View key={h.id} style={[s.row, { gap: 8 }]}>
-          <View style={{ flex: 1 }}>
-            <Field
-              label={text.headerName}
-              autoCapitalize="none"
-              value={h.name}
-              onChangeText={(v) => setHeader(h.id, { name: v })}
+    <Card style={{ gap: 12 }}>
+      <Loaded state={usage} rows={6} height={24}>
+        {(u) => (
+          <>
+            <Text style={[s.small, mono]}>{text.month(u.month)}</Text>
+            <Row label={text.calls} value={text.times(u.calls)} />
+            <Row
+              label={text.tokens}
+              value={`${u.tokensIn.toLocaleString("ko-KR")} / ${u.tokensOut.toLocaleString("ko-KR")}`}
             />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Field
-              label={text.headerValue}
-              secureTextEntry
-              autoCapitalize="none"
-              value={h.value}
-              onChangeText={(v) => setHeader(h.id, { value: v })}
-            />
-          </View>
-        </View>
-      ))}
-      <Block title={text.riskDefault}>
-        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-          {(Object.keys(text.risks) as RiskKind[]).map((r) => (
-            <Choice
-              key={r}
-              label={text.risks[r]}
-              selected={risk === r}
-              onPress={() => setRisk(r)}
-            />
-          ))}
-        </View>
-      </Block>
-      <ErrorNotice error={act.error} />
-      <View style={[s.row, { gap: 8 }]}>
-        <Button
-          small
-          onPress={() =>
-            setHeaders((rows) => [...rows, { id: nextId.current++, name: "", value: "" }])
-          }
-        >
-          {text.addHeader}
-        </Button>
-        <Button
-          small
-          primary
-          busy={act.busy}
-          disabled={!name.trim() || !url.trim()}
-          onPress={() =>
-            act.run(async () => {
-              const pairs = headers.filter((h) => h.name.trim());
-              await api.request("/api/connections/mcp", {
-                name: name.trim(),
-                url: url.trim(),
-                riskDefault: risk,
-                ...(pairs.length
-                  ? { headers: Object.fromEntries(pairs.map((h) => [h.name.trim(), h.value])) }
-                  : {}),
-              });
-              setName("");
-              setUrl("");
-              setHeaders([]); // 헤더 값은 제출 뒤 화면에 남기지 않는다
-              list.retry();
-              notify(text.saved);
-            })
-          }
-        >
-          {text.add}
-        </Button>
-      </View>
-      {toolsFor && (
-        <Sheet
-          title={text.toolsOf(toolsFor.name)}
-          subtitle={toolsFor.url}
-          onClose={() => setToolsFor(undefined)}
-        >
-          <LoadState
-            loading={tools.loading}
-            error={tools.error}
-            retry={tools.retry}
-            empty={tools.data?.length === 0 && { title: text.noTools, detail: text.noToolsHint }}
-          >
-            <View style={{ gap: 12 }}>
-              {tools.data?.map((tool) => (
-                <View key={tool.name} style={{ gap: 4 }}>
-                  <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-                    <Text style={[s.text, { fontWeight: "600" }]}>{tool.name}</Text>
-                    <Chip tint={riskTint[tool.risk]}>
-                      {text.risks[tool.risk]}
-                      {!tool.declared && ` ${text.undeclared}`}
-                    </Chip>
-                  </View>
-                  {!!tool.description && <Text style={s.small}>{tool.description}</Text>}
-                </View>
+            <Row label={text.cost} value={text.krw(u.costKrw)} />
+            <Row label={text.scriptSaved} value={text.times(u.scriptSavedCalls)} />
+            <Row label={text.byokCalls} value={text.times(u.byokCalls)} />
+            <Block title={text.byTier}>
+              {u.byTier.map((row) => (
+                <Row
+                  key={row.tier}
+                  label={TIER_LABELS[row.tier as ModelTier]}
+                  value={`${text.times(row.calls)} · ${row.tokens.toLocaleString("ko-KR")}`}
+                />
               ))}
-            </View>
-          </LoadState>
-        </Sheet>
-      )}
-    </>
+            </Block>
+          </>
+        )}
+      </Loaded>
+    </Card>
   );
 }
 
-function Memories() {
-  const { api, notify } = useWorkspace();
-  const [q, setQ] = useState("");
-  // 티어 0: 기기 임베딩으로 검색하고, 안 되면 서버로 — 어느 쪽인지 배지로 보인다 (§11.1)
-  const list = useLoad<SearchResult>(async () => {
-    const all = await api.request<MemoryItem[]>("/api/memories?limit=200");
-    if (!q.trim()) return { items: all, servedBy: "server" };
-    return searchMemories(api, q.trim(), all, 20);
-  }, q);
-  const served = q.trim() && list.data && !list.loading ? list.data.servedBy : undefined;
-  const [draft, setDraft] = useState("");
-  const act = useAction();
-  const status = !q.trim()
-    ? ""
-    : list.loading
-      ? text.searching
-      : list.error
-        ? ""
-        : list.data?.items.length
-          ? text.searchCount(list.data.items.length)
-          : text.searchEmpty;
-  return (
-    <>
-      <Text style={s.small}>{text.memoryScope}</Text>
-      <Field label={text.memorySearch} value={q} onChangeText={setQ} />
-      {!!status && (
-        <Text style={s.small}>
-          {status}
-          {served === "device" && ` · ${text.servedDevice}`}
-          {served === "server" && ` · ${text.servedServer}`}
-        </Text>
-      )}
-      {served === "server" && !!list.data?.reason && (
-        <Text style={s.small}>{text.fallbackReason(list.data.reason)}</Text>
-      )}
-      <LoadState
-        loading={list.loading}
-        error={list.error}
-        retry={list.retry}
-        empty={
-          !q.trim() &&
-          list.data?.items.length === 0 && { title: text.noMemories, detail: text.noMemoriesHint }
-        }
-      >
-        {list.data?.items.map((m) => (
-          <View key={m.id} style={[s.row, { gap: 8, paddingVertical: 6 }]}>
-            <View style={{ flex: 1, gap: 3 }}>
-              <Text style={s.text}>{m.text}</Text>
-              <Text style={s.small}>
-                {m.source} · {dateLabel(m.createdAt)}
-                {m.score !== undefined && ` · ${text.score(m.score)}`}
-              </Text>
-            </View>
-            <Button
-              small
-              danger
-              onPress={() =>
-                act.run(async () => {
-                  await api.request(`/api/memories/${m.id}`, undefined, "DELETE");
-                  list.retry();
-                })
-              }
-            >
-              {text.remove}
-            </Button>
-          </View>
-        ))}
-      </LoadState>
-      <Field label={text.newMemory} multiline value={draft} onChangeText={setDraft} />
-      <ErrorNotice error={act.error} />
-      <Button
-        small
-        primary
-        busy={act.busy}
-        disabled={!draft.trim()}
-        onPress={() =>
-          act.run(async () => {
-            await api.request("/api/memories", { text: draft.trim(), source: "user" });
-            setDraft("");
-            list.retry();
-            notify(text.saved);
-          })
-        }
-      >
-        {text.add}
-      </Button>
-      <DevicePanel />
-    </>
-  );
-}
-
-/** 9단계 기기 실측 (§22-9): 로드·지연·메모리·한국어 top-1. 통과 전엔 티어 1 플래그를 켜지 않는다 */
-function DevicePanel() {
-  const [report, setReport] = useState<DeviceReport>();
-  const act = useAction();
-  return (
-    <View style={{ gap: 6, marginTop: 10 }}>
-      <Block title={text.deviceTitle}>
-        <Text style={s.small}>{text.deviceHint}</Text>
-      </Block>
-      <Button
-        small
-        busy={act.busy}
-        onPress={() => act.run(async () => setReport(await measureDevice()))}
-      >
-        {text.deviceMeasure}
-      </Button>
-      <ErrorNotice error={act.error} />
-      {report && (
-        <Text style={s.small}>
-          {report.available
-            ? text.deviceResult(report)
-            : `${text.deviceUnavailable} · ${report.reason ?? ""}`}
-        </Text>
-      )}
-    </View>
-  );
-}
-
+// ---- 하위: 관리자 (초대 · 사용자 · 패키지 가격) ----
 function Admin() {
   const { api, notify } = useWorkspace();
-  const invites = useLoad(() => api.request<InviteItem[]>("/api/admin/invites"));
-  const users = useLoad(() => api.request<UserItem[]>("/api/admin/users"));
+  const invites = useLoad(() => api.request<Invite[]>("/api/admin/invites"));
+  const users = useLoad(() => api.request<PublicUser[]>("/api/admin/users"));
   const settings = useLoad(() =>
     api.request<{ settings: { id: string; value: unknown }[] }>("/api/admin/settings"),
   );
   const [phone, setPhone] = useState("");
-  const [role, setRole] = useState<RoleKey>("user");
+  const [role, setRole] = useState<UserRole>("user");
   const [issued, setIssued] = useState<{ token: string; url: string; expiresAt: number }>();
   const inviteAct = useAction();
   const [slug, setSlug] = useState("");
   const [price, setPrice] = useState("");
   const priceAct = useAction();
-  const prices = (settings.data?.settings ?? []).filter((x) => x.id.startsWith("price:"));
   return (
-    <>
-      <Block title={text.invite}>
-        <Field
-          label={text.phoneOptional}
-          keyboardType="phone-pad"
-          value={phone}
-          onChangeText={setPhone}
-        />
-        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-          {(Object.keys(text.roles) as RoleKey[]).map((r) => (
-            <Choice
-              key={r}
-              label={text.roles[r]}
-              selected={role === r}
-              onPress={() => setRole(r)}
+    <View style={columns}>
+      <View style={column}>
+        <Card style={{ gap: 12 }}>
+          <Block title={text.invite}>
+            <Field
+              label={text.phoneOptional}
+              keyboardType="phone-pad"
+              value={phone}
+              onChangeText={setPhone}
             />
-          ))}
-        </View>
-        <ErrorNotice error={inviteAct.error} />
-        <Button
-          small
-          primary
-          busy={inviteAct.busy}
-          onPress={() =>
-            inviteAct.run(async () => {
-              setIssued(
-                await api.request("/api/admin/invites", {
-                  ...(phone.trim() ? { phone: phone.trim() } : {}),
-                  role,
-                }),
-              );
-              setPhone("");
-              invites.retry();
-            })
-          }
-        >
-          {text.invite}
-        </Button>
-        {issued && (
-          <View style={{ gap: 4 }}>
-            {/* expo-clipboard 미설치 → 선택 가능한 텍스트로 둔다 (의도된 1회 노출) */}
-            <Text style={s.small}>{text.inviteToken}</Text>
-            <Text selectable style={s.text}>
-              {issued.token}
-            </Text>
-            <Text style={s.small}>{text.inviteUrl}</Text>
-            <Text selectable style={s.text}>
-              {issued.url}
-            </Text>
-            <Text style={s.small}>
-              {text.expires} {dateLabel(new Date(issued.expiresAt).toISOString())}
-            </Text>
-          </View>
-        )}
-      </Block>
-      <Block title={text.invites}>
-        <LoadState
-          loading={invites.loading}
-          error={invites.error}
-          retry={invites.retry}
-          empty={
-            invites.data?.length === 0 && { title: text.noInvites, detail: text.noInvitesHint }
-          }
-        >
-          {invites.data?.map((i) => (
-            <Row
-              key={i.id}
-              label={`${i.phone ?? "—"} · ${text.roles[i.role]}`}
-              value={`${i.usedBy ? text.used : text.unused} · ${text.expires} ${dateLabel(new Date(i.expiresAt).toISOString())}`}
+            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+              {USER_ROLES.map((r) => (
+                <Choice
+                  key={r}
+                  label={text.roles[r]}
+                  selected={role === r}
+                  onPress={() => setRole(r)}
+                />
+              ))}
+            </View>
+            <ErrorNotice error={inviteAct.error} />
+            <Button
+              small
+              primary
+              busy={inviteAct.busy}
+              onPress={() =>
+                inviteAct.run(async () => {
+                  setIssued(
+                    await api.request("/api/admin/invites", {
+                      ...(phone.trim() ? { phone: phone.trim() } : {}),
+                      role,
+                    }),
+                  );
+                  setPhone("");
+                  invites.retry();
+                })
+              }
+            >
+              {text.invite}
+            </Button>
+            {issued && (
+              <View style={{ gap: 4 }}>
+                {/* expo-clipboard 미설치 → 선택 가능한 텍스트로 둔다 (의도된 1회 노출) */}
+                <Text style={s.small}>{text.inviteToken}</Text>
+                <Text selectable style={[s.text, mono]}>
+                  {issued.token}
+                </Text>
+                <Text style={s.small}>{text.inviteUrl}</Text>
+                <Text selectable style={[s.text, mono]}>
+                  {issued.url}
+                </Text>
+                <Text style={s.small}>
+                  {text.expires} {dateLabel(new Date(issued.expiresAt).toISOString())}
+                </Text>
+              </View>
+            )}
+          </Block>
+        </Card>
+        <Card style={{ gap: 12 }}>
+          <Block title={text.invites}>
+            <Loaded state={invites}>
+              {(items) =>
+                items.length === 0 ? (
+                  <Text style={s.small}>{text.noInvites}</Text>
+                ) : (
+                  items.map((i) => (
+                    <Row
+                      key={i.id}
+                      label={`${i.phone ?? "—"} · ${text.roles[i.role]}`}
+                      value={`${i.usedBy ? text.used : text.unused} · ${text.expires} ${dateLabel(new Date(i.expiresAt).toISOString())}`}
+                    />
+                  ))
+                )
+              }
+            </Loaded>
+          </Block>
+        </Card>
+      </View>
+      <View style={column}>
+        <Card style={{ gap: 12 }}>
+          <Block title={text.users}>
+            <Loaded state={users}>
+              {(items) =>
+                items.length === 0 ? (
+                  <Text style={s.small}>{text.noUsers}</Text>
+                ) : (
+                  items.map((u) => (
+                    <Row key={u.id} label={u.phone} value={`${text.roles[u.role]} · ${u.tier}`} />
+                  ))
+                )
+              }
+            </Loaded>
+          </Block>
+        </Card>
+        <Card style={{ gap: 12 }}>
+          <Block title={text.prices}>
+            <Loaded state={settings}>
+              {(data) => {
+                const prices = data.settings.filter((x) => x.id.startsWith("price:"));
+                return prices.length === 0 ? (
+                  <Text style={s.small}>{text.noPrices}</Text>
+                ) : (
+                  prices.map((p) => (
+                    <Row
+                      key={p.id}
+                      label={p.id.slice("price:".length)}
+                      value={won(Number(p.value))}
+                    />
+                  ))
+                );
+              }}
+            </Loaded>
+            <Field label={text.slug} autoCapitalize="none" value={slug} onChangeText={setSlug} />
+            <Field
+              label={text.price}
+              keyboardType="numeric"
+              value={price}
+              onChangeText={setPrice}
             />
-          ))}
-        </LoadState>
-      </Block>
-      <Block title={text.users}>
-        <LoadState
-          loading={users.loading}
-          error={users.error}
-          retry={users.retry}
-          empty={users.data?.length === 0 && { title: text.noUsers, detail: text.noUsersHint }}
-        >
-          {users.data?.map((u) => (
-            <Row key={u.id} label={u.phone} value={`${text.roles[u.role]} · ${u.tier}`} />
-          ))}
-        </LoadState>
-      </Block>
-      <Block title={text.prices}>
-        <LoadState loading={settings.loading} error={settings.error} retry={settings.retry}>
-          {prices.length === 0 ? (
-            <Text style={s.small}>{text.noPrices}</Text>
-          ) : (
-            prices.map((p) => (
-              <Row key={p.id} label={p.id.slice("price:".length)} value={won(Number(p.value))} />
-            ))
-          )}
-        </LoadState>
-        <Field label={text.slug} autoCapitalize="none" value={slug} onChangeText={setSlug} />
-        <Field label={text.price} keyboardType="numeric" value={price} onChangeText={setPrice} />
-        <ErrorNotice error={priceAct.error} />
-        <Button
-          small
-          primary
-          busy={priceAct.busy}
-          disabled={!slug.trim() || !price.trim()}
-          onPress={() =>
-            priceAct.run(async () => {
-              const n = Number(price);
-              if (!Number.isFinite(n) || n < 0) throw new Error(text.priceInvalid);
-              await api.request(
-                "/api/admin/settings",
-                { key: `price:${slug.trim()}`, value: n },
-                "PATCH",
-              );
-              setSlug("");
-              setPrice("");
-              settings.retry();
-              notify(text.saved);
-            })
-          }
-        >
-          {text.save}
-        </Button>
-      </Block>
-    </>
+            <ErrorNotice error={priceAct.error} />
+            <Button
+              small
+              primary
+              busy={priceAct.busy}
+              disabled={!slug.trim() || !price.trim()}
+              onPress={() =>
+                priceAct.run(async () => {
+                  const n = Number(price);
+                  if (!Number.isFinite(n) || n < 0) throw new Error(text.priceInvalid);
+                  await api.request(
+                    "/api/admin/settings",
+                    { key: `price:${slug.trim()}`, value: n },
+                    "PATCH",
+                  );
+                  setSlug("");
+                  setPrice("");
+                  settings.retry();
+                  notify(text.saved);
+                })
+              }
+            >
+              {text.save}
+            </Button>
+          </Block>
+        </Card>
+      </View>
+    </View>
   );
 }

@@ -3,16 +3,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AutoConfig, AutoModel, AutoTokenizer, env } from "@huggingface/transformers";
+import {
+  EMBED_DTYPE as DEFAULT_EMBED_DTYPE,
+  EMBED_MODEL_ID,
+  embedDocumentText,
+  embedQueryText,
+} from "../../../../packages/domain/src/osiri.ts";
 
-export const EMBED_MODEL = process.env.EMBED_MODEL ?? "onnx-community/embeddinggemma-2-ONNX";
-export const EMBED_DTYPE = process.env.EMBED_DTYPE ?? "q8";
+export const EMBED_MODEL = process.env.EMBED_MODEL ?? EMBED_MODEL_ID;
+export const EMBED_DTYPE = process.env.EMBED_DTYPE ?? DEFAULT_EMBED_DTYPE;
 /** MRL 잘라내기 차원 (128/256/512/768). 기본 768 = 원본. 바꾸면 기존 기억 벡터와 호환되지 않는다 — 테이블 생성 시 고정된다. */
 export const EMBED_DIM = Number(process.env.EMBED_DIM ?? 768);
 /** 서버·테스트가 같은 캐시를 쓴다 — 테스트마다 299MB 를 다시 받지 않게. */
 env.cacheDir = process.env.EMBED_CACHE_DIR ?? join(homedir(), ".cache", "osiri-models");
 
-export const asQuery = (text: string) => `task: search result | query: ${text}`;
-export const asDocument = (text: string, title = "none") => `title: ${title} | text: ${text}`;
+export const asQuery = embedQueryText;
+export const asDocument = embedDocumentText;
 
 type Loaded = {
   tokenizer: Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>;
@@ -30,7 +36,11 @@ function load(): Promise<Loaded> {
       AutoModel.from_pretrained(EMBED_MODEL, { config, dtype: EMBED_DTYPE as "q8" }),
     ]);
     return { tokenizer, model };
-  })();
+  })().catch((error) => {
+    // 실패한 적재를 붙들고 있지 않는다 — 다음 호출이 다시 시도한다 (네트워크 일시 장애로 영구 고장 방지)
+    loading = undefined;
+    throw error;
+  });
   return loading;
 }
 

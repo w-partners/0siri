@@ -17,6 +17,7 @@ import type { Config } from "../config.ts";
 import { createJevAdapter, type JevAdapter } from "../jev/adapter.ts";
 import { JevService } from "../jev/service.ts";
 import { presentChoicesTool } from "../jev/tools.ts";
+import type { ChatRoute } from "../osiri/routing.ts";
 import { searchDescription, searchInputSchema, searchInstructions } from "../search.ts";
 import type { AgentService } from "./service.ts";
 import { tanstackAgent } from "./tanstack-agent.ts";
@@ -377,21 +378,47 @@ export class ConversationAgent extends AbstractAgent {
         description: "Remember a preference explicitly supplied or confirmed by the user",
         parameters: z.object({ text: z.string().min(1).max(2000) }),
         execute: async ({ text }) => {
-          const value = {
-            id: createHash("sha256").update(key("memory", text)).digest("hex"),
-            text,
-            source: "User confirmed in chat",
-            createdAt: new Date().toISOString(),
-          };
-          await this.service.db.insertIfAbsent(this.owner, "memories", value);
-          return value;
+          // 0Siri: 기억 저장소는 Memories(pgvector) 하나다 — 설정 화면과 같은 곳에 쓴다. 같은 요청의 재시도는 같은 id 라 한 번만 들어간다.
+          const memories = this.service.osiri?.memories;
+          if (!memories) return { error: "기억 저장소가 연결되어 있지 않아 저장하지 못했습니다" };
+          try {
+            return await memories.add(this.owner, text, "chat", {
+              id: createHash("sha256").update(key("memory", text)).digest("hex"),
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[osiri] remember_fact 저장 실패: ${message}`);
+            return { error: `기억을 저장하지 못했습니다: ${message}` };
+          }
         },
       }),
     ];
     // 0Siri: 방 페르소나는 DB 조회라 비동기 → 에이전트는 구독 시점에 만든다.
-    const buildAgent = (persona?: string) =>
+    // 0Siri: 모델·티어는 요청마다 Routing 이 고른다(설정·월 상한·BYOK 반영). 답변 메시지 id 는 사용량 기록에 묶는다.
+    const routing = this.service.osiri?.routing;
+    const messageIds = new Set<string>();
+    const buildAgent = (persona?: string, route?: ChatRoute) =>
       tanstackAgent({
-        model: this.config.model ?? "openai/unconfigured",
+        model: route?.model ?? this.config.model ?? "openai/unconfigured",
+        ...(route?.apiKey ? { apiKey: route.apiKey } : {}),
+        ...(route && routing
+          ? {
+              onUsage: (usage) =>
+                routing
+                  .recordChat(this.owner, route, usage, {
+                    threadId: input.threadId,
+                    runId: input.runId,
+                    messageIds: [...messageIds],
+                  })
+                  .then(
+                    () => undefined,
+                    (error: unknown) =>
+                      console.error(
+                        `[osiri] 사용량 적재 실패 run=${input.runId}: ${error instanceof Error ? error.message : String(error)}`,
+                      ),
+                  ),
+            }
+          : {}),
         // Desktop work takes one step per click or key, each checked on a screenshot.
         maxSteps: this.config.computerProvider === "e2b-desktop" ? 16 : 6,
         stepLimitNote:
@@ -422,18 +449,29 @@ export class ConversationAgent extends AbstractAgent {
         let cancelled = false;
         void (async () => {
           let persona: string | undefined;
+          let route: ChatRoute | undefined;
           try {
             persona = await this.persona?.(this.owner, input.threadId);
+            // 라우팅 실패도 숨기지 않는다 — 기본 모델로 조용히 넘어가면 설정·상한·BYOK 가 무시된다.
+            route = await routing?.forChat(this.owner, { text: latestText }, this.config.model);
           } catch (error) {
             // 페르소나 조회 실패는 숨기지 않는다 — 기본 프롬프트로 조용히 넘어가면 팀 방이 개인 방처럼 답한다.
             if (!cancelled) subscriber.error(error);
             return;
           }
           if (cancelled) return;
-          agent = buildAgent(persona);
+          agent = buildAgent(persona, route);
           subscription = agent
             .run({ ...input, tools: input.tools.filter((t) => t.name === "open_workspace") })
-            .subscribe(subscriber);
+            .subscribe({
+              next: (event) => {
+                if (event.type === EventType.TEXT_MESSAGE_CHUNK && "messageId" in event)
+                  messageIds.add(String(event.messageId));
+                subscriber.next(event);
+              },
+              error: (error) => subscriber.error(error),
+              complete: () => subscriber.complete(),
+            });
         })();
         return () => {
           cancelled = true;

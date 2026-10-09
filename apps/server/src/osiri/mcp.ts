@@ -33,6 +33,8 @@ export interface McpTool {
 }
 export type ToolResult =
   | { status: "done"; result: unknown }
+  // MCP 결과가 isError 인 경우 — 도구는 불렸지만 실패했다. result 에 오류 본문이 그대로 있다
+  | { status: "failed"; result: unknown; error: string }
   | { status: "pending_approval"; approvalId: string; inputHash: string };
 
 /** 테스트는 InMemoryTransport 클라이언트를 주입한다. 운영은 Streamable HTTP. */
@@ -191,9 +193,9 @@ export class Mcp {
     if (tool.risk !== "read") {
       await this.rooms.activity(owner, {
         roomId: input.roomId,
-        kind: "system",
         actor,
-        title: `${toolName} 실행`,
+        title: result.isError ? `${toolName} 실패` : `${toolName} 실행`,
+        kind: result.isError ? "error" : "system",
       });
       await this.rooms.audit(owner, {
         packageId: null,
@@ -203,9 +205,22 @@ export class Mcp {
         result: result.isError ? "error" : "ok",
       });
     }
+    if (result.isError) return { status: "failed", result, error: toolErrorText(result.content) };
     return { status: "done", result };
   }
 }
+const toolErrorText = (content: unknown): string => {
+  const text = Array.isArray(content)
+    ? content
+        .flatMap((part) =>
+          part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+            ? [(part as { text: string }).text]
+            : [],
+        )
+        .join("\n")
+    : "";
+  return text || "MCP 도구가 오류를 돌려주었습니다 (본문 없음)";
+};
 
 const publicServer = ({ headers, ...server }: McpServer) => ({
   ...server,

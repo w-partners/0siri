@@ -2,7 +2,7 @@
 //   OSIRI_API_URL=http://host:8787  OSIRI_WORKER_TOKEN=…  TEAM_YAML=teams/legal-marketing.yaml
 //   OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_TIER2|3|4   TEAM_INTERVAL_MS=600000   OSIRI_PUBLISH=<serverId>:<tool>
 import { required } from "../config.ts";
-import { gatewayLlm, loadTeam, TeamRuntime } from "./team-runtime.ts";
+import { gatewayLlm, loadTeam, TeamRuntime, tickInterval } from "./team-runtime.ts";
 
 const apiUrl = `${required("OSIRI_API_URL", "OSIRI_API_URL 이 필요합니다")}/api/worker`;
 const runtime = new TeamRuntime({
@@ -18,14 +18,14 @@ const publishTool =
   publish?.length === 2
     ? { serverId: publish[0] as string, tool: publish[1] as string }
     : undefined;
-const interval = Number(process.env.TEAM_INTERVAL_MS ?? 600_000);
+const interval = tickInterval();
 let ticks = 0;
 for (;;) {
   try {
     const result = await runtime.tick(publishTool);
     console.log(`[team] tick ${++ticks}: ${result}`);
     if (ticks % Math.max(1, Math.round((7 * 24 * 3600 * 1000) / interval)) === 0)
-      await runtime.weeklyReport(0);
+      await runtime.weeklyReport();
   } catch (error) {
     console.error(`[team] tick failed: ${(error as Error).message}`);
   }

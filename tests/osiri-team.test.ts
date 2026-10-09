@@ -208,38 +208,27 @@ test("목표 분해 → 파이프라인 → 승인 전 정지 → 승인 후 1�
     frozenHash: inbox.pending[0]?.inputHash,
   });
   assert.equal(decided.status, 200);
-  // tick: 승인 대기(stage=approval) 목표는 재실행하지 않는다 → idle. 승인 처리는 runShortGoal 폴링이 한다
-  assert.equal(await runtime.tick(publishTool), "idle");
-  // 같은 입력으로 다시 돌리면 요청이 기존 승인에 합쳐지고(dedupe 는 pending 만) → 이미 approved 이므로 새 카드가 생긴다. 발행은 폴링 경로로:
-  const poll = async () =>
-    (await (
-      await app.request(`http://osiri.test/api/worker/approvals/${approvalId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-    ).json()) as { status: string; token?: string };
-  const polled = await poll();
-  assert.equal(polled.status, "approved");
-  assert.ok(polled.token, "승인 토큰은 워커에게 한 번 전달");
-  const again = await poll();
-  assert.equal(again.token, undefined, "두 번째 폴링엔 토큰 없음");
-  const call = await app.request("http://osiri.test/api/worker/tools/call", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      serverId: site.id,
-      tool: "site_publish_post",
-      args: {
-        title: "유류분 반환청구 기한은 언제까지인가요?",
-        body: "핵심 답변: 1년/10년. 근거: 민법 제1117조…",
-        sources: ["민법 제1117조", "대법원 2026다1234"],
-      },
-      approval: { id: approvalId, token: polled.token },
-      actor: "publisher",
-    }),
-  });
-  assert.equal(call.status, 200);
+  // tick: 승인 단계에 멈춘 목표의 승인 상태를 확인해 이어 간다 → 토큰을 받아 1회 발행
+  assert.equal(await runtime.tick(publishTool), "published");
   assert.deepEqual(published, ["유류분 반환청구 기한은 언제까지인가요?"]);
-  // 토큰 재사용 → 403
+  const doneGoal = (
+    (await (await user(`/api/goals?room_id=${roomId}`)).json()) as {
+      level: string;
+      stage?: string;
+      status: string;
+      progress: number;
+    }[]
+  ).find((g) => g.level === "short");
+  assert.equal(doneGoal?.status, "completed");
+  assert.equal(doneGoal?.progress, 100);
+  // 토큰은 이미 쓰였다 — 다시 폴링해도 토큰이 없고, 같은 승인으로 재발행은 403
+  const polled = (await (
+    await app.request(`http://osiri.test/api/worker/approvals/${approvalId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  ).json()) as { status: string; token?: string };
+  assert.equal(polled.status, "consumed");
+  assert.equal(polled.token, undefined);
   const reuse = await app.request("http://osiri.test/api/worker/tools/call", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -247,24 +236,35 @@ test("목표 분해 → 파이프라인 → 승인 전 정지 → 승인 후 1�
       serverId: site.id,
       tool: "site_publish_post",
       args: {},
-      approval: { id: approvalId, token: polled.token },
+      approval: { id: approvalId, token: "not-the-token" },
     }),
   });
   assert.equal(reuse.status, 403);
   assert.equal(published.length, 1);
+  // 이미 결재된 승인을 다시 결재하면 옛 상태를 200 으로 주지 않고 409
+  const redecide = await user(`/api/approvals/${approvalId}/decide`, { decision: "reject" });
+  assert.equal(redecide.status, 409);
+  assert.match(((await redecide.json()) as { error: string }).error, /이미 처리된/);
+  assert.equal(await runtime.tick(publishTool), "idle");
 
   // 주간 보고 — 3지표
-  await runtime.weeklyReport(0);
+  await runtime.weeklyReport();
   const timeline = (await (await user(`/api/rooms/${roomId}/timeline`)).json()) as {
     messages: { kind: string; payload?: { card?: string; metrics?: Record<string, unknown> } }[];
   };
   const report = timeline.messages.find((m) => m.kind === "report");
   assert.equal(report?.payload?.card, "weekly-report");
+  // 승인 대기 수·성과 지표는 워커 값이 아니라 서버 현황판(board) 값이다
   assert.deepEqual(Object.keys(report?.payload?.metrics ?? {}).sort(), [
+    "ai_citations",
     "completed_tasks",
+    "indexed",
     "next_week_plan",
     "pending_approvals",
+    "published",
   ]);
+  assert.equal(report?.payload?.metrics?.pending_approvals, 0);
+  assert.equal(report?.payload?.metrics?.published, 1);
   // 감사 로그: external 행위에 approval_id 가 붙어 있다
   const audit = (await (await user("/api/audit")).json()) as {
     action: string;

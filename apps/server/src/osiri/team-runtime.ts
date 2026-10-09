@@ -3,6 +3,10 @@
 // 흐름: 목표 분해(팀장) → 감지 → 초안 → GEO → 검수 → [승인 대기] → 발행 → 주간 보고. 유일한 정지점은 발행 전 승인.
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
+import {
+  missingTeamRoles,
+  type WorkerPresenceState,
+} from "../../../../packages/domain/src/osiri.ts";
 import { tierModels } from "./routing.ts";
 
 export interface TeamAgent {
@@ -39,11 +43,32 @@ type Goal = {
   progress: number;
 };
 type Draft = { title: string; body: string; sources: string[] };
+/** 승인 요청 본문 — 처음 요청할 때와 (토큰 유실 뒤) 다시 요청할 때 같은 값을 쓴다. */
+type ApprovalRequest = {
+  toolName: string;
+  input: unknown;
+  title: string;
+  summary: string;
+  evidence?: string;
+  actor: string;
+  goal_id: string;
+};
+type ApprovalRef = Omit<ApprovalRequest, "actor" | "goal_id"> & { id: string; status: string };
+export type ShortGoalOutcome =
+  | "published"
+  | "pending"
+  | "rejected"
+  | "review_failed"
+  | "no_channel"
+  | "publish_failed"
+  | "requeued";
+type PublishTool = { serverId: string; tool: string };
 
 export async function loadTeam(path: string): Promise<TeamSpec> {
   const spec = parseYaml(await readFile(path, "utf8")) as TeamSpec;
-  for (const key of ["root", "reviewer", "publisher", "analyst"])
-    if (!spec.agents[key]) throw new Error(`팀 정의에 ${key} 역할이 없습니다: ${path}`);
+  // 패키지 등록(Catalog.upsertPackage)과 같은 필수 역할 목록
+  const missing = missingTeamRoles(Object.keys(spec.agents ?? {}));
+  if (missing.length) throw new Error(`팀 정의에 ${missing.join(", ")} 역할이 없습니다: ${path}`);
   if (!spec.package?.approval_points?.length) throw new Error("승인 지점이 선언되지 않았습니다");
   return spec;
 }
@@ -92,8 +117,11 @@ export class TeamRuntime {
       this.log(`감사 로그 전송 실패: ${error}`),
     );
   }
-  private presence(state: "working" | "done" | "idle", label?: string) {
-    return this.api("/presence", { state, label }).catch(() => undefined);
+  private presence(state: WorkerPresenceState, label?: string) {
+    // 캐릭터 상태는 작업을 막지 않지만, 실패는 남긴다
+    return this.api("/presence", { state, label }).catch((error) =>
+      this.log(`상태 전송 실패(${state}): ${error}`),
+    );
   }
   private say(text: string, actor: string) {
     return this.api("/messages", { kind: "text", text, actor });
@@ -142,12 +170,8 @@ export class TeamRuntime {
   }
 
   /** 단기 목표 1건: 감지 → 초안 → GEO → 검수 → 승인 요청. 발행은 승인 토큰이 있을 때만. */
-  async runShortGoal(
-    goal: Goal,
-    publishTool?: { serverId: string; tool: string },
-  ): Promise<"published" | "pending" | "rejected" | "review_failed" | "no_channel"> {
-    const progress = (p: number, stage: string, extra: Record<string, unknown> = {}) =>
-      this.api(`/goals/${goal.id}/progress`, { progress: p, stage, actor: "root", ...extra });
+  async runShortGoal(goal: Goal, publishTool?: PublishTool): Promise<ShortGoalOutcome> {
+    const progress = this.progressOf(goal);
     await this.presence("working", `${goal.title} 작업 중`);
     const signal = await this.ask("monitor", `단기 목표: ${goal.title}`);
     await progress(20, "detect");
@@ -181,21 +205,46 @@ export class TeamRuntime {
       toolName = `${server.name}:${publishTool.tool}`;
     }
     // 승인 요청 — 여기서 멈춘다. 플랫폼이 카드를 띄우고 변호사만 결재한다.
-    const approval = await this.api<{ id: string; status: string }>("/approvals/request", {
+    const request: ApprovalRequest = {
       toolName,
       input,
       title: `발행 승인: ${geo.title}`,
       summary: geo.body.slice(0, 300),
       evidence: `출처:\n${geo.sources.join("\n")}`,
       actor: "publisher",
-    });
-    await progress(90, "approval");
+      goal_id: goal.id,
+    };
+    const approvalId = await this.requestApproval(goal, request);
+    return this.awaitApproval(goal, approvalId, request, publishTool);
+  }
+
+  private progressOf(goal: Goal) {
+    return (p: number, stage: string, extra: Record<string, unknown> = {}) =>
+      this.api(`/goals/${goal.id}/progress`, { progress: p, stage, actor: "root", ...extra });
+  }
+  private async requestApproval(goal: Goal, request: ApprovalRequest): Promise<string> {
+    const approval = await this.api<{ id: string; status: string }>("/approvals/request", request);
+    await this.progressOf(goal)(90, "approval");
     await this.audit("publisher", "approval.request", "ok", {
       goal_id: goal.id,
       approval_id: approval.id,
       external: true,
     });
     await this.presence("idle", "승인 대기 중");
+    return approval.id;
+  }
+
+  /** 승인 결과를 기다렸다가 발행한다. 폴링이 끝나도 결정이 없으면 "pending" — 다음 tick 이 `resumeApproval` 로 이어 간다. */
+  private async awaitApproval(
+    goal: Goal,
+    approvalId: string,
+    request: ApprovalRequest,
+    publishTool?: PublishTool,
+  ): Promise<ShortGoalOutcome> {
+    const progress = this.progressOf(goal);
+    const approval = { id: approvalId };
+    const input = request.input;
+    const subject = (input as { title?: unknown } | null)?.title ?? request.title;
     const polls = this.options.maxPolls ?? 1;
     for (let i = 0; i < polls; i++) {
       const state = await this.api<{
@@ -204,6 +253,20 @@ export class TeamRuntime {
         tokenLost?: boolean;
         reason?: string;
       }>(`/approvals/${approval.id}`);
+      if (state.status === "expired") {
+        await progress(60, "geo");
+        await this.say(
+          "승인 요청이 기한 안에 결재되지 않아 만료되었습니다. 다시 준비합니다.",
+          "publisher",
+        );
+        return "requeued";
+      }
+      if (state.status === "consumed")
+        return this.publishFailed(
+          goal,
+          approval.id,
+          "승인 토큰이 이미 쓰였는데 발행 결과가 확인되지 않습니다",
+        );
       if (state.status === "rejected") {
         await progress(60, "geo");
         await this.say(
@@ -226,31 +289,38 @@ export class TeamRuntime {
           return "no_channel";
         }
         await this.presence("working", "발행 중");
-        const result = await this.api<{ status: string }>("/tools/call", {
+        const result = await this.api<{ status: string; error?: string }>("/tools/call", {
           serverId: publishTool.serverId,
           tool: publishTool.tool,
           args: input,
           approval: { id: approval.id, token: state.token },
           actor: "publisher",
         });
-        if (result.status !== "done") throw new Error(`발행 실패: ${JSON.stringify(result)}`);
+        // 도구가 오류를 돌려주면(status "failed") 발행된 것이 아니다 — 완료 처리하지 않는다
+        if (result.status !== "done")
+          return this.publishFailed(goal, approval.id, result.error ?? `status=${result.status}`);
         await progress(100, "done", { status: "completed", metrics: { published: 1 } });
         await this.audit("publisher", "publish", "ok", {
           goal_id: goal.id,
           approval_id: approval.id,
           external: true,
         });
-        await this.say(`발행 완료: ${geo.title}`, "publisher");
+        await this.say(`발행 완료: ${subject}`, "publisher");
         await this.presence("done", "발행 완료");
         return "published";
       }
-      if (state.status === "approved" && state.tokenLost) {
-        // 서버 재시작으로 토큰이 사라짐 — 새 승인을 받는다. 토큰 없이 발행하지 않는다.
+      if (state.status === "approved") {
+        // 토큰이 없다: 서버 재시작으로 사라졌거나(tokenLost) 이미 한 번 넘겨받고 워커가 죽었다 — 같은 내용으로 새 승인을 받는다. 토큰 없이 발행하지 않는다.
         await this.audit("publisher", "publish", "blocked", {
           goal_id: goal.id,
           approval_id: approval.id,
           external: true,
         });
+        await this.requestApproval(goal, request);
+        await this.say(
+          "서버가 다시 시작되어 승인 토큰이 사라졌습니다. 같은 내용으로 승인을 다시 요청드립니다.",
+          "publisher",
+        );
         return "pending";
       }
       if (i < polls - 1) await this.sleep(this.options.pollIntervalMs ?? 30_000);
@@ -258,9 +328,51 @@ export class TeamRuntime {
     return "pending";
   }
 
-  /** 주간 보고 (§15.4-3): 완료 작업 수·대기 승인 수·다음 주 계획 필수. */
-  async weeklyReport(pendingApprovals: number) {
+  /** 발행이 실패했거나 결과를 알 수 없다: 완료로 올리지 않고 목표를 막아(blocked) 사람에게 알린다. 자동 재발행은 하지 않는다 (§24-11 비멱등 재시도 금지). */
+  private async publishFailed(
+    goal: Goal,
+    approvalId: string,
+    reason: string,
+  ): Promise<ShortGoalOutcome> {
+    await this.progressOf(goal)(90, "approval", { status: "blocked" });
+    await this.audit("publisher", "publish", "error", {
+      goal_id: goal.id,
+      approval_id: approvalId,
+      external: true,
+    });
+    await this.say(
+      `발행에 실패했습니다: ${reason}. 확인이 필요해 이 목표를 멈춰 둡니다.`,
+      "publisher",
+    );
+    this.log(`발행 실패 goal=${goal.id}: ${reason}`);
+    return "publish_failed";
+  }
+
+  /** 승인 단계에 멈춘 목표를 이어 간다 — 폴링 시간 초과·토큰 유실·워커 재시작 뒤에도 승인 결과를 놓치지 않는다. */
+  private async resumeApproval(goal: Goal, publishTool?: PublishTool): Promise<ShortGoalOutcome> {
+    const linked = await this.api<ApprovalRef[]>(
+      `/approvals?goal_id=${encodeURIComponent(goal.id)}`,
+    );
+    const latest = linked.at(-1);
+    if (!latest) {
+      // 연결된 승인이 없다(이 기능 이전에 만든 목표) — 상태를 확인할 길이 없으니 검수 뒤 단계부터 다시 간다
+      this.log(`승인 단계 목표 ${goal.id} 에 연결된 승인이 없어 다시 준비합니다`);
+      await this.progressOf(goal)(60, "geo");
+      return "requeued";
+    }
+    const { id, status: _status, ...rest } = latest;
+    return this.awaitApproval(
+      goal,
+      id,
+      { ...rest, actor: "publisher", goal_id: goal.id },
+      publishTool,
+    );
+  }
+
+  /** 주간 보고 (§15.4-3): 완료 작업 수·대기 승인 수·다음 주 계획 필수. 승인 대기 수는 서버 현황판(board) 값만 쓴다. */
+  async weeklyReport() {
     const goals = await this.api<Goal[]>("/goals");
+    const { pendingApprovals } = await this.api<{ pendingApprovals: number }>("/board");
     const completed = goals.filter((g) => g.level === "short" && g.status === "completed").length;
     const open = goals
       .filter((g) => g.level === "short" && g.status !== "completed")
@@ -272,7 +384,6 @@ export class TeamRuntime {
       summary: report.summary,
       metrics: {
         completed_tasks: completed,
-        pending_approvals: pendingApprovals,
         next_week_plan: report.next_week_plan.length ? report.next_week_plan : open.slice(0, 3),
       },
       actor: "analyst",
@@ -280,15 +391,29 @@ export class TeamRuntime {
     return { completed, pendingApprovals };
   }
 
-  /** 한 사이클: 분해 안 된 목표가 있으면 분해, 열린 단기 목표를 하나 진행. */
-  async tick(publishTool?: { serverId: string; tool: string }) {
+  /** 한 사이클: 승인 단계에 멈춘 목표의 승인 상태를 먼저 확인해 이어 가고, 없으면 열린 단기 목표를 하나 진행. */
+  async tick(publishTool?: PublishTool): Promise<ShortGoalOutcome | "idle"> {
     const goals = await this.api<Goal[]>("/goals");
-    const next = goals.find(
-      (g) => g.level === "short" && g.status === "active" && (g.stage ?? "detect") !== "approval",
-    );
-    if (!next) return "idle" as const;
+    const open = goals.filter((g) => g.level === "short" && g.status === "active");
+    let waiting = false;
+    for (const goal of open.filter((g) => g.stage === "approval")) {
+      const outcome = await this.resumeApproval(goal, publishTool);
+      if (outcome !== "pending") return outcome;
+      waiting = true;
+    }
+    const next = open.find((g) => (g.stage ?? "detect") !== "approval");
+    if (!next) return waiting ? "pending" : "idle";
     return this.runShortGoal(next, publishTool);
   }
+}
+
+/** tick 간격(ms). TEAM_INTERVAL_MS 가 숫자가 아니면 NaN 으로 쉬지 않고 도는 대신 기동을 막는다. */
+export function tickInterval(raw = process.env.TEAM_INTERVAL_MS): number {
+  if (raw === undefined || raw === "") return 600_000;
+  const interval = Number(raw);
+  if (!Number.isFinite(interval) || interval <= 0)
+    throw new Error(`TEAM_INTERVAL_MS 는 0 보다 큰 숫자(ms)여야 합니다: "${raw}"`);
+  return interval;
 }
 
 /** OpenAI 호환 게이트웨이 호출 (new-api 등). 모델은 티어별 환경변수. */
@@ -317,7 +442,11 @@ export function gatewayLlm(env = process.env): Llm {
     });
     if (!response.ok)
       throw new Error(`gateway ${response.status}: ${(await response.text()).slice(0, 200)}`);
-    const data = (await response.json()) as { choices: { message: { content: string } }[] };
-    return data.choices[0]?.message.content ?? "";
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    const content = data.choices?.[0]?.message?.content;
+    // 빈 답을 "" 로 넘기면 뒤에서 "JSON 이 아닙니다" 로만 보인다 — 여기서 원인을 밝힌다
+    if (!content?.trim())
+      throw new Error(`gateway 가 빈 응답을 돌려주었습니다 (model=${models[tier]})`);
+    return content;
   };
 }

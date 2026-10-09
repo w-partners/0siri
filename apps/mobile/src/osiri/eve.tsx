@@ -1,8 +1,8 @@
 // 영시리 캐릭터 — WALL-E 의 EVE 를 닮은 흰 달걀형 로봇(마스터 2026-10-10 "월이의 이브 같은 형태로").
 // 쉴 때는 얼굴이 꺼져 있고, 일할 때는 웃으면서 노트북을 친다(마스터 2026-10-10).
 // 몸은 SVG, 눈·볼·팔·노트북은 Animated 레이어 — 전부 transform/opacity 만 바꾼다(네이티브 드라이버).
-import { useEffect, useRef } from "react";
-import { Animated, Easing, StyleSheet, View } from "react-native";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 import { Mascot } from "../ui";
 
@@ -34,7 +34,49 @@ const pingPong = (v: Animated.Value, up: number, down: number, easing = Easing.l
     ]),
   );
 
+/** OS «동작 줄이기»(웹은 prefers-reduced-motion). 켜져 있으면 움직임을 멈추고 표정·문구로만 상태를 전한다. */
+export function useReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled().then(
+      (v) => live && setReduced(v),
+      (e) => console.warn("[0siri] reduce-motion 조회 실패 — 움직임을 그대로 둔다", e),
+    );
+    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduced);
+    return () => {
+      live = false;
+      sub.remove();
+    };
+  }, []);
+  return reduced;
+}
+
+// --- 캐릭터 설정 (화면 11 «캐릭터 끄기 · 반응 강도») — 값은 서버 GET /settings 의 character, 여기는 그 사본을 들고만 있는다 ---
+export type CharacterPref = { enabled: boolean; intensity: "motion" | "face" | "text" };
+let pref: CharacterPref = { enabled: true, intensity: "motion" };
+const prefListeners = new Set<() => void>();
+export function setCharacterPref(next: CharacterPref) {
+  pref = next;
+  for (const l of prefListeners) l();
+}
+export const useCharacterPref = () =>
+  useSyncExternalStore(
+    (l) => {
+      prefListeners.add(l);
+      return () => prefListeners.delete(l);
+    },
+    () => pref,
+  );
+/** 움직이면 안 되는가 — 동작 줄이기이거나 반응 강도가 «표정만» 이하 */
+export function useStill() {
+  const reduced = useReducedMotion();
+  const { intensity } = useCharacterPref();
+  return reduced || intensity !== "motion";
+}
+
 export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood }) {
+  const still = useStill();
   const float = useRef(new Animated.Value(0)).current; // 부유 0→1→0
   const blink = useRef(new Animated.Value(1)).current; // 눈 scaleY
   const beat = useRef(new Animated.Value(0)).current; // 말하기 들썩 · 타이핑 박자
@@ -48,26 +90,29 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
 
   // 부유는 늘 돈다 — 쉴 땐 느린 숨, 말할 땐 빠르게
   useEffect(() => {
+    if (still) return float.setValue(0);
     const ms = mood === "speaking" ? 700 : mood === "idle" ? 2600 : 1700;
     const loop = pingPong(float, ms, ms, Easing.inOut(Easing.sin));
     loop.start();
     return () => loop.stop();
-  }, [float, mood]);
+  }, [float, mood, still]);
 
   // 기분 → 모습은 스프링으로 옮겨 간다 (얼굴이 켜지고 꺼지는 것도)
   useEffect(() => {
     const look = LOOK[mood];
-    spring(on, look.on);
-    spring(smile, look.smile);
-    spring(eyeX, look.x);
-    spring(eyeY, look.y);
-    spring(tilt, look.tilt);
-    spring(work, look.work);
-  }, [mood, on, smile, eyeX, eyeY, tilt, work]);
+    // 멈춤 모드: 표정은 바뀌되 옮겨 가는 동작은 없다
+    const to = still ? (v: Animated.Value, n: number) => v.setValue(n) : spring;
+    to(on, look.on);
+    to(smile, look.smile);
+    to(eyeX, look.x);
+    to(eyeY, look.y);
+    to(tilt, look.tilt);
+    to(work, look.work);
+  }, [mood, on, smile, eyeX, eyeY, tilt, work, still]);
 
   // 깜빡임: 눈을 뜨고 있을 때만(듣는 중·승인 대기)
   useEffect(() => {
-    if (mood !== "listening" && mood !== "alert") return;
+    if (still || (mood !== "listening" && mood !== "alert")) return;
     let timer: ReturnType<typeof setTimeout>;
     const once = () =>
       Animated.sequence([
@@ -81,22 +126,22 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
       clearTimeout(timer);
       blink.setValue(1);
     };
-  }, [blink, mood]);
+  }, [blink, mood, still]);
 
   // 박자: 말할 땐 눈이 들썩, 일할 땐 두 팔이 번갈아 자판을 친다
   useEffect(() => {
-    if (mood !== "speaking" && mood !== "thinking") {
+    if (still || (mood !== "speaking" && mood !== "thinking")) {
       beat.setValue(0);
       return;
     }
     const loop = mood === "thinking" ? pingPong(beat, 130, 130) : pingPong(beat, 150, 230);
     loop.start();
     return () => loop.stop();
-  }, [beat, mood]);
+  }, [beat, mood, still]);
 
   // 완료: 한 번 폴짝
   useEffect(() => {
-    if (mood !== "happy") return;
+    if (still || mood !== "happy") return;
     bounce.setValue(0);
     Animated.sequence([
       Animated.timing(bounce, {
@@ -112,7 +157,7 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
         useNativeDriver: true,
       }),
     ]).start();
-  }, [bounce, mood]);
+  }, [bounce, mood, still]);
 
   const lift = Animated.add(
     float.interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.045] }),
@@ -352,6 +397,9 @@ export function CharacterAvatar({
   size?: number;
   mood?: Mood;
 }) {
+  const { enabled, intensity } = useCharacterPref();
+  // 캐릭터를 끄면 그림은 사라지고 부르는 쪽의 상태 문구만 남는다 (기획 화면 3 분기)
+  if (!enabled || intensity === "text") return null;
   if (character === YEONGSIL) return <Eve size={size} mood={mood} />;
   // 팀 캐릭터: 아직 전용 그림이 없어 카피바라 + 이름 해시로 고정한 배경색
   let h = 0;

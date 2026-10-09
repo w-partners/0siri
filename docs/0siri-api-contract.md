@@ -14,6 +14,9 @@
 - `GET /rooms/:id/ideas` → `GoalProposal[]` (아래) — 그 방 팀이 낸 주제·목표 제안.
 - `GET /stream` (SSE, 사용자 단위) — 이벤트 `rooms`(payload `{ roomId }`): 어느 방의 배지·진척·상태가 바뀌었다. 목록·탭 배지가 이걸 받고 `/rooms` 를 다시 읽는다. `ping` 은 기존과 같다.
 - `GET /rooms/:id/board` 응답에 추가: `character: { assetId, state: "working"|"awaiting_approval"|"reporting"|"idle", summary }`, `recentDone: string[]`(최근 완료 3건 제목).
+  `agents[]` 항목에 `role?: string`(역할 설명), `current?: string`(지금 하는 일) — 없으면 화면은 그 줄을 보이지 않는다.
+- `GET /rooms/:id/summary` 응답에 `recentDone: string[]` 추가(현황판과 같은 값).
+- `GET /rooms/:id/timeline` 응답에 `answers: Record<채팅 답변 messageId, AnsweredBy>` 추가 — 화면이 답변 아래에 «누가 답했는지» 를 붙인다. 워커가 올린 방 메시지는 `payload.answeredBy` 로 같은 모양을 싣는다.
 - 메시지(채팅 응답) 메타데이터: `answeredBy: { tier: 0|1|2|3|4, label: string, model: string, source: "device"|"server"|"byok", reason?: string }`, `memoryRefs?: { id, text, at }[]`.
 
 ## 승인 (화면 3·4)
