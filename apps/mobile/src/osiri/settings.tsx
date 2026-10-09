@@ -1,7 +1,6 @@
 // 0Siri 설정 (0SIRI-SPEC §4.7, §4.8, §4.11 · S7/S8/S11): 한 화면 스크롤, 섹션마다 독립 로드·오류·재시도.
 import { useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import appJson from "../../app.json";
 import {
   Button,
   Card,
@@ -248,8 +247,6 @@ export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
         >
           {text.logout}
         </Button>
-        {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
-        <Text style={s.small}>0Siri v{appJson.expo.version}</Text>
       </Section>
     </ScrollView>
   );

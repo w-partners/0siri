@@ -14,3 +14,7 @@ artifacts/
 
 # harness memory index (machine-local)
 .memsearch/
+
+# 0Siri 런타임 산출물 — 로그·릴리스 APK 는 커밋하지 않는다
+data/server.log
+data/releases/

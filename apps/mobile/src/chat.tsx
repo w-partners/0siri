@@ -33,6 +33,7 @@ import {
   showsRunError,
   threadLocked,
 } from "./conversation-run";
+import type { Mood } from "./osiri/eve";
 import { SearchToolCard } from "./search-tool-card";
 import { t } from "./strings";
 import { TaskThreadCard } from "./thread-artifacts";
@@ -179,12 +180,15 @@ export function ChatScreen({
   thread,
   active = true,
   roomId,
+  onMood,
 }: {
   prompt?: { id: number; text: string };
   thread?: Selection;
   active?: boolean;
   /** 0Siri 팀 채팅방: 방 id 가 곧 스레드 id (대화 이력은 /api/conversation?threadId=). */
   roomId?: string;
+  /** 0Siri 캐릭터 애니메이션용 — 입력 중·생각 중·말하는 중 (영시리 EVE 가 듣는다) */
+  onMood?: (mood: Mood) => void;
 }) {
   const { api, workspace: w, refresh, navigate } = useWorkspace();
   const { data: agentWorkspace, refresh: refreshAgent } = useAgentWorkspace();
@@ -422,6 +426,16 @@ export function ChatScreen({
   const messages = agent.messages || [];
   const visible = messages.filter((m) => m.role === "user" || m.role === "assistant");
   const replying = busy || agent.isRunning;
+  // 기분: 답이 흘러나오는 중이면 speaking, 그 전까지는 thinking, 사용자가 쓰는 중이면 listening
+  const last = visible.at(-1) as { role: string; content?: string } | undefined;
+  const mood: Mood = replying
+    ? last?.role === "assistant" && last.content
+      ? "speaking"
+      : "thinking"
+    : focused || draft
+      ? "listening"
+      : "idle";
+  useEffect(() => onMood?.(mood), [mood, onMood]);
   return (
     <View style={{ flex: 1 }}>
       <ScrollView

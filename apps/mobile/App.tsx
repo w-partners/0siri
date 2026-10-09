@@ -36,6 +36,7 @@ import { type Room, RoomList, RoomScreen } from "./src/osiri/rooms";
 import { SettingsScreen } from "./src/osiri/settings";
 import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
+import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
 import { Button, colors, ErrorNotice, IconButton, Mascot, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
@@ -43,7 +44,7 @@ import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 type Tab = "rooms" | "store" | "inbox" | "goals" | "settings";
 type StoreTab = "explore" | "mine";
 const nav: { id: Tab; label: string; icon: LucideIcon }[] = [
-  { id: "rooms", label: "방", icon: MessageSquare },
+  { id: "rooms", label: "채팅", icon: MessageSquare },
   { id: "store", label: "스토어", icon: Store },
   { id: "inbox", label: "결재함", icon: Inbox },
   { id: "goals", label: "목표", icon: Target },
@@ -153,6 +154,8 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
   const [room, setRoom] = useState<Room>();
+  // 기본 채팅 = 개인 방(영시리). 서버가 /api/rooms 호출 때 없으면 만든다
+  const [personal, setPersonal] = useState<Room>();
   const [skipOnboarding, setSkipOnboarding] = useState(false);
   const [detail, setDetail] = useState<Detail>();
   const [toast, setToast] = useState("");
@@ -175,12 +178,14 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     const timer = setTimeout(() => setToast(""), 5500);
     return () => clearTimeout(timer);
   }, [toast]);
-  // 웹 딥링크 /rooms/:id — 목록에서 그 방을 찾아 연다
+  // 개인 방(홈 채팅) + 웹 딥링크 /rooms/:id — 한 번의 목록 조회로 둘 다
   useEffect(() => {
-    if (!initial.roomId) return;
     void api
       .request<Room[]>("/api/rooms")
-      .then((rooms) => setRoom(rooms.find((r) => r.id === initial.roomId)))
+      .then((rooms) => {
+        setPersonal(rooms.find((r) => r.packageId === null));
+        if (initial.roomId) setRoom(rooms.find((r) => r.id === initial.roomId));
+      })
       .catch((e) => setError(String(e)));
   }, [api, initial.roomId]);
   useEffect(() => writeLocation(tab, room?.id, storeTab), [tab, room, storeTab]);
@@ -260,6 +265,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
               setTab(next);
             }}
             room={room}
+            personal={personal}
             openRoom={openRoom}
             openRoomById={openRoomById}
             closeRoom={() => setRoom(undefined)}
@@ -281,6 +287,7 @@ function Shell({
   tab,
   setTab,
   room,
+  personal,
   openRoom,
   openRoomById,
   closeRoom,
@@ -295,6 +302,7 @@ function Shell({
   tab: Tab;
   setTab: (tab: Tab) => void;
   room?: Room;
+  personal?: Room;
   openRoom: (room: Room) => void;
   openRoomById: (id: string) => void;
   closeRoom: () => void;
@@ -323,8 +331,18 @@ function Shell({
       <RoomList onOpen={openRoom} />
     );
   // 방 안: 탭 숨김, 전체 화면 (§4.0). 웹에서는 사이드바 옆 메인에 뜬다
+  // 채팅 탭 = 영시리와의 기본 채팅(Muse 처럼). 팀 방은 그 화면의 버튼으로 연다
   const main = room ? (
     <RoomScreen key={room.id} room={room} onBack={closeRoom} />
+  ) : tab === "rooms" ? (
+    personal ? (
+      <RoomScreen key="home" home room={personal} onBack={closeRoom} onOpenRoom={openRoom} />
+    ) : (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 10 }}>
+        <ErrorNotice error={error} />
+        {!error && <ActivityIndicator color={colors.blueDark} />}
+      </View>
+    )
   ) : (
     <ScrollView
       key={tab}
@@ -364,6 +382,7 @@ function Shell({
     <>
       <WorkspaceTools />
       <SafeAreaView style={{ flex: 1, backgroundColor: colors.canvas }} edges={["top", "bottom"]}>
+        <UpdateBanner />
         {desktop ? (
           <View style={{ flex: 1, flexDirection: "row" }}>
             <View

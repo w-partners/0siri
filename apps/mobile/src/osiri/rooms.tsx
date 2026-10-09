@@ -13,6 +13,7 @@ import type {
   TaskStage,
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
+import appJson from "../../app.json";
 import { apiBase } from "../api";
 import { ChatScreen } from "../chat";
 import {
@@ -30,6 +31,7 @@ import {
   timeLabel,
 } from "../ui";
 import { useWorkspace } from "../workspace";
+import { Eve, type Mood } from "./eve";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
 /** GET /rooms 항목 = 서버 Room 레코드 + list() 가 board 에서 얹는 배지. 레코드 정의는 서버가 정본. */
@@ -110,6 +112,7 @@ const text = {
   digest: "부재 중 진척",
   timeline: "타임라인",
   noMessages: "아직 기록이 없어요. 아래 채팅으로 팀장과 대화해 보세요.",
+  teams: "팀 방",
 };
 
 /** 캐릭터 → 마스코트 색. 영시리는 sky, 나머지는 이름 해시로 sand/lilac 고정. */
@@ -477,13 +480,16 @@ function Character({
   room,
   presence,
   pending,
+  mood,
   onPress,
 }: {
   room: Room;
   presence: Presence;
   pending: number;
+  mood: Mood;
   onPress: () => void;
 }) {
+  const label = `${room.title} · ${pending > 0 ? text.waitingCount(pending) : presence.label}`;
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     anim.setValue(0);
@@ -506,7 +512,24 @@ function Character({
       : presence.state === "done"
         ? [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }) }]
         : [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }) }];
-  const label = `${room.title} · ${pending > 0 ? text.waitingCount(pending) : presence.label}`;
+  // 영시리는 EVE — 채팅 기분(듣기·생각·말하기)이 우선, 아니면 방 presence 로
+  if (room.character === "yeongsil") {
+    const eveMood: Mood =
+      pending > 0
+        ? "alert"
+        : mood !== "idle"
+          ? mood
+          : presence.state === "working"
+            ? "thinking"
+            : presence.state === "done"
+              ? "happy"
+              : "idle";
+    return (
+      <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress}>
+        <Eve size={132} mood={eveMood} />
+      </Pressable>
+    );
+  }
   return (
     <Pressable
       accessibilityRole="button"
@@ -541,8 +564,21 @@ function Character({
 }
 
 // --- S3 팀 채팅방 ---
-export function RoomScreen({ room, onBack }: { room: Room; onBack: () => void }) {
+export function RoomScreen({
+  room,
+  onBack,
+  home = false,
+  onOpenRoom,
+}: {
+  room: Room;
+  onBack: () => void;
+  /** 기본 채팅(홈): 뒤로 대신 팀 방 목록 버튼, 버전 표시 — Muse 처럼 앱을 열면 바로 영시리와 대화 */
+  home?: boolean;
+  onOpenRoom?: (room: Room) => void;
+}) {
   const { api } = useWorkspace();
+  const [mood, setMood] = useState<Mood>("idle");
+  const [teams, setTeams] = useState(false);
   const [messages, setMessages] = useState<RoomMessage[] | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
   const [board, setBoard] = useState<RoomBoard | null>(null);
@@ -635,73 +671,105 @@ export function RoomScreen({ room, onBack }: { room: Room; onBack: () => void })
   const pending = board?.pendingApprovals ?? room.pendingApprovals;
   const title = room.packageId === null ? text.personal : room.title;
   const statusLine = pending > 0 ? text.waitingCount(pending) : presence.label;
+  // 홈은 채팅이 주인공 — 타임라인은 쌓인 게 있을 때만
+  const showTimeline = !home || !!digest || !!messages?.length || !!error;
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={[s.row, { paddingHorizontal: 8, paddingTop: 4 }]}>
-        <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
+      <View
+        style={[s.row, { paddingHorizontal: 8, paddingTop: 4, justifyContent: "space-between" }]}
+      >
+        {home ? <View /> : <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />}
+        {home && <IconButton icon={Users} label={text.teams} onPress={() => setTeams(true)} />}
       </View>
       <View style={{ alignItems: "center", gap: 4, paddingBottom: 8 }}>
         <Character
           room={{ ...room, title }}
           presence={presence}
           pending={pending}
+          mood={mood}
           onPress={() => void openSummary()}
         />
         <Text style={s.title}>{title}</Text>
         <Text style={s.muted}>{statusLine}</Text>
+        {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
+        {home && <Text style={s.small}>0Siri v{appJson.expo.version}</Text>}
       </View>
-      {board && (
+      {board && !home && (
         <View style={{ paddingHorizontal: 16 }}>
           <BoardWidget board={board} />
         </View>
       )}
-      <ScrollView
-        style={{ flex: 1, minHeight: 120 }}
-        contentContainerStyle={{ padding: 16, gap: 10 }}
+      {showTimeline && (
+        <ScrollView
+          style={{ flex: 1, minHeight: 120 }}
+          contentContainerStyle={{ padding: 16, gap: 10 }}
+        >
+          {error ? (
+            <View style={{ gap: 8 }}>
+              <ErrorNotice error={`${text.loadFailed}: ${error}`} />
+              <Button onPress={() => void load()}>{text.retry}</Button>
+            </View>
+          ) : !messages ? (
+            <Skeleton rows={2} />
+          ) : (
+            <>
+              {digest && (
+                <Card style={{ padding: 14, backgroundColor: colors.lavender }}>
+                  <Text style={s.label}>{text.digest}</Text>
+                  <Text style={s.text}>{digest}</Text>
+                </Card>
+              )}
+              {messages.length === 0 && !digest && <Text style={s.muted}>{text.noMessages}</Text>}
+              {messages.map((m) => (
+                <Message
+                  key={m.id}
+                  message={m}
+                  onDecide={async (decision, reason) => {
+                    const approvalId = String(m.payload?.approvalId ?? "");
+                    const result = await decideApproval(
+                      api,
+                      approvalId,
+                      decision,
+                      undefined,
+                      reason,
+                    );
+                    setMessages((list) =>
+                      list
+                        ? list.map((x) =>
+                            x.id === m.id
+                              ? { ...x, payload: { ...x.payload, status: result.status } }
+                              : x,
+                          )
+                        : list,
+                    );
+                    await refetchBoard();
+                  }}
+                />
+              ))}
+            </>
+          )}
+        </ScrollView>
+      )}
+      <View
+        style={{
+          flex: showTimeline ? 1.2 : 1,
+          borderTopWidth: showTimeline ? 1 : 0,
+          borderTopColor: colors.line,
+        }}
       >
-        {error ? (
-          <View style={{ gap: 8 }}>
-            <ErrorNotice error={`${text.loadFailed}: ${error}`} />
-            <Button onPress={() => void load()}>{text.retry}</Button>
-          </View>
-        ) : !messages ? (
-          <Skeleton rows={2} />
-        ) : (
-          <>
-            {digest && (
-              <Card style={{ padding: 14, backgroundColor: colors.lavender }}>
-                <Text style={s.label}>{text.digest}</Text>
-                <Text style={s.text}>{digest}</Text>
-              </Card>
-            )}
-            {messages.length === 0 && !digest && <Text style={s.muted}>{text.noMessages}</Text>}
-            {messages.map((m) => (
-              <Message
-                key={m.id}
-                message={m}
-                onDecide={async (decision, reason) => {
-                  const approvalId = String(m.payload?.approvalId ?? "");
-                  const result = await decideApproval(api, approvalId, decision, undefined, reason);
-                  setMessages((list) =>
-                    list
-                      ? list.map((x) =>
-                          x.id === m.id
-                            ? { ...x, payload: { ...x.payload, status: result.status } }
-                            : x,
-                        )
-                      : list,
-                  );
-                  await refetchBoard();
-                }}
-              />
-            ))}
-          </>
-        )}
-      </ScrollView>
-      <View style={{ flex: 1.2, borderTopWidth: 1, borderTopColor: colors.line }}>
-        <ChatScreen roomId={room.id} active />
+        <ChatScreen roomId={room.id} active onMood={setMood} />
       </View>
+      {teams && (
+        <Sheet title={text.teams} onClose={() => setTeams(false)}>
+          <RoomList
+            onOpen={(next) => {
+              setTeams(false);
+              onOpenRoom?.(next);
+            }}
+          />
+        </Sheet>
+      )}
       {summary !== null && (
         <Sheet title={text.summaryTitle} subtitle={title} onClose={() => setSummary(null)}>
           {summary === "loading" ? (

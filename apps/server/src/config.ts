@@ -44,6 +44,8 @@ export interface Config {
   registryUrl?: string;
   /** 0Siri 웹 빌드 폴더(WEB_DIST). 없으면 API 만 — index.ts 가 로그로 알린다 */
   webDist?: string;
+  /** 0Siri 앱 자동 업데이트: latest.json·APK 를 두는 폴더(RELEASES_DIR) → /releases/ */
+  releasesDir?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -155,6 +157,7 @@ export function readConfig(): Config {
     teamProvisionerEnabled: process.env.TEAM_PROVISIONER_ENABLED !== "false",
     registryUrl: process.env.REGISTRY_URL?.trim() || undefined,
     webDist: process.env.WEB_DIST?.trim() || undefined,
+    releasesDir: process.env.RELEASES_DIR?.trim() || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

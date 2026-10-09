@@ -387,6 +387,15 @@ export async function createApp(
     );
     return new Response(body, { status: response.status, headers: response.headers });
   });
+  // 0Siri 자동 업데이트: RELEASES_DIR 의 latest.json·APK 를 /releases/ 로 낸다 (build-android.sh 가 채운다)
+  if (config.releasesDir)
+    app.use(
+      "/releases/*",
+      serveStatic({
+        root: config.releasesDir,
+        rewriteRequestPath: (path) => path.replace(/^\/releases/, ""),
+      }),
+    );
   // 0Siri: 웹 빌드(expo export --platform web)를 같은 포트에서 낸다. SPA 라 모르는 경로는 index.html.
   if (config.webDist) {
     app.use("/*", serveStatic({ root: config.webDist }));
