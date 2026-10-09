@@ -12,9 +12,16 @@ type Embedder = {
 };
 let loader: Promise<Embedder> | undefined;
 
+// ponytail: Metro 는 onnxruntime-web 의 비리터럴 import() 를 번들하지 못한다 → 런타임에 CDN ESM 으로 받는다 (브라우저가 캐시).
+// 버전은 package.json 의 @huggingface/transformers 와 같은 메이저로 고정. 타입만 패키지에서 가져온다.
+const CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1";
+const importUrl = new Function("u", "return import(u)") as (
+  u: string,
+) => Promise<typeof import("@huggingface/transformers")>;
+
 async function load(): Promise<Embedder> {
   const started = performance.now();
-  const tf = await import("@huggingface/transformers");
+  const tf = await importUrl(CDN);
   const config = await tf.AutoConfig.from_pretrained(MODEL);
   // 서버와 동일: 비전·오디오 가중치는 받지 않는다 (embeddings.ts 참조)
   (config as unknown as { vision_config: null; audio_config: null }).vision_config = null;

@@ -42,6 +42,8 @@ export interface Config {
   /** 0Siri 8단계: 구독 큐를 docker run 으로 비우는 프로비저너 (TEAM_PROVISIONER_ENABLED, 기본 켬) */
   teamProvisionerEnabled?: boolean;
   registryUrl?: string;
+  /** 0Siri 웹 빌드 폴더(WEB_DIST). 없으면 API 만 — index.ts 가 로그로 알린다 */
+  webDist?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -152,6 +154,7 @@ export function readConfig(): Config {
     adminPassword: process.env.ADMIN_PASSWORD || undefined,
     teamProvisionerEnabled: process.env.TEAM_PROVISIONER_ENABLED !== "false",
     registryUrl: process.env.REGISTRY_URL?.trim() || undefined,
+    webDist: process.env.WEB_DIST?.trim() || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

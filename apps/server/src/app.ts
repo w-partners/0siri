@@ -2,6 +2,7 @@ import "./config.ts";
 import { randomUUID } from "node:crypto";
 import { MessageSchema } from "@ag-ui/core";
 import { CopilotKitIntelligence } from "@copilotkit/runtime/v2";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -386,8 +387,14 @@ export async function createApp(
     );
     return new Response(body, { status: response.status, headers: response.headers });
   });
-  app.get("/", (c) =>
-    c.json({ name: "OpenMuse", app: "http://localhost:8081", health: "/api/health" }),
-  );
+  // 0Siri: 웹 빌드(expo export --platform web)를 같은 포트에서 낸다. SPA 라 모르는 경로는 index.html.
+  if (config.webDist) {
+    app.use("/*", serveStatic({ root: config.webDist }));
+    app.get("/*", serveStatic({ root: config.webDist, path: "index.html" }));
+  } else {
+    app.get("/", (c) =>
+      c.json({ name: "OpenMuse", app: "http://localhost:8081", health: "/api/health" }),
+    );
+  }
   return { app, auth, files, actions, workspace, agent, computer, osiri };
 }

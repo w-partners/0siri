@@ -2,7 +2,13 @@ import { Platform } from "react-native";
 import { readApiPayload } from "./api-response";
 import { t } from "./strings";
 
+// 0Siri: 서버가 웹 빌드를 같은 포트에서 내므로(WEB_DIST) 웹은 자기 origin 이 곧 API 다 — expo 개발서버(8081)만 예외.
+const sameOrigin =
+  Platform.OS === "web" && typeof location !== "undefined" && location.port !== "8081"
+    ? location.origin
+    : "";
 export const API_URL = (
+  sameOrigin ||
   process.env.EXPO_PUBLIC_API_URL ||
   (Platform.OS === "android" ? "http://10.0.2.2:8787" : "http://localhost:8787")
 ).replace(/\/$/, "");

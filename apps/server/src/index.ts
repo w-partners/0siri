@@ -21,7 +21,10 @@ const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
 });
 if (config.teamProvisionerEnabled) provisioner.start();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, () =>
-  console.log(`OpenMuse ${config.mode} API ready at ${config.publicUrl}`),
+  console.log(
+    `OpenMuse ${config.mode} API ready at ${config.publicUrl}` +
+      (config.webDist ? ` · web UI from ${config.webDist}` : " · web UI 없음 (WEB_DIST 미설정)"),
+  ),
 );
 const shutdown = () => {
   server.close(() => {
