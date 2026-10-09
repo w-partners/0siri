@@ -544,6 +544,17 @@ export function ChatScreen({
       ? "listening"
       : "idle";
   useEffect(() => onMood?.(mood), [mood, onMood]);
+  useEffect(() => {
+    if (!anchor) return;
+    if (anchor.y === "end") {
+      followLatest.current = true;
+      list.current?.scrollToEnd({ animated: false });
+    } else {
+      // 가리킨 메시지 위에 조금 여백을 둔다 (15 = 아래 contentContainerStyle 의 paddingTop)
+      followLatest.current = false;
+      list.current?.scrollTo({ y: Math.max(0, anchor.y + 15 - 8), animated: false });
+    }
+  }, [anchor]);
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
@@ -597,7 +608,9 @@ export function ChatScreen({
               {t.chat.empty.subtitle}
             </Text>
             <View style={{ width: "100%", maxWidth: 360, marginTop: 14, gap: 8 }}>
-              {[
+              {(readOnly
+                ? []
+                : [
                 {
                   text: t.chat.empty.suggestions.plan.label,
                   action: () => enqueue(t.chat.empty.suggestions.plan.prompt),
@@ -607,7 +620,7 @@ export function ChatScreen({
                   action: () => enqueue(t.chat.empty.suggestions.summarize.prompt),
                 },
                 { text: t.chat.empty.suggestions.goal.label, action: () => navigate("goals") },
-              ].map((item) => (
+              ]).map((item) => (
                 <Button key={item.text} onPress={item.action}>
                   {item.text}
                 </Button>
@@ -765,10 +778,14 @@ export function ChatScreen({
             {t.chat.history.retrySave}
           </Button>
         )}
+        <ErrorNotice error={restoreError} />
+        <ErrorNotice error={outboxError} />
         {!!outbox.pending.length && (
           <View style={{ padding: 12, gap: 6 }}>
             <Text style={s.small}>
-              {outbox.paused ? t.chat.queue.onHold : t.chat.queue.upNext} · {t.chat.queue.keepOpen}
+              {!online
+                ? `${queueText.waiting} · ${queueText.waitingDetail}`
+                : `${outbox.paused ? t.chat.queue.onHold : t.chat.queue.upNext} · ${t.chat.queue.keepOpen}`}
             </Text>
             {outbox.pending.map((message) => (
               <View key={message.id} style={[s.row, { gap: 8 }]}>
@@ -832,6 +849,24 @@ export function ChatScreen({
             </Button>
           </Card>
         )}
+        {readOnly ? (
+          // 읽기 전용 방: 입력창을 그리지 않는다 — 서버도 글을 받지 않는다(409)
+          <View
+            accessibilityRole="text"
+            style={{
+              alignSelf: "center",
+              marginVertical: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 8,
+              borderRadius: 20,
+              borderWidth: 1,
+              borderColor: colors.line,
+              backgroundColor: colors.sunk,
+            }}
+          >
+            <Text style={s.muted}>{readOnly}</Text>
+          </View>
+        ) : (
         <View
           style={{
             backgroundColor: colors.card,
@@ -951,7 +986,7 @@ export function ChatScreen({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
-              disabled={!replying && (!draft.trim() || !loaded || !isReady)}
+              disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
               onPress={replying ? () => void stop() : send}
               style={({ pressed }) => ({
                 width: 44,
@@ -975,6 +1010,7 @@ export function ChatScreen({
             </Pressable>
           </View>
         </View>
+        )}
       </KeyboardAvoidingView>
     </View>
   );

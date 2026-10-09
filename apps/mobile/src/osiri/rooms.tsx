@@ -375,6 +375,38 @@ export function useRoomsLive() {
     for (const l of userEventListeners) l(event, payload);
   });
 }
+/**
+ * 사용자 스트림 상태 칩 (셸이 사이드바·탭 위에 둔다). 끊겨 있으면 «연결 대기» — 배지·진척이 낡았을 수 있다는 뜻이다.
+ * 읽지 못해 건너뛴 이벤트가 있으면 사유와 [다시 시도]. 정상일 때는 아무것도 그리지 않는다.
+ */
+export function LiveChip({ live }: { live: ReturnType<typeof useEventStream> }) {
+  const { api } = useWorkspace();
+  const offline = live.state === "waiting" || live.state === "stopped";
+  if (!offline && !live.skipped) return null;
+  return (
+    <View
+      accessibilityLiveRegion="polite"
+      style={[s.row, { gap: 8, flexWrap: "wrap", justifyContent: "center", paddingVertical: 6 }]}
+    >
+      {offline && <Chip tint={colors.warnBg}>{text.offline}</Chip>}
+      {live.state === "stopped" && <Text style={[s.small, { flexShrink: 1 }]}>{live.error}</Text>}
+      {!!live.skipped && (
+        <>
+          <Text style={[s.small, { flexShrink: 1 }]}>{live.skipped}</Text>
+          <Button
+            small
+            onPress={() => {
+              live.clearSkipped();
+              void refreshRooms(api);
+            }}
+          >
+            {text.retry}
+          </Button>
+        </>
+      )}
+    </View>
+  );
+}
 // 사용자 스트림(`/api/stream`)은 앱에 하나뿐이다 — 결재함·목표 화면은 연결을 또 열지 않고 여기서 이벤트만 듣는다.
 const userEventListeners = new Set<(event: string, payload: unknown) => void>();
 /** 사용자 스트림의 `rooms {roomId}` · `inbox` 이벤트를 듣는다. 연결은 `useRoomsLive` 가 쥐고 있다. */

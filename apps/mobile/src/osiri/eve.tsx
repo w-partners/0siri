@@ -2,7 +2,7 @@
 // 쉴 때는 얼굴이 꺼져 있고, 일할 때는 웃으면서 노트북을 친다(마스터 2026-10-10).
 // 몸은 SVG, 눈·볼·팔·노트북은 Animated 레이어 — 전부 transform/opacity 만 바꾼다(네이티브 드라이버).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from "react-native";
+import { AccessibilityInfo, Animated, Easing, Image, StyleSheet, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 import {
   type CharacterPrefs,
@@ -396,7 +396,7 @@ export function CharacterAvatar({
   size = 42,
   mood = "idle",
 }: {
-  /** 서버 Room.character / Package.character. 생략하면 0Siri 의 얼굴 = 영시리 */
+  /** 캐릭터 자산 id — 서버 현황판 `character.assetId`(= Room.character / Package.character). 생략하면 0Siri 의 얼굴 = 영시리 */
   character?: string;
   size?: number;
   mood?: Mood;
@@ -405,7 +405,16 @@ export function CharacterAvatar({
   // 캐릭터를 끄면 그림은 사라지고 부르는 쪽의 상태 문구만 남는다 (기획 화면 3 분기)
   if (!enabled || intensity === "text") return null;
   if (character === YEONGSIL) return <Eve size={size} mood={mood} />;
-  // 팀 캐릭터: 아직 전용 그림이 없어 카피바라 + 이름 해시로 고정한 배경색
+  // 팀이 등록한 캐릭터 자산: assetId 가 그림 주소면 그 그림을 쓴다 (기획 화면 3 «팀마다 다른 캐릭터 자산»)
+  if (/^(https:\/\/|data:image\/)/.test(character))
+    return (
+      <Image
+        source={{ uri: character }}
+        accessibilityIgnoresInvertColors
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+      />
+    );
+  // 자산을 등록하지 않은 팀: 플랫폼 기본 팀장 캐릭터(카피바라) + 이름 해시로 고정한 배경색
   let h = 0;
   for (const ch of character) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return <Mascot size={size} variant={h % 2 ? "sand" : "lilac"} />;

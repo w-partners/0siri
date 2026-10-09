@@ -31,10 +31,12 @@ import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
 import { LoginScreen, loadApiBase, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
-import { CharacterAvatar, type CharacterPref, setCharacterPref } from "./src/osiri/eve";
+import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { InboxScreen } from "./src/osiri/inbox";
 import {
+  LiveChip,
   type Room,
+  type RoomFocus,
   RoomList,
   RoomScreen,
   refreshRooms,
@@ -111,6 +113,13 @@ function writeLocation(tab: Tab, roomId: string | undefined, storeTab: StoreTab)
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null); // null = 아직 저장소를 안 읽음
+  // 로그아웃하면 셸이 사라지므로, 그때 생긴 경고는 여기(로그인 화면 위)에 띄운다
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 8000);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     void loadApiBase()
       .then(loadToken)
@@ -146,12 +155,49 @@ export default function App() {
           runtimeUrl={`${apiBase()}/api/copilotkit`}
           headers={{ Authorization: `Bearer ${token}` }}
         >
-          <WorkspaceApp token={token} onLogout={() => setToken("")} />
+          <WorkspaceApp
+            token={token}
+            onLogout={(warning) => {
+              setToken("");
+              setNotice(warning ?? "");
+            }}
+          />
         </CopilotKitProvider>
       ) : (
         <LoginScreen onToken={setToken} />
       )}
+      {!!notice && <Toast message={notice} bottom={40} onClose={() => setNotice("")} />}
     </SafeAreaProvider>
+  );
+}
+
+function Toast({
+  message,
+  bottom,
+  onClose,
+}: {
+  message: string;
+  bottom: number;
+  onClose: () => void;
+}) {
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{ position: "absolute", bottom, left: 20, right: 20, alignItems: "center" }}
+    >
+      <View
+        style={[
+          s.row,
+          { gap: 10, padding: 14, backgroundColor: colors.text, borderRadius: 20, maxWidth: 560 },
+        ]}
+      >
+        <Check size={16} color={colors.blue} />
+        <Text style={{ color: colors.canvas, fontSize: 13, flexShrink: 1 }}>{message}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={text.dismiss} onPress={onClose}>
+          <X size={16} color={colors.canvas} />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -167,7 +213,7 @@ function Loading({ error, onRetry }: { error?: string; onRetry?: () => void }) {
         gap: 18,
       }}
     >
-      <CharacterAvatar size={84} mood="thinking" />
+      {/* 로그인 전에도 뜨는 화면이라 캐릭터를 두지 않는다 (기획 화면 1) */}
       {error ? (
         <>
           <ErrorNotice error={error} />
@@ -183,7 +229,14 @@ function Loading({ error, onRetry }: { error?: string; onRetry?: () => void }) {
   );
 }
 
-function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void }) {
+function WorkspaceApp({
+  token,
+  onLogout,
+}: {
+  token: string;
+  /** warning = 로그아웃은 됐지만 알려야 할 것(서버 세션 정리 실패 등) */
+  onLogout: (warning?: string) => void;
+}) {
   const api = useMemo(() => new MuseApi(token), [token]);
   const { me, loading: meLoading, error: meError, reload: reloadMe } = useMe(api);
   const [workspace, setWorkspace] = useState<Workspace>();
@@ -191,6 +244,8 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
   const [room, setRoom] = useState<Room>();
+  // 방을 열 때 보일 곳 (목록 배지 → 승인 카드, 결재함 [방에서 보기]·활동 → 그 메시지)
+  const [focus, setFocus] = useState<RoomFocus>();
   // 방 목록은 rooms.tsx 의 한 벌을 본다 (사이드바·탭 배지·홈 채팅·딥링크가 같은 값)
   const { rooms, error: roomsError } = useRooms();
   // 기본 채팅 = 개인 방(영시리). 서버가 /api/rooms 호출 때 없으면 만든다
@@ -237,16 +292,17 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     setRoom(undefined);
     setTab(target);
   }, []);
-  const openRoom = useCallback((next: Room) => {
+  const openRoom = useCallback((next: Room, nextFocus?: RoomFocus) => {
     setTab("rooms");
     setRoom(next);
+    setFocus(nextFocus);
   }, []);
   const openRoomById = useCallback(
-    (id: string) =>
+    (id: string, nextFocus?: RoomFocus) =>
       void refreshRooms(api).then((list) => {
         // 조회 실패(null)는 목록이 사유를 보인다 — 여기서는 «없는 방» 만 말한다
         const found = list?.find((r) => r.id === id);
-        if (found) openRoom(found);
+        if (found) openRoom(found, nextFocus);
         else if (list) setError(text.noRoom);
       }),
     [api, openRoom],
@@ -305,6 +361,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
               setTab(next);
             }}
             room={room}
+            focus={focus}
             personal={personal}
             pending={pending}
             openRoom={openRoom}
@@ -320,8 +377,8 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
               void logout(api)
                 .then((warning) => {
                   resetRooms();
-                  if (warning) console.warn(`[0siri] ${warning}`);
-                  onLogout();
+                  // 경고는 콘솔이 아니라 화면에 — 셸이 사라지므로 App 이 로그인 화면 위에 띄운다
+                  onLogout(warning || undefined);
                 })
                 .catch((e) => setError(String(e)))
             }
@@ -336,6 +393,7 @@ function Shell({
   tab,
   setTab,
   room,
+  focus,
   personal,
   pending,
   openRoom,
@@ -352,10 +410,11 @@ function Shell({
   tab: Tab;
   setTab: (tab: Tab) => void;
   room?: Room;
+  focus?: RoomFocus;
   personal?: Room;
   pending: number;
-  openRoom: (room: Room) => void;
-  openRoomById: (id: string) => void;
+  openRoom: (room: Room, focus?: RoomFocus) => void;
+  openRoomById: (id: string, focus?: RoomFocus) => void;
   closeRoom: () => void;
   storeTab: StoreTab;
   setStoreTab: (tab: StoreTab) => void;
@@ -366,7 +425,8 @@ function Shell({
   onLogout: () => void;
 }) {
   const { workspace, open, api, notify } = useWorkspace();
-  useRoomsLive(); // 로그인해 있는 동안 방 목록을 살아 있게 (첫 조회 + 사용자 스트림)
+  // 로그인해 있는 동안 방 목록을 살아 있게 (첫 조회 + 사용자 스트림). 끊기면 배지·진척이 낡으므로 상태를 화면에 보인다
+  const live = useRoomsLive();
   // 캐릭터 끄기·반응 강도 (화면 11) — 서버 설정이 정본
   useEffect(() => {
     void api
@@ -392,7 +452,13 @@ function Shell({
   // 방 안: 탭 숨김, 전체 화면 (§4.0). 웹에서는 사이드바 옆 메인에 뜬다
   // 채팅 탭 = 영시리와의 기본 채팅(Muse 처럼). 팀 방은 그 화면의 버튼으로 연다
   const main = room ? (
-    <RoomScreen key={room.id} room={room} onBack={closeRoom} />
+    <RoomScreen
+      key={room.id}
+      room={room}
+      focus={focus}
+      onBack={closeRoom}
+      onOpenRoom={openRoom}
+    />
   ) : tab === "rooms" ? (
     personal ? (
       <RoomScreen key="home" home room={personal} onBack={closeRoom} onOpenRoom={openRoom} />
@@ -460,6 +526,7 @@ function Shell({
                   activeId={room?.id ?? (tab === "rooms" ? personal?.id : undefined)}
                 />
               </ScrollView>
+              <LiveChip live={live} />
               <View
                 style={{
                   flexDirection: "row",
@@ -496,6 +563,7 @@ function Shell({
               alignItems: "center",
             }}
           >
+            <LiveChip live={live} />
             <View
               style={{
                 flexDirection: "row",
@@ -525,35 +593,7 @@ function Shell({
             </View>
           </View>
         )}
-        {!!toast && (
-          <View
-            pointerEvents="box-none"
-            style={{ position: "absolute", bottom: 94, left: 20, right: 20, alignItems: "center" }}
-          >
-            <View
-              style={[
-                s.row,
-                {
-                  gap: 10,
-                  padding: 14,
-                  backgroundColor: colors.text,
-                  borderRadius: 20,
-                  maxWidth: 560,
-                },
-              ]}
-            >
-              <Check size={16} color={colors.blue} />
-              <Text style={{ color: colors.canvas, fontSize: 13, flexShrink: 1 }}>{toast}</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={text.dismiss}
-                onPress={clearToast}
-              >
-                <X size={16} color={colors.canvas} />
-              </Pressable>
-            </View>
-          </View>
-        )}
+        {!!toast && <Toast message={toast} bottom={94} onClose={clearToast} />}
         {detail && (
           <Details
             key={

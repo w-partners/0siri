@@ -417,8 +417,53 @@ test("지표 — 구독자 방 집계만, 자료가 없으면 null", async () =>
     await json<OperatorMetrics>(
       await call(`/api/operator/metrics?package_id=${contentId}`, otherOperatorId),
     ),
-    { approvalRate: 0, topRejectReason: "주제", citations: 100 },
+    {
+      approvalRate: 0,
+      topRejectReason: "주제",
+      citations: 100,
+      degraded: false,
+      canaryApprovalRate: null,
+      previousApprovalRate: null,
+    },
   );
+
+  // 카나리 배포 뒤의 승인율이 그 전보다 낮으면 degraded — 화면이 «되돌리기» 를 권할 근거
+  const since = new Date().toISOString();
+  await db.put("system", "package-versions", {
+    id: "ver-degraded",
+    packageId: contentId,
+    version: "99",
+    source: { kind: "upload" },
+    review: [],
+    canary: { stage: "profile", percent: 10 },
+    status: "canary",
+    createdAt: since,
+    submittedBy: otherOperatorId,
+  });
+  const decided = (id: string, status: string, offsetMs: number) =>
+    db.put(outsider, "approvals", {
+      ...approval(outsiderRoom, id, status, { reasonKind: "topic" }),
+      decidedAt: new Date(Date.parse(since) + offsetMs).toISOString(),
+    });
+  await decided("o4", "approved", -60_000);
+  await decided("o5", "rejected", 60_000);
+  const degraded = await json<OperatorMetrics>(
+    await call(`/api/operator/metrics?package_id=${contentId}`, otherOperatorId),
+  );
+  assert.equal(degraded.degraded, true);
+  assert.equal(degraded.previousApprovalRate, 100);
+  assert.equal(degraded.canaryApprovalRate, 0);
+  // 카나리를 멈추면 견줄 대상이 없어진다
+  await db.put("system", "package-versions", {
+    ...(await db.get<{ id: string }>("system", "package-versions", "ver-degraded")),
+    id: "ver-degraded",
+    canary: { stage: "stopped", percent: 0 },
+  });
+  const stopped = await json<OperatorMetrics>(
+    await call(`/api/operator/metrics?package_id=${contentId}`, otherOperatorId),
+  );
+  assert.equal(stopped.degraded, false);
+  assert.equal(stopped.canaryApprovalRate, null);
 });
 
 test("공지 — 그 패키지 구독자 방에만 시스템 메시지로 도착한다", async () => {
