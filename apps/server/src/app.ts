@@ -30,6 +30,7 @@ import { Approvals } from "./osiri/approvals.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
+import { roomPersona } from "./osiri/persona.ts";
 import { roomRoutes, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes } from "./osiri/routing.ts";
@@ -59,7 +60,6 @@ export async function createApp(
   const intelligence = config.intelligenceApiKey
     ? new CopilotKitIntelligence({ apiKey: config.intelligenceApiKey })
     : undefined;
-  const runtime = makeRuntime(config, agent, auth, intelligence);
   // 0Siri 서비스 (0SIRI-SPEC §21). 전부 records 저장소 위, 기억만 pgvector.
   const accounts = new Accounts(db);
   const bus = new EventBus();
@@ -71,6 +71,8 @@ export async function createApp(
   const routing = new Routing(db, rooms);
   const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
+  // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
+  const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
   const app = new Hono<{ Variables: { owner: string } }>();
   const origins = new Set([...config.allowedOrigins, new URL(config.publicUrl).origin]);
   app.use("*", async (c, next) => {
@@ -262,14 +264,17 @@ export async function createApp(
     }
     return c.json({ threadId: main.threadId, existing: true });
   });
+  // 0Siri: 방마다 대화가 따로 있다 → `?threadId=<방 id>`. 없으면 openmuse 기본 대화.
+  const conversationId = (c: { req: { query(name: string): string | undefined } }) =>
+    c.req.query("threadId") || "default";
   app.get("/api/conversation", async (c) =>
-    c.json((await db.get(c.get("owner"), "conversations", "default")) ?? { messages: [] }),
+    c.json((await db.get(c.get("owner"), "conversations", conversationId(c))) ?? { messages: [] }),
   );
   app.put("/api/conversation", async (c) => {
     const body = await c.req.json();
     const messages = z.array(z.unknown()).max(1000).parse(body.messages);
     for (const message of messages) MessageSchema.parse(message);
-    await db.put(c.get("owner"), "conversations", { id: "default", messages });
+    await db.put(c.get("owner"), "conversations", { id: conversationId(c), messages });
     return c.json({ ok: true });
   });
   app.post("/api/files", async (c) => {
