@@ -1,62 +1,73 @@
 // 영시리 캐릭터 — WALL-E 의 EVE 를 닮은 흰 달걀형 로봇(마스터 2026-10-10 "월이의 이브 같은 형태로").
-// 몸·팔은 SVG 한 장, 눈은 Animated.View 두 개 — 모양·깜빡임·기분은 전부 transform 만 바꾼다(네이티브 드라이버).
+// 쉴 때는 얼굴이 꺼져 있고, 일할 때는 웃으면서 노트북을 친다(마스터 2026-10-10).
+// 몸은 SVG, 눈·볼·팔·노트북은 Animated 레이어 — 전부 transform/opacity 만 바꾼다(네이티브 드라이버).
 import { useEffect, useRef } from "react";
 import { Animated, Easing, StyleSheet, View } from "react-native";
-import Svg, { Defs, Ellipse, LinearGradient, Path, Stop } from "react-native-svg";
+import Svg, { Circle, Defs, Ellipse, LinearGradient, Path, Rect, Stop } from "react-native-svg";
+import { Mascot } from "../ui";
 
+/** idle=쉼(얼굴 꺼짐) · listening=듣는 중 · thinking=일하는 중(웃으며 노트북) · speaking=말하는 중 · happy=완료 · alert=승인 대기 */
 export type Mood = "idle" | "listening" | "thinking" | "speaking" | "happy" | "alert";
 
 const EYE = "#5CD6FF";
-const VISOR = "#0E141B";
-// 기분별 눈 모양 (scaleX, scaleY) · 고개 기울기(-1~1)
-const SHAPE: Record<Mood, { x: number; y: number; tilt: number }> = {
-  idle: { x: 1, y: 1, tilt: 0 },
-  listening: { x: 1.15, y: 1.2, tilt: 0.8 },
-  thinking: { x: 1, y: 0.45, tilt: -0.6 },
-  speaking: { x: 1, y: 1, tilt: 0 },
-  happy: { x: 1.05, y: 1, tilt: 0 },
-  alert: { x: 0.9, y: 1.35, tilt: 0 },
+const VISOR_MID = "#151E28"; // 눈 높이에서의 바이저 색 — 웃는 눈을 깎아 낼 때 쓴다
+// 기분별: 얼굴 켜짐 · 웃는 눈 · 눈 크기(x,y) · 고개 기울기(-1~1) · 노트북
+const LOOK: Record<
+  Mood,
+  { on: number; smile: number; x: number; y: number; tilt: number; work: number }
+> = {
+  idle: { on: 0, smile: 0, x: 1, y: 1, tilt: 0, work: 0 },
+  listening: { on: 1, smile: 0, x: 1.12, y: 1.25, tilt: 0.7, work: 0 },
+  thinking: { on: 1, smile: 1, x: 1.08, y: 1.35, tilt: 0, work: 1 },
+  speaking: { on: 1, smile: 1, x: 1.08, y: 1.35, tilt: 0.25, work: 0 },
+  happy: { on: 1, smile: 1, x: 1.15, y: 1.45, tilt: 0, work: 0 },
+  alert: { on: 1, smile: 0, x: 0.9, y: 1.45, tilt: 0, work: 0 },
 };
 
 const spring = (v: Animated.Value, to: number) =>
   Animated.spring(v, { toValue: to, useNativeDriver: true, speed: 14, bounciness: 8 }).start();
+const pingPong = (v: Animated.Value, up: number, down: number, easing = Easing.linear) =>
+  Animated.loop(
+    Animated.sequence([
+      Animated.timing(v, { toValue: 1, duration: up, easing, useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: down, easing, useNativeDriver: true }),
+    ]),
+  );
 
 export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood }) {
   const float = useRef(new Animated.Value(0)).current; // 부유 0→1→0
   const blink = useRef(new Animated.Value(1)).current; // 눈 scaleY
-  const talk = useRef(new Animated.Value(0)).current; // 말할 때 들썩
-  const bounce = useRef(new Animated.Value(0)).current; // happy 폴짝
-  const eyeX = useRef(new Animated.Value(1)).current;
-  const eyeY = useRef(new Animated.Value(1)).current;
-  const tilt = useRef(new Animated.Value(0)).current;
-  const smile = useRef(new Animated.Value(0)).current; // happy 초승달 가림막
+  const beat = useRef(new Animated.Value(0)).current; // 말하기 들썩 · 타이핑 박자
+  const bounce = useRef(new Animated.Value(0)).current; // 완료 폴짝
+  const on = useRef(new Animated.Value(LOOK[mood].on)).current;
+  const smile = useRef(new Animated.Value(LOOK[mood].smile)).current;
+  const eyeX = useRef(new Animated.Value(LOOK[mood].x)).current;
+  const eyeY = useRef(new Animated.Value(LOOK[mood].y)).current;
+  const tilt = useRef(new Animated.Value(LOOK[mood].tilt)).current;
+  const work = useRef(new Animated.Value(LOOK[mood].work)).current;
 
-  // 부유는 늘 돈다 — 속도만 기분 따라 (말할 땐 빠르게, 생각할 땐 느리게)
+  // 부유는 늘 돈다 — 쉴 땐 느린 숨, 말할 땐 빠르게
   useEffect(() => {
-    const ms = mood === "speaking" ? 700 : mood === "thinking" ? 2600 : 1900;
-    const ease = Easing.inOut(Easing.sin);
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(float, { toValue: 1, duration: ms, easing: ease, useNativeDriver: true }),
-        Animated.timing(float, { toValue: 0, duration: ms, easing: ease, useNativeDriver: true }),
-      ]),
-    );
+    const ms = mood === "speaking" ? 700 : mood === "idle" ? 2600 : 1700;
+    const loop = pingPong(float, ms, ms, Easing.inOut(Easing.sin));
     loop.start();
     return () => loop.stop();
   }, [float, mood]);
 
-  // 기분 → 눈 모양·고개는 스프링으로 옮겨 간다
+  // 기분 → 모습은 스프링으로 옮겨 간다 (얼굴이 켜지고 꺼지는 것도)
   useEffect(() => {
-    const shape = SHAPE[mood];
-    spring(eyeX, shape.x);
-    spring(eyeY, shape.y);
-    spring(tilt, shape.tilt);
-    spring(smile, mood === "happy" ? 1 : 0);
-  }, [mood, eyeX, eyeY, tilt, smile]);
+    const look = LOOK[mood];
+    spring(on, look.on);
+    spring(smile, look.smile);
+    spring(eyeX, look.x);
+    spring(eyeY, look.y);
+    spring(tilt, look.tilt);
+    spring(work, look.work);
+  }, [mood, on, smile, eyeX, eyeY, tilt, work]);
 
-  // 깜빡임: 2.6~5초마다 한 번. 생각 중·기쁠 땐 안 깜빡인다(눈이 이미 가늘다)
+  // 깜빡임: 눈을 뜨고 있을 때만(듣는 중·승인 대기)
   useEffect(() => {
-    if (mood === "happy" || mood === "thinking") return;
+    if (mood !== "listening" && mood !== "alert") return;
     let timer: ReturnType<typeof setTimeout>;
     const once = () =>
       Animated.sequence([
@@ -66,26 +77,24 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
         timer = setTimeout(once, 2600 + Math.random() * 2400);
       });
     timer = setTimeout(once, 900);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      blink.setValue(1);
+    };
   }, [blink, mood]);
 
-  // 말하기: 눈이 리듬 타듯 들썩인다
+  // 박자: 말할 땐 눈이 들썩, 일할 땐 두 팔이 번갈아 자판을 친다
   useEffect(() => {
-    if (mood !== "speaking") {
-      talk.setValue(0);
+    if (mood !== "speaking" && mood !== "thinking") {
+      beat.setValue(0);
       return;
     }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(talk, { toValue: 1, duration: 150, useNativeDriver: true }),
-        Animated.timing(talk, { toValue: 0, duration: 230, useNativeDriver: true }),
-      ]),
-    );
+    const loop = mood === "thinking" ? pingPong(beat, 130, 130) : pingPong(beat, 150, 230);
     loop.start();
     return () => loop.stop();
-  }, [talk, mood]);
+  }, [beat, mood]);
 
-  // 기쁨: 한 번 폴짝
+  // 완료: 한 번 폴짝
   useEffect(() => {
     if (mood !== "happy") return;
     bounce.setValue(0);
@@ -110,57 +119,127 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
     bounce.interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.14] }),
   );
   const rotate = tilt.interpolate({ inputRange: [-1, 1], outputRange: ["-8deg", "8deg"] });
+  const talking = mood === "speaking";
   const scaleY = Animated.multiply(
     Animated.multiply(eyeY, blink),
-    talk.interpolate({ inputRange: [0, 1], outputRange: [1, 0.7] }),
+    beat.interpolate({ inputRange: [0, 1], outputRange: [1, talking ? 0.75 : 1] }),
   );
   const eyeW = size * 0.15;
   const eyeH = size * 0.085;
-  const eye = (side: -1 | 1) => {
-    const base = {
-      position: "absolute" as const,
-      top: size * 0.355 - eyeH / 2,
-      left: size * 0.5 + side * size * 0.115 - eyeW / 2,
-      width: eyeW,
-      height: eyeH,
-      borderRadius: eyeH,
-    };
-    const slant = { rotate: side < 0 ? "-14deg" : "14deg" };
-    return (
-      <View key={side} pointerEvents="none" style={StyleSheet.absoluteFill}>
-        {/* 빛 번짐 */}
-        <Animated.View
-          style={{
-            ...base,
+  const eye = (side: -1 | 1) => (
+    <Animated.View
+      key={side}
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: size * 0.355 - eyeH / 2,
+        left: size * 0.5 + side * size * 0.115 - eyeW / 2,
+        width: eyeW,
+        height: eyeH,
+        opacity: on,
+        transform: [{ rotate: side < 0 ? "-12deg" : "12deg" }, { scaleX: eyeX }, { scaleY }],
+      }}
+    >
+      {/* 빛 번짐 — 웃을 땐 끈다(초승달 눈 둘레에 테처럼 남는다) */}
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            borderRadius: eyeH,
             backgroundColor: EYE,
-            opacity: 0.35,
-            transform: [slant, { scale: 1.45 }, { scaleX: eyeX }, { scaleY }],
-          }}
-        />
+            opacity: smile.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0] }),
+            transform: [{ scale: 1.4 }],
+          },
+        ]}
+      />
+      {/* 눈 — 알약 모양으로 잘라 두고, 웃을 땐 아래에서 원으로 깎아 ∩ 모양 (깎는 원이 눈 밖으로 새지 않는다) */}
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          { borderRadius: eyeH, backgroundColor: EYE, overflow: "hidden" },
+        ]}
+      >
         <Animated.View
           style={{
-            ...base,
-            backgroundColor: EYE,
-            transform: [slant, { scaleX: eyeX }, { scaleY }],
-          }}
-        />
-        {/* 기쁠 때 아래를 가려 초승달 눈 */}
-        <Animated.View
-          style={{
-            ...base,
-            backgroundColor: VISOR,
+            position: "absolute",
+            left: eyeW * 0.14,
+            top: eyeH * 0.34,
+            width: eyeW * 0.72,
+            height: eyeW * 0.72,
+            borderRadius: eyeW,
+            backgroundColor: VISOR_MID,
             opacity: smile,
-            transform: [
-              slant,
-              { translateY: eyeH * 0.55 },
-              { scaleX: Animated.multiply(eyeX, 1.3) },
-              { scaleY },
-            ],
           }}
         />
       </View>
-    );
-  };
+    </Animated.View>
+  );
+  // 볼 — 웃을 때만 살짝
+  const cheek = (side: -1 | 1) => (
+    <Animated.View
+      key={`c${side}`}
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: size * 0.415,
+        left: size * 0.5 + side * size * 0.185 - size * 0.03,
+        width: size * 0.06,
+        height: size * 0.032,
+        borderRadius: size,
+        backgroundColor: "#FF8FB1",
+        opacity: Animated.multiply(smile, 0.55),
+      }}
+    />
+  );
+  // 팔 — 일할 땐 안쪽으로 모여 번갈아 까딱인다
+  const arm = (side: -1 | 1) => (
+    <Animated.View
+      key={`a${side}`}
+      pointerEvents="none"
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          transform: [
+            {
+              translateX: work.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -side * size * 0.07],
+              }),
+            },
+            {
+              translateY: Animated.add(
+                work.interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.03] }),
+                Animated.multiply(
+                  work,
+                  beat.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: side < 0 ? [0, -size * 0.035] : [-size * 0.035, 0],
+                  }),
+                ),
+              ),
+            },
+          ],
+        },
+      ]}
+    >
+      <Svg width={size} height={size} viewBox="0 0 100 100">
+        <Path
+          d={
+            side < 0
+              ? "M24 58c-6 9-8 21-4 29 2 3 6 2 7-1 3-10 2-19 1-27-1-3-3-3-4-1z"
+              : "M76 58c6 9 8 21 4 29-2 3-6 2-7-1-3-10-2-19-1-27 1-3 3-3 4-1z"
+          }
+          fill="url(#arm)"
+        />
+        <Defs>
+          <LinearGradient id="arm" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor="#FFFFFF" />
+            <Stop offset="1" stopColor="#D9E2EA" />
+          </LinearGradient>
+        </Defs>
+      </Svg>
+    </Animated.View>
+  );
 
   return (
     <View style={{ width: size, height: size * 1.08 }} accessibilityLabel="영시리">
@@ -182,7 +261,9 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
       <Animated.View
         style={{ width: size, height: size, transform: [{ translateY: lift }, { rotate }] }}
       >
-        <Svg width={size} height={size} viewBox="0 0 100 100">
+        {arm(-1)}
+        {arm(1)}
+        <Svg width={size} height={size} viewBox="0 0 100 100" style={StyleSheet.absoluteFill}>
           <Defs>
             <LinearGradient id="body" x1="0" y1="0" x2="1" y2="1">
               <Stop offset="0" stopColor="#FFFFFF" />
@@ -190,29 +271,90 @@ export function Eve({ size = 120, mood = "idle" }: { size?: number; mood?: Mood 
             </LinearGradient>
             <LinearGradient id="visor" x1="0" y1="0" x2="0" y2="1">
               <Stop offset="0" stopColor="#1C2733" />
-              <Stop offset="1" stopColor={VISOR} />
+              <Stop offset="1" stopColor="#0E141B" />
             </LinearGradient>
           </Defs>
-          {/* 팔 — 몸에서 떨어져 떠 있는 두 조각 */}
-          <Path
-            d="M24 58c-6 9-8 21-4 29 2 3 6 2 7-1 3-10 2-19 1-27-1-3-3-3-4-1z"
-            fill="url(#body)"
-          />
-          <Path
-            d="M76 58c6 9 8 21 4 29-2 3-6 2-7-1-3-10-2-19-1-27 1-3 3-3 4-1z"
-            fill="url(#body)"
-          />
-          {/* 몸 */}
           <Path d="M34 57c0-4 32-4 32 0 6 17-3 38-16 38S28 74 34 57z" fill="url(#body)" />
-          <Ellipse cx="50" cy="66" rx="3.2" ry="3.2" fill={EYE} opacity="0.85" />
-          {/* 머리 + 바이저 */}
           <Ellipse cx="50" cy="35" rx="30" ry="22" fill="url(#body)" />
           <Ellipse cx="50" cy="36.5" rx="26.5" ry="15.5" fill="url(#visor)" />
           <Ellipse cx="42" cy="26" rx="9" ry="3" fill="#FFFFFF" opacity="0.18" />
         </Svg>
+        {/* 가슴 등 — 쉴 땐 희미하게, 켜지면 밝게 */}
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: size * 0.628,
+            left: size * 0.468,
+            width: size * 0.064,
+            height: size * 0.064,
+            borderRadius: size,
+            backgroundColor: EYE,
+            opacity: on.interpolate({ inputRange: [0, 1], outputRange: [0.22, 0.9] }),
+          }}
+        />
         {eye(-1)}
         {eye(1)}
+        {cheek(-1)}
+        {cheek(1)}
+        {/* 노트북 — 우리는 뚜껑 뒷면을 본다. 일할 때만 올라온다 */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              opacity: work,
+              transform: [
+                {
+                  translateY: work.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [size * 0.08, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <Svg width={size} height={size} viewBox="0 0 100 100">
+            <Defs>
+              <LinearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor="#F6F8FB" />
+                <Stop offset="1" stopColor="#C6D1DB" />
+              </LinearGradient>
+            </Defs>
+            <Rect x="31" y="67" width="38" height="24" rx="3.5" fill="url(#lid)" />
+            <Circle cx="50" cy="79" r="2.6" fill={EYE} opacity="0.9" />
+            <Path
+              d="M26 91h48l2.4 3.2a1.4 1.4 0 0 1-1.1 2.3H24.7a1.4 1.4 0 0 1-1.1-2.3z"
+              fill="#AEBAC5"
+            />
+          </Svg>
+        </Animated.View>
       </Animated.View>
     </View>
   );
+}
+
+// --- 캐릭터 → 모습: 여기 한 곳에서만 정한다 (SSOT) ---
+// 방 목록·방 머리·스토어·로그인·로딩·온보딩 전부 이 컴포넌트를 쓴다. 다른 파일에서 character 값으로 분기하지 않는다.
+// (2026-10-10 마스터 지적: 방 머리만 EVE 로 바꾸고 방 목록은 카피바라로 남아 영시리 얼굴이 둘이었다)
+export const YEONGSIL = "yeongsil";
+/** 스스로 움직이는 캐릭터인가 — 아니면 부르는 쪽이 presence 애니메이션을 입힌다 */
+export const selfAnimated = (character: string) => character === YEONGSIL;
+
+export function CharacterAvatar({
+  character = YEONGSIL,
+  size = 42,
+  mood = "idle",
+}: {
+  /** 서버 Room.character / Package.character. 생략하면 0Siri 의 얼굴 = 영시리 */
+  character?: string;
+  size?: number;
+  mood?: Mood;
+}) {
+  if (character === YEONGSIL) return <Eve size={size} mood={mood} />;
+  // 팀 캐릭터: 아직 전용 그림이 없어 카피바라 + 이름 해시로 고정한 배경색
+  let h = 0;
+  for (const ch of character) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return <Mascot size={size} variant={h % 2 ? "sand" : "lilac"} />;
 }

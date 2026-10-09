@@ -6,7 +6,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { Profile, PublicUser } from "../../../server/src/osiri/accounts.ts";
 import { API_URL, apiBase, type MuseApi, setApiBase } from "../api";
 import { readApiPayload } from "../api-response";
-import { Button, Card, colors, ErrorNotice, Field, Mascot, s } from "../ui";
+import { Button, Card, colors, ErrorNotice, Field, s } from "../ui";
+import { CharacterAvatar } from "./eve";
 
 const text = {
   welcome: "0Siri",
@@ -200,7 +201,7 @@ export function LoginScreen({ onToken }: { onToken: (token: string) => void }) {
         }}
       >
         <View style={{ width: "100%", maxWidth: 420, gap: 22, alignItems: "center" }}>
-          <Mascot size={72} />
+          <CharacterAvatar size={104} mood="happy" />
           <Text style={{ fontSize: 32, color: colors.text, letterSpacing: -1, fontWeight: "500" }}>
             {text.welcome}
           </Text>
@@ -362,7 +363,7 @@ export function Onboarding({
         }}
       >
         <View style={{ width: "100%", maxWidth: 420, gap: 22, alignItems: "center" }}>
-          <Mascot size={56} />
+          <CharacterAvatar size={84} mood="listening" />
           <Card style={{ width: "100%", gap: 14 }}>
             <View style={[s.row, { gap: 6 }]}>
               {text.steps.map((item, i) => (

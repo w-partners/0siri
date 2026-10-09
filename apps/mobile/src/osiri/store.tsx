@@ -2,20 +2,9 @@
 import { Store } from "lucide-react-native";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
-import {
-  Button,
-  Card,
-  Chip,
-  colors,
-  dateLabel,
-  Empty,
-  ErrorNotice,
-  Field,
-  Mascot,
-  Sheet,
-  s,
-} from "../ui";
+import { Button, Card, Chip, colors, dateLabel, Empty, ErrorNotice, Field, Sheet, s } from "../ui";
 import { useWorkspace } from "../workspace";
+import { CharacterAvatar } from "./eve";
 
 const text = {
   explore: "탐색",
@@ -196,9 +185,6 @@ export function Block({ title, children }: { title: string; children: ReactNode 
 }
 
 export const won = (n: number) => (n === 0 ? text.free : text.perMonth(n));
-const variant = (category: string) =>
-  category === "medical" ? "sand" : category === "marketing" ? "lilac" : "sky";
-
 export function StoreScreen({
   tab,
   onTab,
@@ -279,7 +265,7 @@ function Explore({ onOpenRoom }: { onOpenRoom: (roomId: string) => void }) {
         {list.data?.map((pkg) => (
           <Card key={pkg.id} style={{ gap: 10 }}>
             <View style={[s.row, { gap: 12 }]}>
-              <Mascot size={42} variant={variant(pkg.category)} />
+              <CharacterAvatar character={pkg.character} size={42} />
               <View style={{ flex: 1, gap: 3 }}>
                 <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
                   <Text style={s.heading}>{pkg.name}</Text>
@@ -377,7 +363,7 @@ function Mine({ onOpenRoom }: { onOpenRoom: (roomId: string) => void }) {
         {list.data?.map((sub) => (
           <Card key={sub.id} style={{ gap: 10 }}>
             <View style={[s.row, { gap: 12 }]}>
-              <Mascot size={42} />
+              <CharacterAvatar character={sub.character} size={42} />
               <View style={{ flex: 1, gap: 3 }}>
                 <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
                   <Text style={s.heading}>{sub.packageName}</Text>

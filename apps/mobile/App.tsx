@@ -31,6 +31,7 @@ import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
 import { LoginScreen, loadApiBase, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
+import { CharacterAvatar } from "./src/osiri/eve";
 import { InboxScreen } from "./src/osiri/inbox";
 import { type Room, RoomList, RoomScreen } from "./src/osiri/rooms";
 import { SettingsScreen } from "./src/osiri/settings";
@@ -38,7 +39,7 @@ import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
 import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
-import { Button, colors, ErrorNotice, IconButton, Mascot, s } from "./src/ui";
+import { Button, colors, ErrorNotice, IconButton, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
 type Tab = "rooms" | "store" | "inbox" | "goals" | "settings";
@@ -130,7 +131,7 @@ function Loading({ error, onRetry }: { error?: string; onRetry?: () => void }) {
         gap: 18,
       }}
     >
-      <Mascot size={56} />
+      <CharacterAvatar size={84} mood="thinking" />
       {error ? (
         <>
           <ErrorNotice error={error} />

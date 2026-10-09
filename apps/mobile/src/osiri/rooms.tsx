@@ -24,14 +24,13 @@ import {
   Empty,
   ErrorNotice,
   IconButton,
-  Mascot,
   relativeDate,
   Sheet,
   s,
   timeLabel,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { Eve, type Mood } from "./eve";
+import { CharacterAvatar, type Mood, selfAnimated } from "./eve";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
 /** GET /rooms 항목 = 서버 Room 레코드 + list() 가 board 에서 얹는 배지. 레코드 정의는 서버가 정본. */
@@ -113,15 +112,13 @@ const text = {
   timeline: "타임라인",
   noMessages: "아직 기록이 없어요. 아래 채팅으로 팀장과 대화해 보세요.",
   teams: "팀 방",
+  // 채팅 기분 → 상태줄 (쉼은 presence 문구를 그대로 쓴다)
+  mood: { listening: "듣는 중", thinking: "작업 중", speaking: "답하는 중" } as Record<
+    string,
+    string
+  >,
 };
 
-/** 캐릭터 → 마스코트 색. 영시리는 sky, 나머지는 이름 해시로 sand/lilac 고정. */
-export function mascotVariant(character: string): "sky" | "sand" | "lilac" {
-  if (character === "yeongsil") return "sky";
-  let h = 0;
-  for (const ch of character) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return h % 2 ? "sand" : "lilac";
-}
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 // --- SSE ---
@@ -265,7 +262,7 @@ export function RoomList({ onOpen }: { onOpen: (room: Room) => void }) {
           style={({ pressed }) => [s.card, { gap: 10 }, pressed && { opacity: 0.85 }]}
         >
           <View style={[s.row, { gap: 14 }]}>
-            <Mascot size={46} variant={mascotVariant(room.character)} />
+            <CharacterAvatar character={room.character} size={46} />
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={s.heading} numberOfLines={1}>
                 {room.packageId === null ? text.personal : room.title}
@@ -512,24 +509,18 @@ function Character({
       : presence.state === "done"
         ? [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }) }]
         : [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }) }];
-  // 영시리는 EVE — 채팅 기분(듣기·생각·말하기)이 우선, 아니면 방 presence 로
-  if (room.character === "yeongsil") {
-    const eveMood: Mood =
-      pending > 0
-        ? "alert"
-        : mood !== "idle"
-          ? mood
-          : presence.state === "working"
-            ? "thinking"
-            : presence.state === "done"
-              ? "happy"
-              : "idle";
-    return (
-      <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress}>
-        <Eve size={132} mood={eveMood} />
-      </Pressable>
-    );
-  }
+  // 스스로 움직이는 캐릭터(영시리)는 기분을 넘기고, 아니면 presence 애니메이션을 여기서 입힌다
+  const own = selfAnimated(room.character);
+  const ownMood: Mood =
+    pending > 0
+      ? "alert"
+      : mood !== "idle"
+        ? mood
+        : presence.state === "working"
+          ? "thinking"
+          : presence.state === "done"
+            ? "happy"
+            : "idle";
   return (
     <Pressable
       accessibilityRole="button"
@@ -537,8 +528,8 @@ function Character({
       onPress={onPress}
       style={{ alignItems: "center" }}
     >
-      <Animated.View style={{ transform }}>
-        <Mascot size={88} variant={mascotVariant(room.character)} />
+      <Animated.View style={own ? undefined : { transform }}>
+        <CharacterAvatar character={room.character} size={own ? 132 : 88} mood={ownMood} />
       </Animated.View>
       {presence.state === "waiting" && (
         <Animated.View
@@ -670,7 +661,7 @@ export function RoomScreen({
   };
   const pending = board?.pendingApprovals ?? room.pendingApprovals;
   const title = room.packageId === null ? text.personal : room.title;
-  const statusLine = pending > 0 ? text.waitingCount(pending) : presence.label;
+  const statusLine = pending > 0 ? text.waitingCount(pending) : (text.mood[mood] ?? presence.label);
   // 홈은 채팅이 주인공 — 타임라인은 쌓인 게 있을 때만
   const showTimeline = !home || !!digest || !!messages?.length || !!error;
 
