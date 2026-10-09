@@ -15,3 +15,10 @@
 2026-10-09 | 라우팅 분류는 규칙만(길이·키워드·도구 필요·종류). 티어별 모델명은 `MODEL_TIER2/3/4` 환경변수, 단가는 `MODEL_PRICES_KRW` JSON. 단가 없으면 절감액은 "측정 중" | 스펙 §11.1·§12 · 코드에 모델명·금액 상수 금지
 2026-10-09 | 팀 런타임은 별도 패키지가 아니라 `apps/server/src/osiri/team-runtime.ts` + 진입점 `team-entry.ts` 로 두고 컨테이너는 같은 이미지를 다른 CMD 로 돌린다. 팀 정의는 `teams/*.yaml`(cagent 형식 + `x-osiri-tier`) | 단순(새 워크스페이스 배선 생략) · 가역
 2026-10-09 | 워커가 외부 도구를 쓸 때는 `/api/worker/tools/call` 로 서버의 MCP 게이트를 거친다(워커가 MCP 서버에 직접 붙지 않음) — 승인 토큰 검증이 서버 한 곳에 남는다 | 스펙 §15.4-6 "DB 직접 접근 금지, 0Siri API 로만"
+2026-10-09 | 방 페르소나는 대화 엔진에 `PersonaLookup(owner, threadId)` 한 개를 주입해 시스템 프롬프트 앞에 붙인다(개인 방=영시리, 팀 방=팀장 캐릭터+팀원+승인 없이는 안 하는 일). 404 면 undefined → 기본 프롬프트 | 단순 · 업스트림 `conversation.ts` 수정 최소(생성자 인자 1개)
+2026-10-09 | 프로비저너는 `docker run --network host --env-file <0600 임시파일>` 로 팀 컨테이너를 띄운다. 토큰·API 키는 인자가 아니라 env-file 로(`ps` 에 안 보임), 띄운 뒤 파일 삭제. `TEAM_PROVISIONER_ENABLED=false` 면 큐만 쌓인다(도커 없는 머신) — 조용히 무시하지 않고 큐 상태로 남는다 | 단순(파일럿 1대) · 가역(compose/k8s 로 교체 가능)
+2026-10-09 | 로그인 화면에 **서버 주소 바꾸기**(저장: 웹 localStorage, 네이티브 expo-secure-store). 도메인 미정 상태에서 실기기가 tailnet IP 로 붙기 위한 것. Android 는 `usesCleartextTraffic=true`(도메인·TLS 생기면 끈다) | 마스터 "도메인은 나중에" · 가역
+2026-10-09 | 네이티브 기기 임베딩은 **스텁**(항상 실패 → 서버 폴백 + "서버에서 답함" 배지). 웹은 transformers.js. LiteRT-LM/onnxruntime-react-native 는 §11.2 실측 뒤 결정 | 마스터 "기기 모델 실패시 서버로 넘길 것" · 조용한 실패 금지(배지·usage 로그로 드러남)
+2026-10-10 | 서버가 웹 빌드를 같은 포트에서 낸다(`WEB_DIST`, SPA 폴백). 웹의 API 기본 주소는 **자기 origin**(expo 개발서버 8081 만 예외) — 포트·도메인을 번들에 박지 않는다 | 단순(웹 서버 하나 덜) · 실측(Metro 캐시가 옛 URL 을 박는 사고)
+2026-10-10 | 웹의 transformers.js 는 번들하지 않고 jsdelivr CDN 에서 런타임 `import()`. 패키지는 타입 전용. Metro 가 onnxruntime-web 의 비리터럴 `import(a)` 를 거부해 번들이 불가능하다 | 실측(export SyntaxError) · 가역(Metro 가 지원하면 번들로)
+2026-10-10 | 이 머신(seoul)에서 0Siri 는 **8788** 포트. 8787 은 `headroom proxy` 가 선점. `HOST=0.0.0.0` 필수(기본 127.0.0.1 은 폰에서 못 붙음) | 실측(`ss -ltnp`)

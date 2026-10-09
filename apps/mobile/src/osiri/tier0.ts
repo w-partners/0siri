@@ -53,8 +53,9 @@ export async function searchMemories(
   limit = 10,
 ): Promise<SearchResult> {
   try {
-    const cache = await indexMemories(memories);
-    const [q] = await embedOnDevice([query], "query");
+    // ponytail: 첫 검색은 모델 다운로드(~300MB)를 기다리지 않는다 — 서버로 답하고 모델은 뒤에서 계속 받는다(loader 유지)
+    const cache = await withTimeout(indexMemories(memories), DEVICE_WAIT_MS, "기기 색인");
+    const [q] = await withTimeout(embedOnDevice([query], "query"), DEVICE_WAIT_MS, "기기 임베딩");
     const items = memories
       .map((m) => ({ ...m, score: dot(q as number[], cache[m.id] as number[]) }))
       .sort((a, b) => b.score - a.score)
@@ -74,6 +75,23 @@ export async function searchMemories(
       .catch(() => undefined); // 라우팅 로그에 fallback_reason 을 남긴다 (실패해도 검색은 계속)
     return { items, servedBy: "server", reason };
   }
+}
+
+const DEVICE_WAIT_MS = 4000;
+function withTimeout<T>(p: Promise<T>, ms: number, what: string) {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${what} ${ms}ms 초과 — 기기 모델 준비 중`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 function dot(a: number[], b: number[]) {
