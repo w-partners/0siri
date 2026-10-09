@@ -185,7 +185,8 @@ export async function createStore(
     database = { query: async (sql, params) => pool.query(sql, params), close: () => pool.end() };
   } else {
     if (options.dataDir) await mkdir(dirname(options.dataDir), { recursive: true, mode: 0o700 });
-    const embedded = new PGlite(options.dataDir, { extensions: { vector } });
+    // 객체 형태로 넘긴다: dataDir 이 undefined 일 때 (string, options) 형태는 options 를 버린다
+    const embedded = new PGlite({ dataDir: options.dataDir, extensions: { vector } });
     await embedded.waitReady;
     database = {
       query: (sql, params) => embedded.query<Row>(sql, params),
