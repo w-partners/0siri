@@ -38,6 +38,7 @@ import {
   dateLabel,
   Empty,
   ErrorNotice,
+  Field,
   fonts,
   relativeDate,
   Sheet,
@@ -94,6 +95,13 @@ const text = {
   } satisfies Record<GoalMetricKey, string>,
   howTitle: (label: string) => `${label} — 측정 방법`,
   collecting: "수집 중",
+  views: { now: "진행 중", history: "히스토리" },
+  historyEmpty: "아직 달성한 목표가 없어요",
+  historyEmptyDetail: "달성한 목표는 여기에 쌓여요.",
+  create: "목표 만들기",
+  createField: "이루고 싶은 것 한 줄",
+  createButton: "만들기",
+  created: "목표를 만들었어요. [승인] 하면 팀이 시작해요.",
   notMeasured: "아직 측정 전이에요",
   measured: "측정",
   metricsFailed: "지표를 불러오지 못했어요",
@@ -221,7 +229,7 @@ function TeamGoals({
   tick?: number;
   onChat?: () => void;
 }) {
-  const { api } = useWorkspace();
+  const { api, notify } = useWorkspace();
   const { width } = useWindowDimensions();
   // tick 이 키에 들어 있다 — 방 스트림의 goal 이벤트가 오면 다시 읽는다
   const key = `${room.id}|${tick ?? ""}`;
@@ -238,6 +246,9 @@ function TeamGoals({
   });
   const act = useAction();
   const [open, setOpen] = useState(""); // 펼친 단기 목표
+  const [view, setView] = useState<keyof typeof text.views>("now");
+  const [draft, setDraft] = useState("");
+  const create = useAction();
 
   // 서버가 준 순서(order → 생성순)를 그대로 쓴다. 순서를 바꾸면 다시 읽는다.
   const list = goals.data;
@@ -335,7 +346,8 @@ function TeamGoals({
     );
   };
 
-  const roots = childrenOf(null);
+  // 진행 중 / 히스토리(달성한 목표) — 같은 목록을 상태로만 가른다
+  const roots = childrenOf(null).filter((g) => (g.status === "completed") === (view === "history"));
   const tasks = (list ?? []).filter((g) => g.level === "task");
   // «반려 3건 (톤 2 · 사실 1)» — 서버가 목표마다 센 값(`rejects`: 검수 반려 + 사용자 반려)을 더할 뿐, 여기서 다시 세지 않는다.
   // 사유 종류가 기록되지 않은 반려가 있으면 괄호 안의 합이 건수보다 작다.
@@ -358,6 +370,10 @@ function TeamGoals({
     ) : (
       <Skeleton rows={3} height={48} />
     )
+  ) : roots.length === 0 && view === "history" ? (
+    <Card>
+      <Empty icon={Target} title={text.historyEmpty} detail={text.historyEmptyDetail} />
+    </Card>
   ) : roots.length === 0 ? (
     <Card>
       <Empty icon={Target} title={text.emptyTitle} detail={text.emptyDetail}>
@@ -529,6 +545,37 @@ function TeamGoals({
           ) : null}
         </Card>
       ) : null}
+      <Card style={{ gap: 10, padding: 14 }}>
+        <Field
+          label={text.create}
+          placeholder={text.createField}
+          value={draft}
+          onChangeText={setDraft}
+        />
+        <ErrorNotice error={create.error} />
+        <Button
+          small
+          primary
+          busy={create.busy}
+          disabled={!draft.trim()}
+          onPress={() =>
+            create.run(async () => {
+              await api.request("/api/goals", { roomId: room.id, title: draft.trim() });
+              setDraft("");
+              setView("now");
+              goals.retry();
+              notify(text.created);
+            })
+          }
+        >
+          {text.createButton}
+        </Button>
+      </Card>
+      <View style={[s.row, { gap: 8 }]}>
+        {(Object.keys(text.views) as (keyof typeof text.views)[]).map((v) => (
+          <Choice key={v} label={text.views[v]} selected={view === v} onPress={() => setView(v)} />
+        ))}
+      </View>
       <ErrorNotice error={act.error} />
       {list && goals.error ? <LoadError error={goals.error} onRetry={goals.retry} /> : null}
       {wide ? (

@@ -10,6 +10,8 @@ export type Section =
   | "rooms"
   | "store"
   | "inbox"
+  | "ideas"
+  | "media"
   | "settings";
 export interface Mail {
   id: string;

@@ -1,5 +1,5 @@
 // 0Siri 화면 6 · 스토어 («0Siri 종합 기획» §03): 탐색 / 내 구독. 계약: docs/0siri-api-contract.md «스토어». 탭 URL 동기화는 App 이 맡는다.
-import { Search, Store } from "lucide-react-native";
+import { type LucideIcon, Search, Store } from "lucide-react-native";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
@@ -161,7 +161,7 @@ export function LoadState({
   error?: string;
   retry: () => void;
   /** action = 빈 상태의 «다음 행동» 버튼 */
-  empty?: { title: string; detail: string; action?: ReactNode } | false;
+  empty?: { title: string; detail: string; action?: ReactNode; icon?: LucideIcon } | false;
   children: ReactNode;
 }) {
   if (loading) return <Skeleton rows={3} height={132} />;
@@ -176,7 +176,7 @@ export function LoadState({
     );
   if (empty)
     return (
-      <Empty icon={Store} title={empty.title} detail={empty.detail}>
+      <Empty icon={empty.icon ?? Store} title={empty.title} detail={empty.detail}>
         {empty.action}
       </Empty>
     );

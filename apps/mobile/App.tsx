@@ -1,12 +1,15 @@
-// 0Siri 앱 셸 («0Siri 종합 기획» §03): 앱은 하단 탭 5개(채팅·목표·활동·스토어·설정) + 채팅,
-// 웹은 2단(사이드바 280px: 방 목록 + 아래 [스토어][활동·결재함][설정] / 메인). 로그인은 전화번호+비밀번호(마스터 결정).
+// 0Siri 앱 셸 («0Siri 종합 기획» §03): 앱은 하단 탭 5개 — Muse 처럼 대화·피드·아이디어·목표·미디어(마스터 2026-10-10).
+// 스토어·설정은 왼쪽 위 ≡ 메뉴. 웹은 2단(사이드바 280px: 방 목록 + 아래 진입 / 메인). 로그인은 전화번호+비밀번호(마스터 결정).
 import { CopilotKitProvider } from "@copilotkit/react-native/headless";
 import { StatusBar } from "expo-status-bar";
 import {
   Bell,
   Check,
+  Images,
   Inbox,
+  Lightbulb,
   type LucideIcon,
+  Menu,
   MessageSquare,
   Settings,
   Store,
@@ -38,6 +41,7 @@ import {
   type Room,
   type RoomFocus,
   RoomList,
+  RoomScopedScreen,
   RoomScreen,
   refreshRooms,
   resetRooms,
@@ -49,25 +53,32 @@ import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
 import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
-import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, s } from "./src/ui";
+import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, Sheet, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
-type Tab = "rooms" | "store" | "inbox" | "goals" | "settings";
+type Tab = "rooms" | "inbox" | "ideas" | "goals" | "media" | "store" | "settings";
 type StoreTab = "explore" | "mine";
-const nav: { id: Tab; label: string; icon: LucideIcon }[] = [
-  { id: "rooms", label: "채팅", icon: MessageSquare },
+const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
+  { id: "rooms", label: "대화", icon: MessageSquare },
+  { id: "inbox", label: "피드", icon: Inbox },
+  { id: "ideas", label: "아이디어", icon: Lightbulb },
   { id: "goals", label: "목표", icon: Target },
-  { id: "inbox", label: "활동", icon: Inbox },
+  { id: "media", label: "미디어", icon: Images },
   { id: "store", label: "스토어", icon: Store },
   { id: "settings", label: "설정", icon: Settings },
 ];
+/** 하단 탭 5개 (Muse 하단) · 나머지는 ≡ 메뉴 */
+const nav = tabs.filter((t) => !["store", "settings"].includes(t.id));
+const menu = tabs.filter((t) => ["store", "settings"].includes(t.id));
 // 웹 사이드바 아래 진입 3개 (기획 화면 2). 채팅은 방 목록이, 목표는 방 안 상단 탭이 맡는다
-const sideNav: Tab[] = ["store", "inbox", "settings"];
+const sideNav: Tab[] = ["inbox", "ideas", "goals", "media", "store", "settings"];
 const titles: Record<Tab, string> = {
   rooms: "내 팀",
   store: "스토어",
-  inbox: "활동 · 결재함",
+  inbox: "피드 · 결재함",
+  ideas: "아이디어",
   goals: "목표",
+  media: "미디어 · 파일",
   settings: "설정",
 };
 const text = {
@@ -75,7 +86,8 @@ const text = {
   retry: "다시 시도",
   dismiss: "닫기",
   notifications: (n: number) => (n ? `알림 ${n}건` : "알림"),
-  sideInbox: "활동·결재함",
+  sideInbox: "피드·결재함",
+  menu: "메뉴",
   noPersonal: "개인 방(영시리)을 찾지 못했습니다. 다시 시도해 주세요.",
   settingsFailed: "캐릭터 설정을 읽지 못해 기본 모습으로 보여 드려요",
   noRoom: "그 방을 찾지 못했습니다. 해지됐거나 주소가 바뀌었을 수 있어요.",
@@ -87,7 +99,7 @@ const legacy: Partial<Record<Section, Tab>> = {
   connections: "settings",
   apps: "settings",
 };
-const isTab = (value: string): value is Tab => nav.some((item) => item.id === value);
+const isTab = (value: string): value is Tab => tabs.some((item) => item.id === value);
 
 // --- 웹 URL ↔ 상태 (§4.12 라우팅: /rooms/:id · /store?tab= · /inbox · /goals · /settings) ---
 function readLocation(): { tab: Tab; roomId?: string; storeTab: StoreTab } {
@@ -405,7 +417,8 @@ function Shell({
   error: string;
   onLogout: () => void;
 }) {
-  const { workspace, open, api, notify } = useWorkspace();
+  const { workspace, open, api, notify, navigate } = useWorkspace();
+  const [menuOpen, setMenuOpen] = useState(false);
   // 로그인해 있는 동안 방 목록을 살아 있게 (첫 조회 + 사용자 스트림). 끊기면 배지·진척이 낡으므로 상태를 화면에 보인다
   const live = useRoomsLive();
   // 캐릭터 끄기·반응 강도 (화면 11) — 서버 설정이 정본
@@ -425,6 +438,8 @@ function Shell({
       <InboxScreen onOpenRoom={openRoomById} />
     ) : tab === "goals" ? (
       <TeamGoalsScreen onOpenRoom={openRoomById} />
+    ) : tab === "ideas" || tab === "media" ? (
+      <RoomScopedScreen kind={tab} />
     ) : tab === "settings" ? (
       <SettingsScreen onLogout={onLogout} />
     ) : (
@@ -451,7 +466,12 @@ function Shell({
       keyboardShouldPersistTaps="handled"
     >
       <View style={[s.row, { justifyContent: "space-between", marginTop: 8, marginBottom: 22 }]}>
-        <Text style={[s.title, { fontSize: 25 }]}>{titles[tab]}</Text>
+        <View style={[s.row, { gap: 6 }]}>
+          {!desktop && (
+            <IconButton icon={Menu} label={text.menu} onPress={() => setMenuOpen(true)} />
+          )}
+          <Text style={[s.title, { fontSize: 25 }]}>{titles[tab]}</Text>
+        </View>
         <View>
           <IconButton
             icon={Bell}
@@ -511,11 +531,12 @@ function Shell({
                   borderTopColor: colors.line,
                 }}
               >
-                {nav
+                {tabs
                   .filter((item) => sideNav.includes(item.id))
                   .map((item) => (
                     <NavButton
                       key={item.id}
+                      labeled
                       item={item.id === "inbox" ? { ...item, label: text.sideInbox } : item}
                       badge={item.id === "inbox" ? pending : 0}
                       active={tab === item.id && !room}
@@ -527,7 +548,15 @@ function Shell({
             <View style={{ flex: 1, minHeight: 0, maxWidth: 960 }}>{main}</View>
           </View>
         ) : (
-          <View style={{ flex: 1, minHeight: 0 }}>{main}</View>
+          <View style={{ flex: 1, minHeight: 0 }}>
+            {main}
+            {/* 대화 화면 왼쪽 위 ≡ (Muse 처럼) — 다른 탭은 제목 옆에 같은 버튼이 있다 */}
+            {tab === "rooms" && !room && (
+              <View style={{ position: "absolute", left: 8, top: 4 }}>
+                <IconButton icon={Menu} label={text.menu} onPress={() => setMenuOpen(true)} />
+              </View>
+            )}
+          </View>
         )}
         {!desktop && (
           <View
@@ -559,6 +588,24 @@ function Shell({
           </View>
         )}
         {!!toast && <Toast message={toast} bottom={94} onClose={clearToast} />}
+        {menuOpen && (
+          <Sheet title={text.menu} onClose={() => setMenuOpen(false)}>
+            {menu.map((item) => (
+              <Pressable
+                key={item.id}
+                accessibilityRole="button"
+                onPress={() => {
+                  setMenuOpen(false);
+                  navigate(item.id);
+                }}
+                style={[s.row, { gap: 12, paddingVertical: 14 }]}
+              >
+                <item.icon size={22} strokeWidth={1.8} color={colors.text} />
+                <Text style={s.text}>{item.label}</Text>
+              </Pressable>
+            ))}
+          </Sheet>
+        )}
         {detail && (
           <Details
             key={
@@ -580,11 +627,14 @@ function NavButton({
   item,
   active,
   badge = 0,
+  labeled,
   onPress,
 }: {
   item: { id: Tab; label: string; icon: LucideIcon };
   active: boolean;
   badge?: number;
+  /** 웹 사이드바는 이름을 같이 보인다. 앱 하단은 Muse 처럼 아이콘만 */
+  labeled?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -595,7 +645,7 @@ function NavButton({
       onPress={onPress}
       style={{
         flex: 1,
-        height: 40,
+        height: labeled ? 47 : 40,
         alignItems: "center",
         justifyContent: "center",
       }}
@@ -606,6 +656,11 @@ function NavButton({
         strokeWidth={active ? 2.4 : 1.7}
         color={active ? colors.accent : colors.muted}
       />
+      {labeled && (
+        <Text style={{ fontSize: 10, color: active ? colors.accent : colors.text }}>
+          {item.label}
+        </Text>
+      )}
       {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: 0, right: "24%" }} />}
     </Pressable>
   );

@@ -6,6 +6,8 @@ import {
   BellOff,
   ChevronDown,
   ChevronUp,
+  Images,
+  Lightbulb,
   MoreHorizontal,
   Search,
   Users,
@@ -89,7 +91,7 @@ import {
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood, selfAnimated, useStill } from "./eve";
 import { SkillsScreen } from "./skills";
-import { LoadState, useAction, useLoad } from "./store";
+import { Choice, LoadState, useAction, useLoad } from "./store";
 import { type GoalProposal, LoadError, TeamGoalsScreen } from "./team-goals";
 
 export type { PresenceState, RoomBoard, RoomMessage, TaskStage, TeamGoal };
@@ -1235,7 +1237,10 @@ function IdeasTab({ roomId }: { roomId: string }) {
     }
   };
   return (
-    <LoadState {...ideas} empty={ideas.data?.length === 0 && text.ideasEmpty}>
+    <LoadState
+      {...ideas}
+      empty={ideas.data?.length === 0 && { ...text.ideasEmpty, icon: Lightbulb }}
+    >
       <ErrorNotice error={error} />
       {ideas.data?.map((p) => (
         <Card key={p.id} style={{ gap: 6, padding: 12 }}>
@@ -1273,7 +1278,7 @@ function FilesTab({ roomId }: { roomId: string }) {
   const files = useLoad(() => api.request<RoomFiles>(`/api/rooms/${roomId}/files`), roomId);
   const none = !!files.data && !files.data.approved.length && !files.data.audit.length;
   return (
-    <LoadState {...files} empty={none && text.filesEmpty}>
+    <LoadState {...files} empty={none && { ...text.filesEmpty, icon: Images }}>
       <Text style={s.label}>{text.filesApproved}</Text>
       {files.data?.approved.map((f) => (
         <Card key={f.approvalId} style={{ gap: 2, padding: 12 }}>
@@ -1290,6 +1295,48 @@ function FilesTab({ roomId }: { roomId: string }) {
         </Text>
       ))}
     </LoadState>
+  );
+}
+
+/**
+ * 하단 «아이디어»·«미디어» 탭 (Muse 하단처럼). 방마다 있는 아이디어·파일 탭을 방 밖에서 연다 —
+ * 위에서 방을 고르고(기본 = 영시리 개인 방), 아래는 방 안의 그 탭과 같은 화면이다.
+ */
+export function RoomScopedScreen({ kind }: { kind: "ideas" | "media" }) {
+  const { api } = useWorkspace();
+  const state = useRooms();
+  const [picked, setPicked] = useState("");
+  if (!state.rooms)
+    return (
+      <LoadState loading={!state.error} error={state.error} retry={() => void refreshRooms(api)}>
+        {null}
+      </LoadState>
+    );
+  const list = [...state.rooms].sort(
+    (a, b) => Number(b.packageId === null) - Number(a.packageId === null),
+  );
+  const room = list.find((r) => r.id === picked) ?? list[0];
+  if (!room) return <Text style={s.muted}>{text.noMessages}</Text>;
+  return (
+    <View style={{ gap: 12 }}>
+      {list.length > 1 && (
+        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+          {list.map((r) => (
+            <Choice
+              key={r.id}
+              label={r.title}
+              selected={r.id === room.id}
+              onPress={() => setPicked(r.id)}
+            />
+          ))}
+        </View>
+      )}
+      {kind === "ideas" ? (
+        <IdeasTab key={room.id} roomId={room.id} />
+      ) : (
+        <FilesTab key={room.id} roomId={room.id} />
+      )}
+    </View>
   );
 }
 
