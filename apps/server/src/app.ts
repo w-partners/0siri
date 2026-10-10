@@ -40,7 +40,13 @@ import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
-import { OsiriMcp, osiriMcpRoutes, roomForThread, waitForApproval } from "./osiri/osiri-mcp.ts";
+import {
+  OsiriMcp,
+  osiriMcpKeyRoutes,
+  osiriMcpRoutes,
+  roomForThread,
+  waitForApproval,
+} from "./osiri/osiri-mcp.ts";
 import { otpGateway } from "./osiri/otp.ts";
 import { roomPersona } from "./osiri/persona.ts";
 import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/room-routes.ts";
@@ -296,6 +302,7 @@ export async function createApp(
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
+  app.route("/api", osiriMcpKeyRoutes(osiriMcp, config.publicUrl));
   app.route(
     "/api",
     storeRoutes(

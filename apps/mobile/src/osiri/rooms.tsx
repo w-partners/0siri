@@ -34,6 +34,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import type { PcSession, SubscriptionView } from "../../../../packages/domain/src/osiri";
 import {
   type AnsweredByView,
   APPROVAL_STATUS_LABELS,
@@ -179,6 +180,14 @@ const text = {
   on: "켬",
   off: "끔",
   roomSkills: "이 방에 장착된 스킬",
+  pcTitle: "내 PC 의 세션 잇기",
+  pcNote:
+    "내 구독(설정 › 연결)에서 쓰던 claude·codex 대화(tmux 등)를 이 방에 붙입니다. 영시리가 그 대화를 이어 쓰고, 매번 PC 쪽에서 더한 내용까지 다시 읽습니다. 같은 세션을 PC 와 앱에서 동시에 쓰지 마세요.",
+  pcOff: "구독 사용을 켜야 PC 세션을 이을 수 있습니다 (설정 › 연결 › 모델 계정)",
+  pcLoad: "세션 목록 불러오기",
+  pcEmpty: "이을 세션이 없습니다",
+  pcAttached: "이어 쓰는 중",
+  pcDetach: "연결 끊기 (다음 말부터 새 세션)",
   deleteRoom: "이 대화방 삭제",
   digestTitle: "결재 요약",
   openInbox: "결재함 열기",
@@ -615,6 +624,66 @@ export function NewRoomForm({ onCreated }: { onCreated: (room: Room) => void }) 
   );
 }
 
+/** 이 방을 내 PC(또는 내 컨테이너)의 claude·codex 세션에 붙인다 — 서버 osiri/subscription.ts attachSession */
+function PcSessionPicker({ roomId }: { roomId: string }) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const sub = useLoad(() => api.request<SubscriptionView>("/api/subscription"));
+  const path = `/api/subscription/attach/${encodeURIComponent(roomId)}`;
+  const attached = useLoad(() => api.request<{ attached: { sessionId: string } | null }>(path));
+  const [list, setList] = useState<PcSession[] | null>(null);
+  const current = attached.data?.attached?.sessionId;
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.heading}>{text.pcTitle}</Text>
+      <Text style={s.muted}>{sub.data?.active ? text.pcNote : text.pcOff}</Text>
+      {sub.data?.active && (
+        <>
+          <Button
+            small
+            disabled={act.busy}
+            onPress={() =>
+              act.run(async () =>
+                setList(await api.request<PcSession[]>("/api/subscription/sessions")),
+              )
+            }
+          >
+            {text.pcLoad}
+          </Button>
+          {list?.length === 0 && <Text style={s.muted}>{text.pcEmpty}</Text>}
+          {list?.map((p) => (
+            <Choice
+              key={p.sessionId}
+              label={`${p.title ?? p.sessionId.slice(0, 8)} · ${p.cwd}${p.sessionId === current ? ` · ${text.pcAttached}` : ""}`}
+              selected={p.sessionId === current}
+              disabled={act.busy}
+              onPress={() =>
+                act.run(async () =>
+                  attached.setData(
+                    await api.request(path, { sessionId: p.sessionId, cwd: p.cwd }, "PUT"),
+                  ),
+                )
+              }
+            />
+          ))}
+          {current && (
+            <Button
+              small
+              disabled={act.busy}
+              onPress={() =>
+                act.run(async () => attached.setData(await api.request(path, undefined, "DELETE")))
+              }
+            >
+              {text.pcDetach}
+            </Button>
+          )}
+        </>
+      )}
+      <ErrorNotice error={act.error} />
+    </View>
+  );
+}
+
 /** 방별 설정 (마스터 2026-10-10 «방별 설정이 있어야 하지 않아?»): 이름(내가 만든 방) · 고정 · 알림 · 이 방 스킬 · 삭제(내가 만든 방). */
 function RoomSettings({
   room,
@@ -682,6 +751,7 @@ function RoomSettings({
       <Button small icon={Sparkles} onPress={onSkills}>
         {text.roomSkills}
       </Button>
+      {!room.packageId && <PcSessionPicker roomId={room.id} />}
       {room.topic && (
         <Button
           small

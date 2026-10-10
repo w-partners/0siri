@@ -10,7 +10,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { WebSocket } from "ws";
 import { createStore, type Store } from "../apps/server/src/db.ts";
 import { subscriptionPrompt } from "../apps/server/src/engine/conversation.ts";
-import { Subscriptions } from "../apps/server/src/osiri/subscription.ts";
+import { type SubscriptionPrefs, Subscriptions } from "../apps/server/src/osiri/subscription.ts";
 
 let db: Store, directory: string, server: Server, subs: Subscriptions, url: string;
 before(async () => {
@@ -87,8 +87,20 @@ async function fakeRunner(target: string, key: string, calls: string[], seen: st
         },
         resumeSession: async ({ sessionId }) => {
           calls.push(`resume ${sessionId}`);
+          if (sessionId === "gone") throw new Error("no such session");
           return {};
         },
+        // 사용자가 tmux 에서 쓰던 세션 — ACP session/list 로 보인다
+        listSessions: async () => ({
+          sessions: [
+            {
+              sessionId: "tmux-1",
+              cwd: "/home/me/proj",
+              title: "블로그 정리",
+              updatedAt: "2026-10-10",
+            },
+          ],
+        }),
         cancel: async () => {},
         prompt: async ({ sessionId, prompt }) => {
           const text = prompt[0]?.type === "text" ? prompt[0].text : "";
@@ -252,6 +264,70 @@ test("agent write/exec requests go to the app approval gate; no gate or a refusa
   runner2.close();
   bare.close();
 });
+
+test("a room attaches to a session the user ran in tmux on their PC: resumed every turn, never silently replaced", async () => {
+  const owner = "user-tmux";
+  const prefs = await subs.update(owner, { active: true, place: "pc", provider: "claude" });
+  const { s, target, close } = await standUp();
+  const calls: string[] = [];
+  const runner = await fakeRunner(target, await s.issueRunnerKey(owner), calls);
+  const listed = await s.pcSessions(owner);
+  assert.deepEqual(
+    listed.map((x) => `${x.sessionId} ${x.title}`),
+    ["tmux-1 블로그 정리"],
+  );
+  await assert.rejects(
+    s.attachSession(owner, "room-x", { sessionId: "nope", cwd: "/x" }),
+    /찾지 못했습니다/,
+  );
+  await s.attachSession(owner, "room-x", { sessionId: "tmux-1", cwd: "/home/me/proj" });
+  assert.deepEqual(await s.attachedSession(owner, "room-x"), {
+    sessionId: "tmux-1",
+    cwd: "/home/me/proj",
+  });
+  const turn = (latest: string) =>
+    s.ask(
+      owner,
+      prefs,
+      { threadId: "room-x", brief: "영시리 지시", opening: latest, latest },
+      () => {},
+      new AbortController().signal,
+    );
+  assert.equal((await turn("이어서 해 줘")).session, "resumed");
+  await turn("하나 더");
+  assert.deepEqual(
+    calls.filter((c) => /^(new|resume|prompt)/.test(c)),
+    [
+      "resume tmux-1",
+      "prompt tmux-1 [지시가 바뀌었습니다 — 지금부터 아래 지시를 따른다]\n영시리 지시\n\n이어서 해 줘",
+      "resume tmux-1", // tmux 에서 친 말까지 알도록 매 턴 다시 잇는다
+      "prompt tmux-1 하나 더",
+    ],
+    "첫 턴에 영시리 지시를 한 번 알리고, 새 세션은 만들지 않는다",
+  );
+
+  // 그 세션이 사라졌으면 새 세션으로 바꿔치지 않고 실패한다
+  await s.attachSession(owner, "room-y", { sessionId: "tmux-1", cwd: "/home/me/proj" });
+  await db.put(owner, "subscriptionSessions", {
+    ...(await db.get(owner, "subscriptionSessions", "room-y")),
+    id: "room-y",
+    sessionId: "gone",
+  });
+  await assert.rejects(turn2(s, owner, prefs, "room-y"), /잇지 못했습니다/);
+  assert.ok(!calls.includes("new"));
+  await s.detachSession(owner, "room-y");
+  assert.equal(await s.attachedSession(owner, "room-y"), null);
+  runner.close();
+  close();
+});
+const turn2 = (s: Subscriptions, owner: string, prefs: SubscriptionPrefs, threadId: string) =>
+  s.ask(
+    owner,
+    prefs,
+    { threadId, brief: "B", opening: "x", latest: "x" },
+    () => {},
+    new AbortController().signal,
+  );
 
 test("team roles: one session per role in teams/<slug>, 0Siri MCP attached, new instructions announced", async () => {
   const owner = "user-f";

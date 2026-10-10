@@ -163,6 +163,13 @@ export const SUBSCRIPTION_PLACE_LABELS = {
   server: "서버 컨테이너",
   pc: "내 PC",
 } as const satisfies Record<SubscriptionPlace, string>;
+/** `GET /api/subscription/sessions` — 내 PC(또는 내 컨테이너)의 세션 하나(ACP session/list) */
+export interface PcSession {
+  sessionId: string;
+  cwd: string;
+  title: string | null;
+  updatedAt: string | null;
+}
 /** `GET /api/subscription` */
 export interface SubscriptionView {
   active: boolean;

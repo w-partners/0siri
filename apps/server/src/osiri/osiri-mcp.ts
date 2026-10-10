@@ -74,20 +74,25 @@ export class OsiriMcp {
     }
     return token;
   }
-  /** 그 사람 MCP 열쇠. 한 사람에 하나 — 새로 내면 옛 열쇠는 무효 */
-  async issueToken(owner: string): Promise<string> {
-    const token = `${Buffer.from(owner).toString("base64url")}.${randomBytes(24).toString("base64url")}`;
-    await this.db.put("system", TOKENS, { id: owner, hash: sha(token) });
+  /**
+   * 그 사람 MCP 열쇠. 자리(slot)마다 하나 — 새로 내면 그 자리의 옛 열쇠는 무효.
+   * 자리 "" = 서버가 ACP 세션에 붙이는 열쇠, "external" = 사용자가 자기 PC(tmux 의 claude·codex)에 넣는 열쇠.
+   * 둘을 나눠야 사용자가 열쇠를 다시 받아도 앱이 돌리는 세션이 끊기지 않는다.
+   */
+  async issueToken(owner: string, slot: "" | "external" = ""): Promise<string> {
+    const id = slot ? `${owner}|${slot}` : owner;
+    const token = `${Buffer.from(id).toString("base64url")}.${randomBytes(24).toString("base64url")}`;
+    await this.db.put("system", TOKENS, { id, hash: sha(token) });
     return token;
   }
   async verify(token: string): Promise<string | undefined> {
-    const owner = Buffer.from(token.split(".")[0] ?? "", "base64url").toString();
-    if (!owner) return undefined;
-    const stored = await this.db.get<{ hash: string }>("system", TOKENS, owner);
+    const id = Buffer.from(token.split(".")[0] ?? "", "base64url").toString();
+    if (!id) return undefined;
+    const stored = await this.db.get<{ hash: string }>("system", TOKENS, id);
     if (!stored) return undefined;
     const a = Buffer.from(stored.hash);
     const b = Buffer.from(sha(token));
-    return a.length === b.length && timingSafeEqual(a, b) ? owner : undefined;
+    return a.length === b.length && timingSafeEqual(a, b) ? id.split("|")[0] : undefined;
   }
 
   /** 한 요청마다 서버를 새로 만든다(무상태) — 소유자·방은 요청에서 정해진다 */
@@ -185,6 +190,18 @@ export class OsiriMcp {
     }
     return server;
   }
+}
+
+/** POST /osiri-mcp/key (로그인 필요) — 내 PC 의 claude·codex 에 넣을 열쇠. 한 번만 보여 주고, 다시 받으면 옛 열쇠는 끊긴다 */
+export function osiriMcpKeyRoutes(osiriMcp: OsiriMcp, publicUrl: string) {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  app.post("/osiri-mcp/key", async (c) =>
+    c.json({
+      key: await osiriMcp.issueToken(c.get("owner"), "external"),
+      url: `${publicUrl.replace(/\/$/, "")}/api/mcp`,
+    }),
+  );
+  return app;
 }
 
 /** POST /mcp (Streamable HTTP, 무상태). 인증 = Authorization: Bearer <0Siri MCP 열쇠>. ?thread= 로 승인 카드 방을 고른다 */

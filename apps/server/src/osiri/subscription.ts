@@ -18,6 +18,7 @@ import { Hono } from "hono";
 import { type WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
+  type PcSession,
   SUBSCRIPTION_PLACES,
   SUBSCRIPTION_PROVIDERS,
   type SubscriptionPlace,
@@ -26,6 +27,7 @@ import {
 } from "../../../../packages/domain/src/osiri.ts";
 import { runDocker } from "../computer.ts";
 import type { Store } from "../db.ts";
+import { AppError } from "../errors.ts";
 import type { Llm } from "./team-runtime.ts";
 
 export interface SubscriptionPrefs {
@@ -364,7 +366,7 @@ export class Subscriptions {
     if (prefs.place === "pc") {
       const runner = this.runners.get(owner);
       if (!runner)
-        throw new Error("내 PC 러너가 연결되어 있지 않습니다 — PC 에서 러너를 실행하세요");
+        throw new AppError("내 PC 러너가 연결되어 있지 않습니다 — PC 에서 러너를 실행하세요", 409);
       return runner.open(prefs.provider);
     }
     const name = await this.ensure(owner);
@@ -505,10 +507,12 @@ export class Subscriptions {
   ): Promise<{ session: SessionState; resumeError?: string }> {
     const cwd = turn.folder ? `${live.pipe.cwd}/${turn.folder}` : live.pipe.cwd;
     const briefHash = sha(turn.brief);
+    let stored = await this.db.get<StoredSession>(owner, SESSIONS, turn.threadId);
+    // 사용자 PC(tmux)에서 이어 쓴 세션은 매 턴 디스크에서 다시 잇는다 — tmux 에서 친 말까지 알고 답하게
+    if (stored?.external) live.sessions.delete(turn.threadId);
     let sessionId = live.sessions.get(turn.threadId);
     let session: SessionState = "live";
     let resumeError: string | undefined;
-    let stored = await this.db.get<StoredSession>(owner, SESSIONS, turn.threadId);
     if (!sessionId) {
       const mcpServers = (await this.options.mcpServers?.(owner, turn.threadId)) ?? [];
       if (stored && stored.key === live.key) {
@@ -521,11 +525,19 @@ export class Subscriptions {
           sessionId = stored.sessionId;
           session = "resumed";
         } catch (error) {
+          // 사용자가 골라 붙인 PC 세션은 새 세션으로 바꿔치지 않는다 — 못 이으면 실패로 알린다
+          if (stored.external)
+            throw new AppError(
+              `내 PC 의 그 세션을 잇지 못했습니다(${error instanceof Error ? error.message : String(error)}). 러너가 켜져 있는지, 같은 구독·실행 위치인지 확인하세요`,
+              409,
+            );
           // 잇지 못한 것은 숨기지 않는다 — 새 세션으로 시작했다고 답 아래에 남긴다
           resumeError = error instanceof Error ? error.message : String(error);
           session = "rebuilt";
         }
-      } else session = "new";
+      } else if (stored?.external)
+        throw new AppError("이 대화방은 다른 구독·실행 위치의 PC 세션에 붙어 있습니다", 409);
+      else session = "new";
       if (!sessionId) {
         if (turn.folder) await live.pipe.mkdir(turn.folder);
         sessionId = (await live.conn.newSession({ cwd, mcpServers })).sessionId;
@@ -553,6 +565,45 @@ export class Subscriptions {
       live.listeners.delete(id);
     }
     return { session, ...(resumeError ? { resumeError } : {}) };
+  }
+
+  /** 지금 구독·실행 위치에 있는 세션들(내 PC 라면 tmux 에서 쓰던 claude·codex 대화) — 최근 것부터 */
+  async pcSessions(owner: string): Promise<PcSession[]> {
+    const live = await this.connect(owner, await this.prefs(owner));
+    const { sessions } = await live.conn.listSessions({});
+    return sessions
+      .map((s) => ({
+        sessionId: s.sessionId,
+        cwd: s.cwd,
+        title: s.title ?? null,
+        updatedAt: s.updatedAt ?? null,
+      }))
+      .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+      .slice(0, 50);
+  }
+  /** 대화방을 그 세션에 붙인다 — 다음 턴부터 그 세션을 이어 쓴다(새 세션으로 바꿔치지 않음) */
+  async attachSession(owner: string, threadId: string, pick: { sessionId: string; cwd: string }) {
+    const live = await this.connect(owner, await this.prefs(owner));
+    const listed = (await this.pcSessions(owner)).some((s) => s.sessionId === pick.sessionId);
+    if (!listed) throw new AppError("그 세션을 찾지 못했습니다 — 목록을 새로 불러 고르세요", 404);
+    live.sessions.delete(threadId);
+    await this.db.put(owner, SESSIONS, {
+      id: threadId,
+      key: live.key,
+      sessionId: pick.sessionId,
+      cwd: pick.cwd,
+      external: true,
+    } satisfies StoredSession);
+  }
+  /** 대화방의 PC 세션 연결을 끊는다 — 다음 턴은 새 세션 */
+  async detachSession(owner: string, threadId: string) {
+    for (const live of await Promise.all([...this.live.values()].map((p) => p.catch(() => null))))
+      live?.sessions.delete(threadId);
+    await this.db.remove(owner, SESSIONS, threadId);
+  }
+  async attachedSession(owner: string, threadId: string) {
+    const stored = await this.db.get<StoredSession>(owner, SESSIONS, threadId);
+    return stored?.external ? { sessionId: stored.sessionId, cwd: stored.cwd } : null;
   }
 
   /**
@@ -665,6 +716,8 @@ interface StoredSession {
   cwd: string;
   /** 세션에 마지막으로 알린 지시(페르소나·역할 지시)의 해시 — 바뀌면 다음 턴에 새 지시를 붙인다 */
   briefHash?: string;
+  /** 사용자가 자기 PC 에서 쓰던 세션(tmux 의 claude·codex)을 골라 붙였다 */
+  external?: true;
 }
 interface Live {
   key: string;
@@ -708,6 +761,21 @@ export function subscriptionRoutes(subs: Subscriptions) {
   app.get("/subscription/status", async (c) =>
     c.json(await subs.status(c.get("owner"), provider.parse(c.req.query("provider")))),
   );
+  app.get("/subscription/sessions", async (c) => c.json(await subs.pcSessions(c.get("owner"))));
+  app.get("/subscription/attach/:threadId", async (c) =>
+    c.json({ attached: await subs.attachedSession(c.get("owner"), c.req.param("threadId")) }),
+  );
+  app.put("/subscription/attach/:threadId", async (c) => {
+    const body = z
+      .object({ sessionId: z.string().min(1).max(200), cwd: z.string().min(1).max(1000) })
+      .parse(await c.req.json());
+    await subs.attachSession(c.get("owner"), c.req.param("threadId"), body);
+    return c.json({ attached: body });
+  });
+  app.delete("/subscription/attach/:threadId", async (c) => {
+    await subs.detachSession(c.get("owner"), c.req.param("threadId"));
+    return c.json({ attached: null });
+  });
   app.post("/subscription/runner-key", async (c) =>
     c.json({ key: await subs.issueRunnerKey(c.get("owner")) }),
   );

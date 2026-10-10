@@ -108,6 +108,11 @@ const text = {
   subPlace: "실행 위치",
   subTurnOn: "내 구독으로 답하기",
   subTurnOff: "끄기 (공용 열쇠로 돌아가기)",
+  mcpKeyTitle: "내 PC 의 claude·codex 에도 영시리 기억 붙이기",
+  mcpKeyNote:
+    "tmux 등에서 직접 쓰는 claude·codex 가 영시리와 같은 기억(memory_search·memory_save)과 연결 도구를 쓰게 됩니다. 아래 명령을 그 PC 에서 한 번 실행하세요. 열쇠는 지금 한 번만 보이고, 다시 받으면 옛 열쇠는 끊깁니다.",
+  mcpKeyIssue: "열쇠 받기",
+  mcpKeyAgain: "새 열쇠 받기 (옛 열쇠 끊김)",
   subRule:
     "파일 쓰기·명령 실행은 앱에서 승인해야 진행됩니다. 기억과 연결 도구는 0Siri 서버에서 붙습니다. 비용은 본인 구독에서 나갑니다. 구독을 다른 서비스에서 쓰는 것은 제공자 약관을 확인하세요.",
   serverOff: "서버 실행이 아직 설정되지 않았습니다 — «내 PC» 로 쓰세요",
@@ -794,10 +799,56 @@ function SubscriptionPanel() {
                 {sub.active ? text.subTurnOff : text.subTurnOn}
               </Button>
               <Text style={s.small}>{text.subRule}</Text>
+              <MemoryKey />
             </>
           )}
         </Loaded>
       </Card>
+    </View>
+  );
+}
+
+/** 내 PC 에서 직접 쓰는 claude·codex(tmux 등)에도 0Siri 기억·도구를 붙이는 열쇠. 서버 osiri-mcp.ts osiriMcpKeyRoutes */
+function MemoryKey() {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const [lines, setLines] = useState<string>();
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.heading}>{text.mcpKeyTitle}</Text>
+      <Text style={s.small}>{text.mcpKeyNote}</Text>
+      <Button
+        small
+        busy={act.busy}
+        onPress={() =>
+          act.run(async () => {
+            const { key, url } = await api.request<{ key: string; url: string }>(
+              "/api/osiri-mcp/key",
+              {},
+            );
+            setLines(
+              [
+                "# Claude Code",
+                `claude mcp add --transport http 0siri ${url} --header "Authorization: Bearer ${key}"`,
+                "# Codex",
+                `export OSIRI_MCP_KEY=${key}`,
+                `codex mcp add 0siri --url ${url} --bearer-token-env-var OSIRI_MCP_KEY`,
+              ].join("\n"),
+            );
+          })
+        }
+      >
+        {lines ? text.mcpKeyAgain : text.mcpKeyIssue}
+      </Button>
+      {lines && (
+        <Text
+          selectable
+          style={[mono, s.small, { padding: 8, borderRadius: 8, backgroundColor: colors.sunk }]}
+        >
+          {lines}
+        </Text>
+      )}
+      <ErrorNotice error={act.error} />
     </View>
   );
 }

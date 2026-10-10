@@ -88,6 +88,13 @@ test("0Siri MCP: only the owner's latest key works; memory comes from the server
     "one key per process",
   );
 
+  // 내 PC(tmux)에 넣는 열쇠는 따로 — 다시 받아도 서버 세션 열쇠는 그대로, 같은 사람으로 인증된다
+  const external = await f.osiriMcp.issueToken("u1", "external");
+  assert.equal(await f.osiriMcp.verify(external), "u1");
+  await f.osiriMcp.issueToken("u1", "external");
+  assert.equal(await f.osiriMcp.verify(external), undefined, "re-issuing revokes the old PC key");
+  assert.equal(await f.osiriMcp.verify(token), "u1", "the server-session key is untouched");
+
   const client = await f.connect(token);
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
   assert.deepEqual(names, ["memory_save", "memory_search", "tool_call", "tools_list"]);
