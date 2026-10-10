@@ -602,6 +602,22 @@ function HtmlArtifactCard({ artifact, html }: { artifact: AgentArtifact; html: s
   );
 }
 
+// 미디어 맨 위 «영시리가 만든 것» — 작업 카드 안에 묻혀 있던 아티팩트를 최신순으로 모은다
+export function AgentArtifacts() {
+  const { data } = useAgentWorkspace();
+  const list = [...(data?.artifacts ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return (
+    <View style={{ gap: 10 }}>
+      <Text style={s.heading}>{t.agent.artifact.mine}</Text>
+      {list.length ? (
+        list.map((a) => <ArtifactCard key={a.id} artifact={a} />)
+      ) : (
+        <Text style={s.muted}>{t.agent.artifact.mineEmpty}</Text>
+      )}
+    </View>
+  );
+}
+
 export function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
   const [expanded, setExpanded] = useState(false);
   const rows = Object.entries(artifact.data);

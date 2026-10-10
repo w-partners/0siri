@@ -32,6 +32,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { Section, Workspace } from "../../packages/domain/src";
 import { isHomeRoom } from "../../packages/domain/src/osiri";
+import { AgentArtifacts } from "./src/agent-ui";
 import { AgentWorkspaceProvider } from "./src/agent-workspace";
 import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
@@ -481,7 +482,10 @@ function Shell({
     ) : tab === "goals" ? (
       <TeamGoalsScreen onOpenRoom={openRoomById} />
     ) : tab === "media" ? (
-      <RoomScopedScreen kind="media" />
+      <View style={{ gap: 18 }}>
+        <AgentArtifacts />
+        <RoomScopedScreen kind="media" />
+      </View>
     ) : tab === "settings" ? (
       <SettingsScreen onLogout={onLogout} />
     ) : (
