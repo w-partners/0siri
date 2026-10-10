@@ -6,10 +6,13 @@ import {
   embedQueryText,
   EMBED_MODEL_ID as MODEL,
 } from "../../../../packages/domain/src/osiri";
-import type { DeviceBackend, DeviceReport } from "./device-embed.types";
+import type { DeviceBackend, DeviceModel, DeviceReport } from "./device-embed.types";
+import { measureWith, normalize, unavailableReport, type Vec } from "./device-measure";
+
+/** 웹은 첫 검색이 모델을 알아서 받는다 — 지우면 «기기 검색 끔» 을 함께 저장해야 다시 받지 않는다 (네이티브는 [받기] 를 눌러야만 받는다) */
+export const DOWNLOADS_ON_FIRST_USE = true;
 
 // 모델 id·양자화·접두어는 서버(embeddings.ts)와 같은 도메인 상수다 — 어긋나면 기기 벡터와 서버 벡터가 안 맞는다.
-type Vec = number[];
 type Embedder = {
   embed: (texts: string[]) => Promise<Vec[]>;
   backend: DeviceBackend;
@@ -43,10 +46,7 @@ async function load(): Promise<Embedder> {
     const output = (await model(inputs)) as { sentence_embedding?: { tolist(): Vec[] } };
     const rows = output.sentence_embedding?.tolist();
     if (!rows) throw new Error("모델 출력에 sentence_embedding 이 없습니다");
-    return rows.map((v) => {
-      const norm = Math.hypot(...v) || 1;
-      return v.map((x) => x / norm);
-    });
+    return rows.map(normalize);
   };
   return { embed, backend, loadMs: Math.round(performance.now() - started) };
 }
@@ -66,71 +66,36 @@ export async function embedOnDevice(texts: string[], kind: "query" | "document")
 
 /** 9단계 실측: 로드 시간·문장당 지연·메모리·한국어 샘플 top-1. 실패도 리포트로 남긴다. */
 export async function measureDevice(): Promise<DeviceReport> {
-  const measuredAt = new Date().toISOString();
-  if (!deviceAvailable())
-    return {
-      available: false,
-      backend: "none",
-      model: MODEL,
-      dtype: DTYPE,
-      reason: "WebAssembly 미지원",
-      measuredAt,
-    };
-  try {
-    loader ??= load();
-    const { backend, loadMs } = await loader;
-    const docs = SAMPLE.map((p) => p.doc);
-    const started = performance.now();
-    const docVecs = await embedOnDevice(docs, "document");
-    const queryVecs = await embedOnDevice(
-      SAMPLE.map((p) => p.query),
-      "query",
-    );
-    const embedMsPer = Math.round((performance.now() - started) / (docs.length * 2));
-    let hits = 0;
-    queryVecs.forEach((q, i) => {
-      const best = docVecs
-        .map((d) => dot(q, d))
-        .reduce((bi, s, j, arr) => (s > arr[bi] ? j : bi), 0);
-      if (best === i) hits++;
-    });
-    const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
-    return {
-      available: true,
-      backend,
-      model: MODEL,
-      dtype: DTYPE,
-      loadMs,
-      embedMsPer,
-      dim: docVecs[0]?.length,
-      memoryMb: memory ? Math.round(memory.usedJSHeapSize / 1048576) : undefined,
-      top1: { hits, total: SAMPLE.length },
-      measuredAt,
-    };
-  } catch (e) {
-    return {
-      available: false,
-      backend: "none",
-      model: MODEL,
-      dtype: DTYPE,
-      reason: e instanceof Error ? e.message : String(e),
-      measuredAt,
-    };
-  }
+  if (!deviceAvailable()) return unavailableReport("WebAssembly 미지원");
+  return measureWith(
+    () => {
+      loader ??= load();
+      return loader;
+    },
+    embedOnDevice,
+    () => {
+      const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+      return memory ? Math.round(memory.usedJSHeapSize / 1048576) : undefined;
+    },
+  );
 }
 
-export function dot(a: Vec, b: Vec) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += (a[i] as number) * (b[i] as number);
-  return s;
-}
+// ---- 설정 «기기» 카드가 쓰는 저장소 조작 ----
+/** transformers.js 가 브라우저에 모델을 두는 캐시 이름 */
+const MODEL_CACHE = "transformers-cache";
+const modelCached = async (cache: Cache) =>
+  (await cache.keys()).filter((request) => request.url.includes(MODEL));
 
-// 한국어 샘플셋 — 서버 실측(tests/osiri-memories.test.ts)과 같은 성격의 기억 6건
-const SAMPLE = [
-  { query: "커피 취향", doc: "아메리카노는 얼음 없이, 설탕은 넣지 않는다" },
-  { query: "운동 시간", doc: "아침 6시에 한강에서 5km 달린다" },
-  { query: "회의 자료 어디", doc: "주간 회의 슬라이드는 드라이브 '팀/주간' 폴더에 둔다" },
-  { query: "가족 생일", doc: "어머니 생신은 음력 3월 12일" },
-  { query: "자주 가는 식당", doc: "점심은 회사 앞 '봉추찜닭'을 자주 간다" },
-  { query: "휴가 계획", doc: "11월 둘째 주에 제주도 3박 4일" },
-];
+export async function deviceModel(): Promise<DeviceModel> {
+  if (typeof caches === "undefined") return { state: "unknown" };
+  const files = await modelCached(await caches.open(MODEL_CACHE));
+  return { state: files.length > 0 ? "ready" : "none" };
+}
+/** 첫 호출이 모델을 내려받아 올린다 (브라우저 캐시라 진행률은 받지 못한다) */
+export async function prepareDevice(): Promise<undefined> {
+  await embedOnDevice(["상태 확인"], "query");
+}
+export async function removeModel() {
+  const cache = await caches.open(MODEL_CACHE);
+  for (const request of await modelCached(cache)) await cache.delete(request);
+}

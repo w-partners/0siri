@@ -12,8 +12,11 @@ export interface SearchResult {
 }
 
 const CACHE_KEY = "osiri.memvec";
-// ponytail: 벡터 캐시는 localStorage(웹). 네이티브는 기기 임베딩이 없어 캐시도 없다
+// ponytail: 벡터 캐시는 localStorage(웹). 네이티브에는 localStorage 가 없어 앱이 떠 있는 동안만 메모리에 둔다 —
+// 앱을 다시 켜면 첫 검색 때 다시 계산한다. 기억이 많아져 그 시간이 길어지면 파일 저장으로 바꾼다
+let sessionCache: Record<string, number[]> = {};
 function loadCache(): Record<string, number[]> {
+  if (!globalThis.localStorage) return sessionCache;
   try {
     return JSON.parse(globalThis.localStorage?.getItem(CACHE_KEY) ?? "{}");
   } catch (e) {
@@ -23,6 +26,10 @@ function loadCache(): Record<string, number[]> {
   }
 }
 function saveCache(cache: Record<string, number[]>) {
+  if (!globalThis.localStorage) {
+    sessionCache = cache;
+    return;
+  }
   try {
     globalThis.localStorage?.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch (e) {
