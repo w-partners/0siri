@@ -64,6 +64,9 @@ const team = (slug: string, extra: Partial<TeamPackage> = {}) =>
     summary: "감지부터 발행까지",
     roles: [
       { name: "root", title: "팀장", summary: "목표 분해" },
+      { name: "monitor", title: "감지", summary: "감지" },
+      { name: "drafter", title: "초안", summary: "초안" },
+      { name: "geo", title: "GEO", summary: "GEO" },
       { name: "reviewer", title: "검수", summary: "인용 규정" },
       { name: "publisher", title: "발행", summary: "승인된 것만" },
       { name: "analyst", title: "분석", summary: "주간 보고" },

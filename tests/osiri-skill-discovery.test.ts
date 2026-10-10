@@ -37,6 +37,8 @@ before(async () => {
       roles: [
         { name: "root", title: "팀장", summary: "" },
         { name: "drafter", title: "초안", summary: "" },
+        { name: "monitor", title: "감지", summary: "감지" },
+        { name: "geo", title: "GEO", summary: "GEO" },
         { name: "reviewer", title: "검수", summary: "" },
         { name: "publisher", title: "발행", summary: "" },
         { name: "analyst", title: "보고", summary: "" },

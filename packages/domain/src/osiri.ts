@@ -127,7 +127,15 @@ export const STORE_CATEGORY_ALL_LABEL = "전체";
 /** 해지·탈퇴 후 데이터 보존 일수 (§6.2, §15.4.5, §24-13) */
 export const RETENTION_DAYS = 30;
 /** 팀 패키지·팀 YAML 이 반드시 가져야 하는 역할 키. 패키지 등록과 런타임 로드가 같은 목록을 본다. */
-export const REQUIRED_TEAM_ROLES = ["root", "reviewer", "publisher", "analyst"] as const;
+export const REQUIRED_TEAM_ROLES = [
+  "root",
+  "monitor",
+  "drafter",
+  "geo",
+  "reviewer",
+  "publisher",
+  "analyst",
+] as const;
 export type RequiredTeamRole = (typeof REQUIRED_TEAM_ROLES)[number];
 /** 빠진 필수 역할 키. 비어 있으면 통과. */
 export const missingTeamRoles = (names: readonly string[]): RequiredTeamRole[] =>

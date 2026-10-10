@@ -132,7 +132,13 @@ test("#0 공용 상수 — 서버가 쓰는 목록이 domain/osiri.ts 한 곳에
   for (const legacy of ["medical", "marketing", "other"] as const)
     assert.ok(STORE_CATEGORY_IDS.includes(legacy), "이전 id 는 계속 유효");
   assert.equal(BOARD_STAGES.length, 7);
-  assert.deepEqual(missingTeamRoles(["root", "reviewer"]), ["publisher", "analyst"]);
+  assert.deepEqual(missingTeamRoles(["root", "reviewer"]), [
+    "monitor",
+    "drafter",
+    "geo",
+    "publisher",
+    "analyst",
+  ]);
   assert.deepEqual(missingTeamRoles([...REQUIRED_TEAM_ROLES]), []);
 });
 

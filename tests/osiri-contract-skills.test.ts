@@ -78,6 +78,9 @@ before(async () => {
     summary: "판례·법령 감지부터 GEO 콘텐츠 발행까지",
     roles: [
       { name: "root", title: "팀장", summary: "목표 분해·배분" },
+      { name: "monitor", title: "감지", summary: "감지" },
+      { name: "drafter", title: "초안", summary: "초안" },
+      { name: "geo", title: "GEO", summary: "GEO" },
       { name: "reviewer", title: "검수", summary: "인용·광고 규정" },
       { name: "publisher", title: "발행", summary: "승인된 것만 발행" },
       { name: "analyst", title: "성과 분석", summary: "주간 보고" },

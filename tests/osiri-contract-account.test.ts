@@ -114,6 +114,9 @@ const team = (slug: string, extra: Record<string, unknown> = {}) => ({
   summary: "시험용 팀",
   roles: [
     { name: "root", title: "팀장", summary: "배분" },
+    { name: "monitor", title: "감지", summary: "감지" },
+    { name: "drafter", title: "초안", summary: "초안" },
+    { name: "geo", title: "GEO", summary: "GEO" },
     { name: "reviewer", title: "검수", summary: "검수" },
     { name: "publisher", title: "발행", summary: "발행" },
     { name: "analyst", title: "분석", summary: "보고" },
