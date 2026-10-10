@@ -41,7 +41,13 @@ before(async () => {
     c.set("owner", await auth.owner(c.req.header("authorization")));
     await next();
   });
-  app.route("/api", privateAccountRoutes(accounts, "http://t"));
+  // 가입 신청 승인·반려(감사 기록이 필요한 결정)는 tests/osiri-network.test.ts 가 본다
+  app.route(
+    "/api",
+    privateAccountRoutes(accounts, "http://t", async () => {
+      throw new Error("이 시험에서는 감사 기록을 쓰지 않습니다");
+    }),
+  );
 });
 after(async () => {
   await db.close();

@@ -4,9 +4,21 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import {
   type AccountTier,
+  INVITE_ALREADY_MEMBER_MESSAGE,
+  INVITE_PHONE_MISMATCH_MESSAGE,
+  INVITE_TAKEN_MESSAGE,
+  type InviteStatus,
+  type NetworkNodeStatus,
   PASSWORD_MIN,
   RETENTION_DAYS,
   type UserRole,
+  WAITLIST_ALREADY_PENDING_MESSAGE,
+  WAITLIST_PENDING_LOGIN_MESSAGE,
+  WAITLIST_PURPOSE_MAX,
+  WAITLIST_PURPOSE_MESSAGE,
+  WAITLIST_PURPOSE_MIN,
+  type WaitlistStatus,
+  waitlistRejectedMessage,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -33,6 +45,8 @@ export interface User {
   role: Role;
   tier: Tier;
   createdAt: string;
+  /** 나를 들인 회원(초대한 사람 · 가입 신청을 승인하며 관리자가 붙인 상위 회원)의 id. 뿌리·옛 계정은 없다 */
+  invitedBy?: string | null;
   /** 탈퇴 요청 시각. 있으면 로그인이 막힌다 */
   deleteRequestedAt?: string;
   /** 이 시각이 지나면 정리(sweep)가 계정과 데이터를 지운다 */
@@ -47,9 +61,49 @@ export interface Profile {
   specialty?: string;
   region?: string;
 }
+/** 가입 신청. 번호당 한 줄(id = 정규화한 전화번호). 옛 항목은 번호만 있다(비밀번호·목적 없음 → 승인 불가). */
 export interface WaitlistEntry {
   id: string; // 정규화한 전화번호
+  /** 관리자 API·감사 로그가 쓰는 식별자 — 전화번호를 주소·로그에 싣지 않으려고 따로 둔다 */
+  ref?: string;
   requestedAt: string;
+  status?: WaitlistStatus; // 없으면 pending (옛 항목)
+  purpose?: string;
+  /** 비밀번호는 해시로만 둔다. 승인하면 사용자 행으로 옮기고 여기서는 지운다 */
+  passwordHash?: string;
+  decidedAt?: string;
+  parentId?: string;
+  rejectReason?: string;
+  userId?: string;
+}
+/** `GET /admin/waitlist` 항목 — 해시는 싣지 않는다 */
+export interface WaitlistView {
+  id: string;
+  phone: string;
+  purpose: string;
+  status: WaitlistStatus;
+  requestedAt: string;
+  decidedAt?: string;
+  parentId?: string;
+  rejectReason?: string;
+}
+/** `GET /invites` 항목 */
+export interface InviteView {
+  id: string;
+  phone: string;
+  status: InviteStatus;
+  createdAt: string;
+  expiresAt: string;
+  joinedUserId?: string;
+}
+/** `GET /network` 의 마디 — 부르는 사람 아래로만 내려간다 */
+export interface NetworkNode {
+  id: string;
+  name: string | null;
+  phone: string;
+  status: NetworkNodeStatus;
+  joinedAt: string | null;
+  children: NetworkNode[];
 }
 /** 감사 로그 기록 함수 — `Rooms.audit` 과 같은 모양 (계정 모듈이 방 모듈을 직접 물지 않게 주입한다) */
 export type AuditWriter = (
@@ -70,6 +124,7 @@ export interface Invite {
   createdBy: string;
   phone?: string;
   role: Role;
+  createdAt?: string; // 옛 초대에는 없다 — 보일 때 만료 시각에서 거꾸로 센다
   expiresAt: number;
   usedBy?: string;
   usedAt?: string;
@@ -96,6 +151,31 @@ export function normalizePhone(raw: string): string {
     throw new AppError("전화번호 형식이 올바르지 않습니다 (예: 010-1234-5678)", 422);
   return digits;
 }
+/** 가운데 자리를 가린 표시용 번호: 01012345678 → 010-****-5678 */
+export function maskPhone(phone: string): string {
+  return `${phone.slice(0, 3)}-${"*".repeat(Math.max(phone.length - 7, 0))}-${phone.slice(-4)}`;
+}
+const inviteStatus = (invite: Invite, now: number): InviteStatus =>
+  invite.usedBy ? "joined" : invite.expiresAt < now ? "expired" : "pending";
+const inviteView = (invite: Invite & { phone: string }, now: number): InviteView => ({
+  id: invite.id,
+  phone: invite.phone,
+  status: inviteStatus(invite, now),
+  createdAt: invite.createdAt ?? new Date(invite.expiresAt - INVITE_TTL_MS).toISOString(),
+  expiresAt: new Date(invite.expiresAt).toISOString(),
+  ...(invite.usedBy ? { joinedUserId: invite.usedBy } : {}),
+});
+const waitlistRef = (entry: WaitlistEntry) => entry.ref ?? digestHex(entry.id).slice(0, 32);
+const waitlistView = (entry: WaitlistEntry): WaitlistView => ({
+  id: waitlistRef(entry),
+  phone: entry.id,
+  purpose: entry.purpose ?? "",
+  status: entry.status ?? "pending",
+  requestedAt: entry.requestedAt,
+  ...(entry.decidedAt ? { decidedAt: entry.decidedAt } : {}),
+  ...(entry.parentId ? { parentId: entry.parentId } : {}),
+  ...(entry.rejectReason ? { rejectReason: entry.rejectReason } : {}),
+});
 
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
@@ -140,16 +220,29 @@ export class Accounts {
     password: string;
     role?: Role;
     tier?: Tier;
+    invitedBy?: string;
   }): Promise<User> {
     const phone = normalizePhone(input.phone);
     assertPassword(input.password);
+    return this.insertUser({ ...input, phone, passwordHash: hashPassword(input.password) });
+  }
+  /** 이미 정규화한 번호와 이미 만든 해시로 사용자를 넣는다 (가입 신청 승인은 보관해 둔 해시를 그대로 쓴다). */
+  private async insertUser(input: {
+    phone: string;
+    passwordHash: string;
+    role?: Role;
+    tier?: Tier;
+    invitedBy?: string;
+  }): Promise<User> {
+    const { phone } = input;
     const user: User = {
       id: randomUUID(),
       phone,
-      passwordHash: hashPassword(input.password),
+      passwordHash: input.passwordHash,
       role: input.role ?? "user",
       tier: input.tier ?? "free",
       createdAt: new Date().toISOString(),
+      invitedBy: input.invitedBy ?? null,
     };
     // 전화번호 유일성은 phone-index 의 insertIfAbsent 로 보장한다 (경쟁 시 한쪽만 성공)
     const claimed = await this.db.insertIfAbsent("system", "phone-index", {
@@ -196,6 +289,15 @@ export class Accounts {
     const phone = normalizePhone(phoneRaw);
     this.throttle(phone);
     const user = await this.userByPhone(phone);
+    // 아직 회원이 아닌 가입 신청자 — 신청 때 넣은 비밀번호가 맞을 때만 상태를 알려 준다 (번호 열거 방지)
+    if (!user) {
+      const entry = await this.db.get<WaitlistEntry>("system", "waitlist", phone);
+      if (entry?.passwordHash && verifyPassword(password, entry.passwordHash)) {
+        if (entry.status === "pending") throw new AppError(WAITLIST_PENDING_LOGIN_MESSAGE, 403);
+        if (entry.status === "rejected")
+          throw new AppError(waitlistRejectedMessage(entry.rejectReason ?? ""), 403);
+      }
+    }
     // 존재 여부를 구분해 알려주지 않는다 (계정 열거 방지)
     if (!user || !verifyPassword(password, user.passwordHash))
       throw new AppError("전화번호 또는 비밀번호가 맞지 않습니다", 401);
@@ -231,10 +333,58 @@ export class Accounts {
       createdBy,
       phone: input.phone ? normalizePhone(input.phone) : undefined,
       role: input.role ?? "user",
+      createdAt: new Date().toISOString(),
       expiresAt: Date.now() + INVITE_TTL_MS,
     };
     await this.db.put("system", "invites", invite);
     return { token, invite };
+  }
+  /**
+   * 회원이 전화번호로 보내는 초대 — 초대는 그 번호에 묶이고 역할은 일반 회원이다.
+   * 내가 같은 번호로 보낸 안 쓰인 초대는 지우고 새로 낸다(옛 링크는 무효).
+   * ponytail: 두 회원이 같은 번호를 동시에 초대하면 둘 다 통과할 수 있다 — 가입은 phone-index 가 한 번만 허용하므로 먼저 수락된 쪽이 상위가 된다.
+   */
+  async inviteByPhone(createdBy: string, phoneRaw: string) {
+    const phone = normalizePhone(phoneRaw);
+    if (await this.userByPhone(phone)) throw new AppError(INVITE_ALREADY_MEMBER_MESSAGE, 409);
+    const now = Date.now();
+    const unused = (await this.db.listByField<Invite>("system", "invites", "phone", phone)).filter(
+      (i) => !i.usedBy,
+    );
+    if (unused.some((i) => i.createdBy !== createdBy && i.expiresAt >= now))
+      throw new AppError(INVITE_TAKEN_MESSAGE, 409);
+    for (const old of unused)
+      if (old.createdBy === createdBy) await this.db.remove("system", "invites", old.id);
+    const { token, invite } = await this.createInvite(createdBy, { phone });
+    return { token, invite: inviteView({ ...invite, phone }, now) };
+  }
+  /** 내가 보낸 초대 (번호에 묶인 것만 — 관리자의 번호 없는 초대는 `/admin/invites` 에서 본다). 최신순. */
+  async myInvites(userId: string): Promise<InviteView[]> {
+    const now = Date.now();
+    return (await this.db.listByField<Invite>("system", "invites", "createdBy", userId))
+      .filter((i): i is Invite & { phone: string } => Boolean(i.phone))
+      .map((i) => inviteView(i, now))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  /** 내 초대 취소. 남의 초대는 있는지조차 알려 주지 않는다(404). */
+  async cancelInvite(userId: string, id: string): Promise<void> {
+    const invite = await this.db.get<Invite>("system", "invites", id);
+    if (!invite || invite.createdBy !== userId) throw new AppError("초대를 찾을 수 없습니다", 404);
+    if (invite.usedBy) throw new AppError("이미 가입한 초대는 취소할 수 없습니다", 409);
+    await this.db.remove("system", "invites", id);
+  }
+  /** 초대 링크를 열었을 때 보여 줄 것 — 번호는 가운데를 가린다. 번호 없는 (관리자) 초대는 phoneHint 가 null. */
+  async previewInvite(
+    token: string,
+  ): Promise<{ phoneHint: string | null; inviterName: string | null }> {
+    const invite = await this.db.get<Invite>("system", "invites", digestHex(token));
+    if (!invite) throw new AppError("초대 링크가 올바르지 않습니다", 404);
+    if (invite.usedBy) throw new AppError("이미 사용된 초대 링크입니다", 410);
+    if (invite.expiresAt < Date.now()) throw new AppError("초대 링크가 만료되었습니다", 410);
+    return {
+      phoneHint: invite.phone ? maskPhone(invite.phone) : null,
+      inviterName: (await this.profile(invite.createdBy)).displayName || null,
+    };
   }
   async acceptInvite(input: { token: string; phone: string; password: string }) {
     const invite = await this.db.get<Invite>("system", "invites", digestHex(input.token));
@@ -243,8 +393,13 @@ export class Accounts {
     if (invite.expiresAt < Date.now()) throw new AppError("초대 링크가 만료되었습니다", 400);
     const phone = normalizePhone(input.phone);
     if (invite.phone && invite.phone !== phone)
-      throw new AppError("이 초대는 다른 전화번호로 발급되었습니다", 400);
-    const user = await this.createUser({ phone, password: input.password, role: invite.role });
+      throw new AppError(INVITE_PHONE_MISMATCH_MESSAGE, 400);
+    const user = await this.createUser({
+      phone,
+      password: input.password,
+      role: invite.role,
+      invitedBy: invite.createdBy,
+    });
     await this.db.put("system", "invites", {
       ...invite,
       usedBy: user.id,
@@ -263,23 +418,186 @@ export class Accounts {
     await this.db.put(userId, "profiles", next);
     return next;
   }
-  async listUsers(): Promise<PublicUser[]> {
-    return (await this.db.list<User>("system", "users")).map(publicUser);
+  /** 사용자 id → 표시 이름. ponytail: profiles 전체를 한 번 훑는다 — 회원 수천 명까지는 충분하다. */
+  private async displayNames(): Promise<Map<string, string>> {
+    const profiles = await this.db.scan<Profile>("profiles");
+    return new Map(profiles.map((p) => [p.owner, p.value.displayName]));
+  }
+  /** 관리자용 회원 목록. `q` 는 이름(부분 일치)·전화번호(숫자 부분 일치)로 거른다. */
+  async listUsers(q?: string): Promise<(PublicUser & { name: string | null })[]> {
+    const names = await this.displayNames();
+    const all = (await this.db.list<User>("system", "users")).map((user) => ({
+      ...publicUser(user),
+      name: names.get(user.id) || null,
+    }));
+    const text = q?.trim().toLowerCase();
+    if (!text) return all;
+    const digits = text.replace(/\D/g, "");
+    return all.filter(
+      (u) =>
+        (u.name?.toLowerCase().includes(text) ?? false) ||
+        (digits !== "" && u.phone.includes(digits)),
+    );
   }
 
-  // --- 초대 대기 ---
-  /** 같은 번호로 여러 번 신청해도 한 줄만 남는다. 가입 여부는 응답으로 구분해 주지 않는다 (계정 열거 방지). */
-  async joinWaitlist(phoneRaw: string): Promise<void> {
-    const phone = normalizePhone(phoneRaw);
-    await this.db.insertIfAbsent<WaitlistEntry>("system", "waitlist", {
-      id: phone,
-      requestedAt: new Date().toISOString(),
-    });
+  // --- 가입 네트워크 ---
+  /**
+   * 나를 뿌리로 한 가입 트리 — 내가 들인 사람, 그 사람이 들인 사람… 아래로만.
+   * 위(나를 들인 사람)·옆(같은 사람이 들인 다른 사람)은 싣지 않고, 다른 사람의 가지를 고르는 인자도 없다.
+   * 전화번호는 바로 아래 단계만 그대로, 그보다 깊으면 가운데를 가린다. 아직 가입 전인 내 초대는 «invited» 잎으로 붙는다.
+   * counts 는 가입한 회원만 센다(초대 중인 잎 제외).
+   * ponytail: 사용자 전체를 한 번 읽어 부모→자식 표를 만든다 — 회원 수천 명(지인 대상 앱)까지는 충분하다.
+   *           만 명을 넘기면 invitedBy 색인 조회(listByField)로 단계별로 내려가게 바꾼다.
+   */
+  async network(
+    userId: string,
+  ): Promise<{ root: NetworkNode; counts: { direct: number; total: number } }> {
+    const users = await this.db.list<User>("system", "users");
+    const me = users.find((u) => u.id === userId);
+    if (!me) throw new AppError("사용자를 찾을 수 없습니다", 404);
+    const names = await this.displayNames();
+    const childrenOf = new Map<string, User[]>();
+    for (const user of users)
+      if (user.invitedBy)
+        childrenOf.set(user.invitedBy, [...(childrenOf.get(user.invitedBy) ?? []), user]);
+    // 순환 방지: 한 번 붙인 사람은 다시 붙이지 않는다 (기록이 꼬여 A→B→A 가 돼도 끝난다)
+    const seen = new Set<string>([userId]);
+    let total = 0;
+    const build = (user: User, depth: number): NetworkNode => {
+      const children = (childrenOf.get(user.id) ?? [])
+        .filter((child) => !seen.has(child.id))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const child of children) seen.add(child.id);
+      total += children.length;
+      return {
+        id: user.id,
+        name: names.get(user.id) || null,
+        phone: depth <= 1 ? user.phone : maskPhone(user.phone),
+        status: "joined",
+        joinedAt: user.createdAt,
+        children: children.map((child) => build(child, depth + 1)),
+      };
+    };
+    const root = build(me, 0);
+    const direct = root.children.length;
+    for (const invite of await this.myInvites(userId))
+      if (invite.status === "pending")
+        root.children.push({
+          id: invite.id,
+          name: null,
+          phone: invite.phone,
+          status: "invited",
+          joinedAt: null,
+          children: [],
+        });
+    return { root, counts: { direct, total } };
   }
-  async listWaitlist(): Promise<WaitlistEntry[]> {
-    return (await this.db.list<WaitlistEntry>("system", "waitlist")).sort((a, b) =>
-      a.requestedAt.localeCompare(b.requestedAt),
+
+  // --- 가입 신청 ---
+  /**
+   * 가입 신청: 전화번호 + 비밀번호 + 구체적인 사용 목적. 비밀번호는 해시로만 남긴다.
+   * 번호당 한 줄 — 검토 중이면 409. 반려됐거나 옛(번호만 있는) 항목은 새 신청으로 덮는다.
+   */
+  async applyWaitlist(input: { phone: string; password: string; purpose: string }): Promise<void> {
+    const phone = normalizePhone(input.phone);
+    assertPassword(input.password);
+    const purpose = input.purpose.trim();
+    if (purpose.length < WAITLIST_PURPOSE_MIN || purpose.length > WAITLIST_PURPOSE_MAX)
+      throw new AppError(WAITLIST_PURPOSE_MESSAGE, 400);
+    if (await this.userByPhone(phone)) throw new AppError(INVITE_ALREADY_MEMBER_MESSAGE, 409);
+    const entry: WaitlistEntry = {
+      id: phone,
+      ref: randomUUID(),
+      requestedAt: new Date().toISOString(),
+      status: "pending",
+      purpose,
+      passwordHash: hashPassword(input.password),
+    };
+    if (await this.db.insertIfAbsent<WaitlistEntry>("system", "waitlist", entry)) return;
+    const existing = await this.db.get<WaitlistEntry>("system", "waitlist", phone);
+    if (existing?.passwordHash && (existing.status ?? "pending") === "pending")
+      throw new AppError(WAITLIST_ALREADY_PENDING_MESSAGE, 409);
+    await this.db.put<WaitlistEntry>("system", "waitlist", entry);
+  }
+  async listWaitlist(): Promise<WaitlistView[]> {
+    return (await this.db.list<WaitlistEntry>("system", "waitlist"))
+      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+      .map(waitlistView);
+  }
+  private async pendingWaitlist(ref: string): Promise<WaitlistEntry> {
+    const entry = (await this.db.list<WaitlistEntry>("system", "waitlist")).find(
+      (e) => waitlistRef(e) === ref,
     );
+    if (!entry) throw new AppError("가입 신청을 찾을 수 없습니다", 404);
+    if ((entry.status ?? "pending") !== "pending")
+      throw new AppError("이미 처리된 가입 신청입니다", 409);
+    return entry;
+  }
+  /** 관리자 결정의 증적 — 관리자 본인 것과 system 것 두 곳. 못 남기면 조용히 넘기지 않는다. */
+  private async auditDecision(adminId: string, action: string, audit: AuditWriter) {
+    const entry = { packageId: null, actor: `user:${adminId}`, action, result: "ok" } as const;
+    try {
+      await audit(adminId, entry);
+      await audit("system", entry);
+    } catch (error) {
+      throw new AppError(
+        `결정은 반영됐지만 감사 로그를 남기지 못했습니다 (${action}): ${error instanceof Error ? error.message : String(error)}`,
+        500,
+      );
+    }
+  }
+  /** 승인: 상위 회원을 붙여 사용자로 만든다. 신청 때의 해시를 그대로 옮기므로 그 번호·비밀번호로 바로 로그인된다. */
+  async approveWaitlist(
+    adminId: string,
+    ref: string,
+    parentId: string,
+    audit: AuditWriter,
+  ): Promise<WaitlistView> {
+    const entry = await this.pendingWaitlist(ref);
+    if (!entry.passwordHash)
+      throw new AppError(
+        "비밀번호 없이 접수된 옛 신청이라 승인할 수 없습니다 — 다시 신청받거나 초대로 진행하세요",
+        409,
+      );
+    if (!(await this.userById(parentId))) throw new AppError("상위 회원을 찾을 수 없습니다", 404);
+    const user = await this.insertUser({
+      phone: entry.id,
+      passwordHash: entry.passwordHash,
+      invitedBy: parentId,
+    });
+    const { passwordHash: _moved, ...rest } = entry;
+    const decided: WaitlistEntry = {
+      ...rest,
+      status: "approved",
+      decidedAt: new Date().toISOString(),
+      parentId,
+      userId: user.id,
+    };
+    await this.db.put<WaitlistEntry>("system", "waitlist", decided);
+    await this.auditDecision(
+      adminId,
+      `waitlist.approve ${waitlistRef(entry)} user=${user.id} parent=${parentId}`,
+      audit,
+    );
+    return waitlistView(decided);
+  }
+  /** 반려. 해시는 남겨 둔다 — 신청자가 그 번호·비밀번호로 로그인하면 반려 사유를 본다. */
+  async rejectWaitlist(
+    adminId: string,
+    ref: string,
+    reason: string,
+    audit: AuditWriter,
+  ): Promise<WaitlistView> {
+    const entry = await this.pendingWaitlist(ref);
+    const decided: WaitlistEntry = {
+      ...entry,
+      status: "rejected",
+      decidedAt: new Date().toISOString(),
+      rejectReason: reason,
+    };
+    await this.db.put<WaitlistEntry>("system", "waitlist", decided);
+    await this.auditDecision(adminId, `waitlist.reject ${waitlistRef(entry)}`, audit);
+    return waitlistView(decided);
   }
 
   // --- 탈퇴 ---
@@ -360,6 +678,24 @@ export class Accounts {
           action: "account.purged",
           result: "ok",
         });
+        // 가입 네트워크: 아래 사람들을 한 단계 위로 붙이고(끊긴 가지가 생기지 않게), 안 쓰인 초대는 지운다
+        for (const child of await this.db.listByField<User>(
+          "system",
+          "users",
+          "invitedBy",
+          user.id,
+        ))
+          await this.db.put<User>("system", "users", {
+            ...child,
+            invitedBy: user.invitedBy ?? null,
+          });
+        for (const invite of await this.db.listByField<Invite>(
+          "system",
+          "invites",
+          "createdBy",
+          user.id,
+        ))
+          if (!invite.usedBy) await this.db.remove("system", "invites", invite.id);
         await this.db.remove("system", "phone-index", user.phone);
         await this.db.remove("system", "users", user.id);
         console.log(
@@ -393,8 +729,8 @@ export class Accounts {
   }
 }
 
-export type PublicUser = Omit<User, "passwordHash">;
+export type PublicUser = Omit<User, "passwordHash" | "invitedBy"> & { invitedBy: string | null };
 export function publicUser(user: User): PublicUser {
   const { passwordHash: _omit, ...rest } = user;
-  return rest;
+  return { ...rest, invitedBy: user.invitedBy ?? null };
 }

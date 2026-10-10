@@ -30,7 +30,7 @@ import { AgentWorkspaceProvider } from "./src/agent-workspace";
 import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
-import { LoginScreen, loadApiBase, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
+import { AuthScreens, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
 import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { InboxScreen } from "./src/osiri/inbox";
 import {
@@ -114,9 +114,7 @@ function writeLocation(tab: Tab, roomId: string | undefined, storeTab: StoreTab)
 export default function App() {
   const [token, setToken] = useState<string | null>(null); // null = 아직 저장소를 안 읽음
   useEffect(() => {
-    void loadApiBase()
-      .then(loadToken)
-      .then((saved) => setToken(saved || ""));
+    void loadToken().then((saved) => setToken(saved || ""));
   }, []);
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
@@ -154,7 +152,7 @@ export default function App() {
         // 로그인 전에도 새 버전을 알린다 — 로그아웃 상태로 두면 영영 옛 버전에 남는다.
         <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
           <UpdateBanner />
-          <LoginScreen onToken={setToken} />
+          <AuthScreens onToken={setToken} />
         </SafeAreaView>
       )}
     </SafeAreaProvider>

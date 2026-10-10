@@ -542,7 +542,13 @@ test("#11 #14 관리자 시드는 둘 중 하나만 있으면 실패 · 초대 �
     c.set("owner", adminId);
     await next();
   });
-  routes.route("/api", privateAccountRoutes(accounts, "http://x"));
+  // 이 시험은 초대 발급만 본다 — 감사 기록이 필요한 관리자 결정(가입 신청 승인·반려)은 부르지 않는다
+  routes.route(
+    "/api",
+    privateAccountRoutes(accounts, "http://x", async () => {
+      throw new Error("이 시험에서는 감사 기록을 쓰지 않습니다");
+    }),
+  );
   const post = (body?: string) =>
     routes.request("/api/admin/invites", {
       method: "POST",

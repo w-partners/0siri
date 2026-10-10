@@ -1,11 +1,17 @@
 // 0Siri 계정 라우트 (0SIRI-SPEC §21 S1). openmuse 패턴대로 /api 아래에 둔다.
-//  공개:  POST /api/auth/login · POST /api/auth/invite/accept · POST /api/auth/logout · POST /api/auth/waitlist
-//  인증:  GET /api/me · PATCH /api/me/profile · POST /api/account/delete · 관리자 /api/admin/*
+//  공개:  POST /api/auth/login · GET /api/auth/invite/:token · POST /api/auth/invite/accept · POST /api/auth/logout · POST /api/auth/waitlist
+//  인증:  GET /api/me · PATCH /api/me/profile · /api/invites · GET /api/network · POST /api/account/delete · 관리자 /api/admin/*
 import { Hono } from "hono";
 import { z } from "zod";
-import { USER_ROLES } from "../../../../packages/domain/src/osiri.ts";
+import { USER_ROLES, type WaitlistStatus } from "../../../../packages/domain/src/osiri.ts";
 import { AppError } from "../errors.ts";
-import type { Accounts, AuditWriter, Profile, User } from "./accounts.ts";
+import {
+  type Accounts,
+  type AuditWriter,
+  type Profile,
+  type PublicUser,
+  publicUser,
+} from "./accounts.ts";
 
 type Env = { Variables: { owner: string } };
 
@@ -27,11 +33,22 @@ export function publicAccountRoutes(accounts: Accounts) {
     await accounts.logout(c.req.header("authorization"));
     return c.json({ ok: true });
   });
-  // 초대 코드가 없을 때 "초대 대기 신청". 같은 번호는 한 줄만 남는다 (멱등)
+  // 초대 링크를 열었을 때: 누가 어느 번호로 초대했는지(번호는 가운데를 가린다). 모르는 링크 404 · 쓰였거나 만료 410
+  app.get("/invite/:token", async (c) =>
+    c.json(await accounts.previewInvite(c.req.param("token"))),
+  );
+  // 초대가 없을 때 가입 신청: 전화번호 + 비밀번호 + 구체적인 사용 목적. 관리자가 상위 회원을 붙여 승인하면 로그인된다
   app.post("/waitlist", async (c) => {
-    const body = z.object({ phone: z.string().min(1).max(40) }).parse(await c.req.json());
-    await accounts.joinWaitlist(body.phone);
-    return c.json({ ok: true });
+    const body = z
+      .object({
+        phone: z.string().min(1).max(40),
+        password: z.string().min(1).max(200),
+        // 빠졌거나 짧으면 applyWaitlist 가 «구체적으로 적어 달라»는 400 을 낸다
+        purpose: z.string().max(5000).default(""),
+      })
+      .parse(await c.req.json());
+    await accounts.applyWaitlist(body);
+    return c.json({ status: "pending" satisfies WaitlistStatus }, 201);
   });
   return app;
 }
@@ -45,17 +62,32 @@ export function accountDeletionRoutes(accounts: Accounts, audit: AuditWriter) {
   return app;
 }
 
-/** `GET /me` 응답 모양 — 비밀번호 해시는 싣지 않는다 */
-export type MeResponse = { user: Omit<User, "passwordHash">; profile: Profile };
+/** `GET /me` 응답 모양 — 비밀번호 해시는 싣지 않는다. `user.invitedBy` 는 나를 들인 회원 id (없으면 null) */
+export type MeResponse = { user: PublicUser; profile: Profile };
 
-export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
+export function privateAccountRoutes(accounts: Accounts, publicUrl: string, audit: AuditWriter) {
   const app = new Hono<Env>();
   app.get("/me", async (c) => {
     const user = await accounts.userById(c.get("owner"));
     if (!user) return c.json({ error: "세션의 사용자를 찾을 수 없습니다" }, 401);
-    const { passwordHash: _omit, ...safe } = user;
-    return c.json({ user: safe, profile: await accounts.profile(user.id) } satisfies MeResponse);
+    return c.json({
+      user: publicUser(user),
+      profile: await accounts.profile(user.id),
+    } satisfies MeResponse);
   });
+  // 초대 — 로그인한 회원 누구나, 상대 전화번호만으로. 따로 입력하는 초대 코드는 없다
+  app.post("/invites", async (c) => {
+    const body = z.object({ phone: z.string().min(1).max(40) }).parse(await c.req.json());
+    const { token, invite } = await accounts.inviteByPhone(c.get("owner"), body.phone);
+    return c.json({ link: `${publicUrl}/invite/${token}`, invite }, 201);
+  });
+  app.get("/invites", async (c) => c.json(await accounts.myInvites(c.get("owner"))));
+  app.delete("/invites/:id", async (c) => {
+    await accounts.cancelInvite(c.get("owner"), c.req.param("id"));
+    return c.json({ ok: true });
+  });
+  // 가입 네트워크 — 항상 부르는 사람이 뿌리다. 다른 가지를 고르는 인자를 받지 않는다
+  app.get("/network", async (c) => c.json(await accounts.network(c.get("owner"))));
   app.patch("/me/profile", async (c) => {
     const body = z
       .object({
@@ -96,9 +128,24 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string) {
     await accounts.requireRole(c.get("owner"), "admin");
     return c.json(await accounts.listWaitlist());
   });
+  app.post("/admin/waitlist/:id/approve", async (c) => {
+    await accounts.requireRole(c.get("owner"), "admin");
+    const body = z.object({ parentId: z.string().min(1) }).parse(await c.req.json());
+    return c.json(
+      await accounts.approveWaitlist(c.get("owner"), c.req.param("id"), body.parentId, audit),
+    );
+  });
+  app.post("/admin/waitlist/:id/reject", async (c) => {
+    await accounts.requireRole(c.get("owner"), "admin");
+    const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(await c.req.json());
+    return c.json(
+      await accounts.rejectWaitlist(c.get("owner"), c.req.param("id"), body.reason, audit),
+    );
+  });
+  // 회원 찾기(승인할 때 상위 회원 고르기) — `?q=` 로 이름·전화번호 검색
   app.get("/admin/users", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
-    return c.json(await accounts.listUsers());
+    return c.json(await accounts.listUsers(c.req.query("q")));
   });
   return app;
 }

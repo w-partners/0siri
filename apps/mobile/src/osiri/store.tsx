@@ -96,14 +96,11 @@ const text = {
   emptyMine: "아직 구독한 팀이 없습니다",
   emptyMineHint: "탐색 탭에서 팀을 구독하면 여기에 모입니다.",
   goExplore: "탐색에서 첫 팀 고르기",
-  nextBilling: "다음 결제",
   until: (date: string) => `${date}까지 유지`,
   pending: "승인 대기",
   progress: "진척",
   price: "요금",
-  billingDate: "결제일",
-  paymentMethod: "결제 수단",
-  noPaymentMethod: "등록된 결제 수단이 없습니다",
+  subStatus: "상태",
   none: "없음",
   cancel: "해지",
   cancelNotice: "기간 말까지 유지 · 방 읽기 전용 동결",
@@ -855,16 +852,11 @@ function Mine({
   );
 }
 
-/** 구독 기간 한 줄: 구독 중 = 다음 결제일, 해지 예정 = 기간 말, 종료 = 없음(상태 칩이 말한다). */
+/** 구독 기간 한 줄: 해지 예정일 때만 기간 말을 보인다. 결제는 앱에 없다(마스터 2026-10-10) — 구독 중·종료는 상태 칩이 말한다. */
 function SubTerm({ sub }: { sub: Sub }) {
-  if (sub.status === "ended") return null;
-  const date = sub.status === "active" ? sub.nextBillingAt : sub.endsAt;
-  if (!date) return null;
-  const label = dateLabel(date);
+  if (sub.status !== "cancelled" || !sub.endsAt) return null;
   return (
-    <Text style={[s.small, { fontFamily: fonts.mono }]}>
-      {sub.status === "active" ? `${text.nextBilling} ${label}` : text.until(label)}
-    </Text>
+    <Text style={[s.small, { fontFamily: fonts.mono }]}>{text.until(dateLabel(sub.endsAt))}</Text>
   );
 }
 
@@ -895,15 +887,8 @@ function Manage({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<voi
         <Row label={text.price}>
           <Text style={[s.text, { fontFamily: fonts.mono }]}>{won(sub.priceMonthly)}</Text>
         </Row>
-        <Row label={text.billingDate}>
-          {sub.status === "active" ? (
-            <Text style={[s.text, { fontFamily: fonts.mono }]}>{dateLabel(sub.nextBillingAt)}</Text>
-          ) : (
-            <Chip tint={statusTint[sub.status]}>{SUBSCRIPTION_STATUS_LABELS[sub.status]}</Chip>
-          )}
-        </Row>
-        <Row label={text.paymentMethod}>
-          <Text style={s.text}>{sub.paymentMethod ?? text.noPaymentMethod}</Text>
+        <Row label={text.subStatus}>
+          <Chip tint={statusTint[sub.status]}>{SUBSCRIPTION_STATUS_LABELS[sub.status]}</Chip>
         </Row>
       </View>
       <SubTerm sub={sub} />

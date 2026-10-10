@@ -2,7 +2,7 @@
 
 > 화면 11종이 요구하는데 v0.3.1 서버에 없던 표면을 여기서 한 번만 정한다. 서버·클라이언트 모두 이 파일을 정본으로 구현한다.
 > 모든 경로는 `/api` 아래, 인증은 기존 Bearer 세션, 에러는 기존 `{ "error": "<문장>" }`. 모든 행은 소유자(owner)로 격리.
-> 기존 응답 필드는 이름을 바꾸거나 지우지 않는다(추가만).
+> 기존 응답 필드는 이름을 바꾸거나 지우지 않는다(추가만). 예외는 마스터가 직접 지시한 삭제뿐이고, 그 자리에 «삭제» 로 적는다.
 
 ## 방 (화면 2·3)
 
@@ -58,7 +58,8 @@
   카테고리 id: `legal`(법률) · `content`(콘텐츠) · `office`(사무).
 - `POST /subscriptions` `{ packageId, restore?: boolean }` — 해지했던 팀을 다시 구독할 때 `restore` 로 기존 방·기억 복원/새로 시작을 고른다. 이미 구독 중이면 409.
 - `POST /subscriptions/:id/resume` — 해지 예약 취소.
-- 구독 항목에 추가: `paymentMethod: string|null`, `endsAt: string|null`(해지 시 기간 말), `status` 에 `"ended"`.
+- 구독 항목에 추가: `endsAt: string|null`(해지 시 기간 말), `status` 에 `"ended"`.
+  (2026-10-10 삭제) `paymentMethod` — 결제는 앱에 넣지 않는다(마스터 지시). «추가만» 원칙의 예외로 응답에서 뺐다.
 - (v0.4.0) `GET /store/packages` 항목에 `thirdParty: boolean` 추가(타사 입점 — 라벨은 도메인 `THIRD_PARTY_LABEL`). `POST /admin/packages` 가 `thirdParty?: boolean`, `greeting?: string` 을 받는다.
 - (v0.4.0) 새 방으로 구독이 시작되면 팀장의 첫 인사가 방에 올라온다: `role: "assistant"`, `payload: { actor: "root", greeting: true }`, 본문은 패키지 `greeting` 또는 도메인 `DEFAULT_TEAM_GREETING`(첫 목표를 말해 달라는 초대). 복원(`restore`)에는 올리지 않는다.
 - (v0.4.0) 해지(`cancel`)는 방을 잠그지 않는다 — `endsAt` 까지 그대로 쓰고, 활동에 «구독 해지 예약 — YYYY-MM-DD 까지 …» 가 남는다. `endsAt` 이 지나면 구독이 `ended` 가 되면서 방이 `archived`(읽기 전용)로 바뀌고 안내 한 줄이 남는다. 해지 예약 중에 새로 시작(`restore` 없이)으로 다시 구독하면 옛 구독은 그 자리에서 `ended`, 옛 방은 `archived` 가 된다.
@@ -102,7 +103,8 @@
 
 ## 설정 (화면 11)
 
-- `GET /settings` → `{ tier: { label, subscription: string|null, nextBillingAt: string|null }, answerMode: "auto"|"device"|"server", autoEconomy: boolean, fixedModel: string|null, monthlyCapKrw: number|null, notifications: { approvals: boolean, weeklyReport: boolean }, character: { enabled: boolean, intensity: "motion"|"face"|"text" } }`
+- (2026-10-10 삭제) `GET /settings` 의 `tier.nextBillingAt` — 결제는 앱에 넣지 않는다(마스터 지시). «추가만» 원칙의 예외.
+- `GET /settings` → `{ tier: { label, subscription: string|null }, answerMode: "auto"|"device"|"server", autoEconomy: boolean, fixedModel: string|null, monthlyCapKrw: number|null, notifications: { approvals: boolean, weeklyReport: boolean }, character: { enabled: boolean, intensity: "motion"|"face"|"text" } }`
 - `PATCH /settings/model` `{ answerMode?, autoEconomy?, fixedModel?, monthlyCapKrw? }` · `PATCH /settings` `{ notifications?, character? }`
 - `GET /billing/usage` → `{ costKrw, capKrw: number|null, percent: number|null, byok: boolean, savedKrw: number|null }` (`null` = "측정 중").
   (v0.4.0) 추가: `unpricedCalls: number`(단가가 없어 비용을 못 잰 호출 수 — 0 보다 크면 `percent` 는 `null`), `warn: "none"|"near"|"reached"`(도메인 `CAP_WARN_NEAR_PERCENT` 80 · `CAP_WARN_REACHED_PERCENT` 100. 상한이 없으면 `"none"`. 잰 지출만으로 내므로 `percent` 가 `null` 이어도 값이 실린다).
@@ -114,7 +116,40 @@
 
 ## 로그인·온보딩 (화면 1)
 
-- 초대 링크 `…/?invite=<code>` 로 열면 초대 코드가 자동 입력된다.
-- `POST /auth/waitlist` `{ phone }` — 초대 코드가 없을 때 "초대 대기 신청".
+- 로그인은 전화번호 + 비밀번호(`POST /auth/login`). 가입 경로는 둘뿐이다: **초대 링크** 또는 **가입 신청 → 관리자 승인**. 따로 입력하는 초대 코드는 없다(아래 «가입» 절).
 - `PATCH /me/profile` 에 `specialty`, `region` 추가(사무소 프로필 — 이름·전문 분야·지역).
 - 온보딩 3단계: 계정 → 프로필 → 첫 목표(`POST /goals`).
+
+## 가입 — 전화번호 초대 · 가입 신청 · 가입 네트워크 (마스터 2026-10-10)
+
+> 문구·라벨·상수는 도메인(`packages/domain/src/osiri.ts`)이 정본: `WAITLIST_PURPOSE_MIN`(30) · `WAITLIST_PURPOSE_MAX`(1000) · `INVITE_STATUS_LABELS` · `WAITLIST_STATUS_LABELS` · `NETWORK_NODE_STATUS_LABELS` · `INVITE_ALREADY_MEMBER_MESSAGE` · `INVITE_TAKEN_MESSAGE` · `INVITE_PHONE_MISMATCH_MESSAGE` · `WAITLIST_PURPOSE_MESSAGE` · `WAITLIST_ALREADY_PENDING_MESSAGE` · `WAITLIST_PENDING_LOGIN_MESSAGE` · `waitlistRejectedMessage(reason)`.
+> 전화번호는 응답에서 숫자만(`01012345678`), 가린 번호는 `010-****-5678` 꼴.
+
+- 사용자에 `invitedBy: string|null` 추가 — 나를 들인 회원 id(초대한 사람 · 승인 때 관리자가 붙인 상위 회원). 뿌리·관리자 시드·옛 계정은 `null`. `GET /me` 의 `user`, 로그인·초대 수락 응답의 `user` 에 실린다.
+- **초대(로그인한 회원 누구나)**
+  - `POST /invites` `{ phone }` → 201 `{ link, invite: { id, phone, status: "pending", createdAt, expiresAt } }`. `link` = `<publicUrl>/invite/<token>`, 시각은 ISO 문자열, 유효 7일. 초대는 그 번호에 묶이고 역할은 일반 회원.
+    409 «이미 가입한 번호입니다» · 409 «이미 다른 분이 초대한 번호입니다»(다른 회원의 살아 있는 초대가 있을 때). 내가 초대 중인 번호를 다시 초대하면 새 링크가 나오고 옛 링크는 무효.
+  - `GET /invites` → 내가 보낸 초대 `{ id, phone, status: "pending"|"joined"|"expired", createdAt, expiresAt, joinedUserId? }[]`(최신순).
+  - `DELETE /invites/:id` → `{ ok: true }`. 내 것만(남의 것·없는 것 404), 이미 가입한 초대는 409.
+- **초대 링크(공개)**
+  - `GET /auth/invite/:token` → `{ phoneHint: string|null, inviterName: string|null }`. `phoneHint` 는 가린 번호(관리자의 번호 없는 초대는 `null`), `inviterName` 은 초대한 사람의 표시 이름(안 정했으면 `null`). 모르는 링크 404 · 이미 쓰였거나 만료 410.
+  - `POST /auth/invite/accept` `{ token, phone, password }` → 로그인과 같은 `{ token, user }`. 입력한 번호가 초대받은 번호와 다르면 400 «초대받은 전화번호와 다릅니다». 가입한 사용자의 `invitedBy` = 초대한 사람.
+- **가입 신청(공개)**
+  - `POST /auth/waitlist` `{ phone, password, purpose }` → 201 `{ status: "pending" }`. `purpose`(무엇을 어떻게 쓰고 싶은지)는 앞뒤 공백을 뺀 길이가 `WAITLIST_PURPOSE_MIN` 이상이어야 한다 — 아니면 400 `WAITLIST_PURPOSE_MESSAGE`. 비밀번호는 가입과 같은 규칙(422), 해시로만 보관.
+    409 «이미 가입한 번호입니다» · 409 `WAITLIST_ALREADY_PENDING_MESSAGE`. 반려된 번호는 다시 신청할 수 있다.
+  - 신청자가 그 번호·비밀번호로 로그인하면: 검토 중 403 `WAITLIST_PENDING_LOGIN_MESSAGE` · 반려 403 `waitlistRejectedMessage(사유)`. (비밀번호가 틀리면 여느 실패와 같은 401.) 승인되면 그대로 로그인된다.
+- **관리자**
+  - `GET /admin/waitlist` → `{ id, phone, purpose, status: "pending"|"approved"|"rejected", requestedAt, decidedAt?, parentId?, rejectReason? }[]`(신청순). `id` 는 전화번호가 아닌 식별자다.
+  - `POST /admin/waitlist/:id/approve` `{ parentId }` → 갱신된 항목. `parentId` 는 실제 회원이어야 한다(없으면 404). 신청 때의 해시로 사용자를 만들고 `invitedBy = parentId`. 검토 중이 아니면 409. 비밀번호 없이 접수된 옛 항목은 409.
+  - `POST /admin/waitlist/:id/reject` `{ reason }` → 갱신된 항목. 검토 중이 아니면 409.
+  - `GET /admin/users?q=` → 회원 목록, 항목에 `id, phone, name: string|null, invitedBy: string|null` (+ `role`, `tier`, `createdAt`). `q` 는 이름 부분 일치 · 전화번호 숫자 부분 일치.
+  - 승인·반려는 감사 로그에 남는다(`waitlist.approve …` · `waitlist.reject …`, 관리자 본인 것과 system 것).
+  - 기존 `POST /admin/invites` · `GET /admin/invites` 는 그대로 동작한다.
+- **가입 네트워크**
+  - `GET /network` → `{ root: NetworkNode, counts: { direct, total } }`,
+    `NetworkNode = { id, name: string|null, phone: string, status: "joined"|"invited", joinedAt: string|null, children: NetworkNode[] }`.
+  - 뿌리는 항상 부르는 사람이다. **아래로만** 내려간다 — 나를 들인 사람(위)·같은 사람이 들인 다른 사람(옆)은 응답 어디에도 없고, 다른 가지를 고르는 인자도 없다.
+  - 자식 = `invitedBy` 가 그 마디인 회원(가입순). 뿌리에는 내가 보낸 아직 가입 전인 초대가 `status: "invited"` 잎(`name: null`, `joinedAt: null`, `id` = 초대 id)으로 뒤에 붙는다.
+  - `phone` 은 내 바로 아래 단계까지만 그대로, 그보다 깊으면 가린 번호.
+  - `counts` 는 **가입한 회원만** 센다(`direct` = 바로 아래, `total` = 아래 전체). 초대 중인 잎은 세지 않는다.
+  - 회원이 탈퇴로 지워지면 그 아래 사람들은 한 단계 위 회원에게 붙는다.

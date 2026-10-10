@@ -502,3 +502,38 @@ export const PROPOSAL_DECISION_LABELS: Record<ProposalDecision, string> = {
   accept: "목표에 반영",
   hold: "보류",
 };
+
+// ---- 가입: 전화번호 초대 · 가입 신청 · 가입 네트워크 (마스터 2026-10-10) ----
+/** 가입 신청의 «사용 목적» 최소 글자 수(앞뒤 공백 제외) — 무엇을 어떻게 쓸지 구체적으로 받는다 */
+export const WAITLIST_PURPOSE_MIN = 30;
+export const WAITLIST_PURPOSE_MAX = 1000;
+export const INVITE_STATUSES = ["pending", "joined", "expired"] as const;
+export type InviteStatus = (typeof INVITE_STATUSES)[number];
+export const INVITE_STATUS_LABELS: Record<InviteStatus, string> = {
+  pending: "초대함",
+  joined: "가입함",
+  expired: "만료됨",
+};
+export const WAITLIST_STATUSES = ["pending", "approved", "rejected"] as const;
+export type WaitlistStatus = (typeof WAITLIST_STATUSES)[number];
+export const WAITLIST_STATUS_LABELS: Record<WaitlistStatus, string> = {
+  pending: "검토 중",
+  approved: "승인됨",
+  rejected: "반려됨",
+};
+export const NETWORK_NODE_STATUSES = ["joined", "invited"] as const;
+export type NetworkNodeStatus = (typeof NETWORK_NODE_STATUSES)[number];
+export const NETWORK_NODE_STATUS_LABELS: Record<NetworkNodeStatus, string> = {
+  joined: "가입함",
+  invited: "초대함",
+};
+// 서버가 내는 문구 — 화면도 같은 말을 쓴다
+export const INVITE_ALREADY_MEMBER_MESSAGE = "이미 가입한 번호입니다";
+export const INVITE_TAKEN_MESSAGE = "이미 다른 분이 초대한 번호입니다";
+export const INVITE_PHONE_MISMATCH_MESSAGE = "초대받은 전화번호와 다릅니다";
+export const WAITLIST_PURPOSE_MESSAGE = `무엇을 어떻게 쓰고 싶은지 ${WAITLIST_PURPOSE_MIN}자 이상으로 구체적으로 적어 주세요`;
+export const WAITLIST_ALREADY_PENDING_MESSAGE = "이미 가입 신청을 검토 중인 번호입니다";
+export const WAITLIST_PENDING_LOGIN_MESSAGE =
+  "가입 신청을 검토 중입니다 — 승인되면 이 번호와 비밀번호로 로그인할 수 있어요";
+export const waitlistRejectedMessage = (reason: string): string =>
+  `가입 신청이 반려되었습니다 — ${reason}`;

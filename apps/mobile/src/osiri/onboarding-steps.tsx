@@ -8,7 +8,7 @@ import { Button, ErrorNotice, Field, s, useAction } from "../ui";
 
 /** 온보딩 3단계: 1/3 계정 만들기 ✓ → 2/3 사무소 프로필 → 3/3 첫 목표 한 줄 */
 export const ONBOARDING_STEPS = [
-  { title: "계정 만들기", body: "초대 코드 · 전화번호 · 비밀번호" },
+  { title: "계정 만들기", body: "초대 링크 또는 초대 대기 신청 · 전화번호 · 비밀번호" },
   { title: "사무소 프로필", body: "이름 · 전문 분야 · 지역" },
   { title: "첫 목표 한 줄", body: "예: 상속 분야 GEO 선점" },
 ] as const;

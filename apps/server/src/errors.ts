@@ -8,6 +8,7 @@ export class AppError extends Error {
       | 403
       | 404
       | 409
+      | 410
       | 413
       | 422
       | 429

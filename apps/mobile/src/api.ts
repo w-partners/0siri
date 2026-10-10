@@ -12,13 +12,9 @@ export const API_URL = (
   process.env.EXPO_PUBLIC_API_URL ||
   (Platform.OS === "android" ? "http://10.0.2.2:8787" : "http://localhost:8787")
 ).replace(/\/$/, "");
-// 0Siri: 서버 주소는 로그인 화면에서 바꿀 수 있다(도메인 미정·실기기 테스트). 빈 값이면 빌드 기본값.
-let override = "";
+// 0Siri: 서버 주소는 빌드가 정한다 — 앱에서 바꾸는 화면은 없다(마스터 2026-10-10).
 export function apiBase() {
-  return override || API_URL;
-}
-export function setApiBase(url: string) {
-  override = url.trim().replace(/\/$/, "");
+  return API_URL;
 }
 
 export class MuseApi {

@@ -628,7 +628,6 @@ const settingsView = (
   tier: {
     label: tier.subscribed ? TEAM_TIER_LABEL : PERSONAL_TIER_LABEL,
     subscription: tier.subscription,
-    nextBillingAt: tier.nextBillingAt,
   },
   answerMode: settings.answerMode ?? ("auto" as AnswerMode),
   autoEconomy: settings.autoEconomy,

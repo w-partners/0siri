@@ -200,7 +200,10 @@ export async function createApp(
   app.route("/api/agent", agentRoutes(agent));
   app.route("/api/computer", computerRoutes(computer, files));
   // 0Siri 사용자 라우트 (S2~S11)
-  app.route("/api", privateAccountRoutes(accounts, config.publicUrl));
+  app.route(
+    "/api",
+    privateAccountRoutes(accounts, config.publicUrl, (owner, input) => rooms.audit(owner, input)),
+  );
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));

@@ -130,7 +130,7 @@ type Pkg = {
   conversionRate: number | null;
   runtime?: unknown;
 };
-type Card = Subscription & { paymentMethod: string | null; endsAt: string | null };
+type Card = Subscription & { endsAt: string | null };
 
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), "osiri-contract-account-"));
@@ -171,7 +171,10 @@ before(async () => {
     );
     await next();
   });
-  app.route("/api", privateAccountRoutes(accounts, "http://t"));
+  app.route(
+    "/api",
+    privateAccountRoutes(accounts, "http://t", (owner, input) => rooms.audit(owner, input)),
+  );
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", storeRoutes(catalog, accounts));
@@ -305,7 +308,7 @@ test("모델 키: 제공자마다 한 줄 · 검증을 통과한 뒤에만 교�
 test("설정: GET /settings 가 라우팅이 읽는 바로 그 기록이다 — 고정 모델·답변 방식이 배정을 바꾼다", async () => {
   const owner = as("settings-user");
   type Settings = {
-    tier: { label: string; subscription: string | null; nextBillingAt: string | null };
+    tier: { label: string; subscription: string | null };
     answerMode: string;
     autoEconomy: boolean;
     fixedModel: string | null;
@@ -315,7 +318,8 @@ test("설정: GET /settings 가 라우팅이 읽는 바로 그 기록이다 — 
   };
   const initial = await json<Settings>(call("/api/settings", owner));
   assert.deepEqual(initial, {
-    tier: { label: PERSONAL_TIER_LABEL, subscription: null, nextBillingAt: null },
+    // 결제는 앱에 넣지 않는다 — 다음 결제일(nextBillingAt)은 싣지 않는다 (deepEqual 이 없음을 강제한다)
+    tier: { label: PERSONAL_TIER_LABEL, subscription: null },
     answerMode: "auto",
     autoEconomy: true,
     fixedModel: null,
@@ -640,7 +644,7 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
   const subscribed = await call("/api/subscriptions", owner, { packageId: pkg.id });
   assert.equal(subscribed.status, 200);
   const { subscription, roomId } = await json<{ subscription: Card; roomId: string }>(subscribed);
-  assert.equal(subscription.paymentMethod, null);
+  assert.ok(!("paymentMethod" in subscription), "결제 수단 필드는 응답에 없다");
   assert.equal(subscription.endsAt, null);
   assert.deepEqual(
     ((p) => [p?.subscribed, p?.roomId])((await list()).find((p) => p.id === pkg.id)),
@@ -756,13 +760,9 @@ test("스토어: 목록 추가 필드 · 재구독 복원/새로 시작 · 이�
 
   // 설정 화면의 등급 줄이 구독을 따라간다
   const tier = (
-    await json<{ tier: { label: string; subscription: string; nextBillingAt: string } }>(
-      call("/api/settings", owner),
-    )
+    await json<{ tier: { label: string; subscription: string } }>(call("/api/settings", owner))
   ).tier;
-  assert.equal(tier.label, TEAM_TIER_LABEL);
-  assert.equal(tier.subscription, "contract-legal 팀");
-  assert.ok(Date.parse(tier.nextBillingAt) > Date.now());
+  assert.deepEqual(tier, { label: TEAM_TIER_LABEL, subscription: "contract-legal 팀" });
 });
 
 test("스토어: 등급이 모자라면 403 + kind: tier, 방·구독은 만들어지지 않는다", async () => {
@@ -878,28 +878,32 @@ test("MCP: 목록에 도구 수·위험도별 수 · 연결 시험은 저장하�
 });
 
 // ---------------------------------------------------------------- 로그인·온보딩
-test("초대 대기: 같은 번호는 한 번만 남고, 관리자만 본다", async () => {
+test("가입 신청: 같은 번호는 한 번만 남고, 관리자만 본다", async () => {
+  const purpose = "사무소 상담 기록을 정리하고 매주 블로그 초안을 받아 보려고 합니다";
   const post = (phone: unknown) =>
     app.request("/api/auth/waitlist", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify({ phone, password: "pass1234", purpose }),
     });
-  for (const phone of ["010-7777-0001", "01077770001", "+82 10 7777 0001"]) {
-    const response = await post(phone);
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true });
-  }
-  assert.equal((await post("01077770002")).status, 200);
+  const first = await post("010-7777-0001");
+  assert.equal(first.status, 201);
+  assert.deepEqual(await first.json(), { status: "pending" });
+  // 같은 번호(표기만 다름)는 검토 중이라 409
+  for (const phone of ["01077770001", "+82 10 7777 0001"])
+    assert.equal((await post(phone)).status, 409);
+  assert.equal((await post("01077770002")).status, 201);
   assert.equal((await post("12345")).status, 422);
   assert.equal((await post(undefined)).status, 422);
-  const list = await json<{ id: string; requestedAt: string }[]>(
+  const list = await json<{ id: string; phone: string; requestedAt: string }[]>(
     call("/api/admin/waitlist", as(adminId)),
   );
   assert.deepEqual(
-    list.map((w) => w.id),
+    list.map((w) => w.phone),
     ["01077770001", "01077770002"],
   );
+  // 식별자는 전화번호가 아니다 (주소·로그에 번호를 싣지 않는다)
+  assert.ok(list.every((w) => !/^01\d+$/.test(w.id)));
   assert.ok(list.every((w) => !Number.isNaN(Date.parse(w.requestedAt))));
   const user = await accounts.createUser({ phone: "01077770009", password: "1234" });
   assert.equal((await call("/api/admin/waitlist", as(user.id))).status, 403);

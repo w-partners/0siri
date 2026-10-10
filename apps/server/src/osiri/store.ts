@@ -71,13 +71,10 @@ export interface Subscription {
   dataRetainedUntil?: string; // 해지 후 30일 (§6.2, §15.4.5)
   /** 해지했을 때의 기간 말. 이 시각이 지나면 ended */
   endsAt?: string;
-  /** 결제 수단 표시 문구. 파일럿은 결제가 없어 비어 있다 */
-  paymentMethod?: string;
 }
-/** 응답 모양 — 없는 값은 빠뜨리지 않고 null 로 낸다 (계약: `paymentMethod`·`endsAt`). */
+/** 응답 모양 — 없는 값은 빠뜨리지 않고 null 로 낸다 (계약: `endsAt`). 결제는 앱에 넣지 않는다 — 결제 수단 필드는 없다. */
 export const subscriptionView = (s: Subscription) => ({
   ...s,
-  paymentMethod: s.paymentMethod ?? null,
   endsAt: s.endsAt ?? null,
 });
 export interface Provisioning {
@@ -425,14 +422,13 @@ export class Catalog {
     await this.rooms.patch(owner, subscription.roomId, { archived: false });
     return subscriptionView(updated);
   }
-  /** 설정 화면의 등급 줄: 지금 구독 중인 팀 이름들과 가장 가까운 다음 결제일. 구독이 없으면 둘 다 null. */
+  /** 설정 화면의 등급 줄: 지금 구독 중인 팀 이름들. 구독이 없으면 null. (결제는 앱에 넣지 않는다 — 결제일은 싣지 않는다) */
   async tierSummary(owner: string): Promise<{
     subscribed: boolean;
     subscription: string | null;
-    nextBillingAt: string | null;
   }> {
     const active = (await this.mine(owner)).filter((s) => s.status === "active");
-    if (active.length === 0) return { subscribed: false, subscription: null, nextBillingAt: null };
+    if (active.length === 0) return { subscribed: false, subscription: null };
     const names = await Promise.all(
       active.map(async (s) => {
         const pkg = await this.db.get<TeamPackage>("system", "packages", s.packageId);
@@ -445,7 +441,6 @@ export class Catalog {
     return {
       subscribed: true,
       subscription: names.join(" · "),
-      nextBillingAt: active.map((s) => s.nextBillingAt).sort()[0] ?? null,
     };
   }
   /** 내 구독 카드 (§6.2): 팀·요금제·다음 결제일·승인 대기·진척 */

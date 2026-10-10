@@ -6,6 +6,7 @@ import {
   Brain,
   LogOut,
   type LucideIcon,
+  Network,
   Plug,
   ShieldCheck,
   Sparkles,
@@ -26,7 +27,6 @@ import {
   type DeviceLayerState,
   EMBED_DOWNLOAD_MB,
   EMBED_DTYPE,
-  EMBED_MODEL_ID,
   EMBED_TOKENIZER_MB,
   FIXED_TIERS,
   MODEL_KEY_PROVIDER_LABELS,
@@ -36,11 +36,12 @@ import {
   RETENTION_DAYS,
   TIER_LABELS,
   USER_ROLE_LABELS,
-  USER_ROLES,
   type UserRole,
+  WAITLIST_STATUS_LABELS,
+  type WaitlistStatus,
 } from "../../../../packages/domain/src/osiri";
 import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
-import type { Invite, PublicUser } from "../../../server/src/osiri/accounts.ts";
+import type { Accounts, WaitlistView } from "../../../server/src/osiri/accounts.ts";
 import type { ModelKeyRow, Routing, SettingsView } from "../../../server/src/osiri/routing.ts";
 import {
   Button,
@@ -58,9 +59,18 @@ import {
 import { useWorkspace } from "../workspace";
 import { takeAuthIssues } from "./auth";
 import { Confirm, ConnectionsScreen, column, columns, Loaded, mono } from "./connections";
-import { deviceAvailable, embedOnDevice, measureDevice } from "./device-embed";
+import {
+  DOWNLOADS_ON_FIRST_USE,
+  deviceAvailable,
+  deviceModel,
+  measureDevice,
+  prepareDevice,
+  removeModel,
+} from "./device-embed";
+import { DeviceMemoryError } from "./device-embed.types";
 import { setCharacterPref } from "./eve";
 import { MemoryScreen } from "./memory";
+import { NetworkScreen } from "./network";
 import { OperatorScreen } from "./operator";
 import { SkillsScreen } from "./skills";
 import { Block, Choice, useAction, useLoad, won } from "./store";
@@ -69,15 +79,27 @@ import { deviceSearchOff, setDeviceSearchOff } from "./tier0";
 /** `GET /billing/usage` — 서버 `Routing.billing()`. percent 는 상한 대비 0~100, null = 측정 중 */
 type BillingUsage = Awaited<ReturnType<Routing["billing"]>>;
 type MonthUsage = Awaited<ReturnType<Routing["month"]>>;
+/** `GET /admin/users[?q=]` 항목 — 서버 `Accounts.listUsers()` (이름은 프로필의 표시 이름, 없으면 null) */
+type AdminUser = Awaited<ReturnType<Accounts["listUsers"]>>[number];
 
 // ---- 하위 화면 ----
-const SUBS = ["connections", "memory", "skills", "operator", "admin", "profile", "usage"] as const;
+const SUBS = [
+  "connections",
+  "memory",
+  "skills",
+  "network",
+  "operator",
+  "admin",
+  "profile",
+  "usage",
+] as const;
 type Sub = (typeof SUBS)[number];
 const isSub = (value: string | undefined): value is Sub => SUBS.some((sub) => sub === value);
 const SUB_TITLES: Record<Sub, string> = {
   connections: "연결",
   memory: "기억",
   skills: "스킬",
+  network: "초대 · 네트워크",
   operator: "운영자 콘솔",
   admin: "관리자",
   profile: "프로필",
@@ -100,8 +122,6 @@ function writeSub(sub: Sub | undefined) {
 }
 
 // ---- 기기 모델 2층 ----
-/** transformers.js 가 브라우저에 모델을 두는 캐시 이름 (device-embed.web.ts 가 그 라이브러리로 받는다) */
-const MODEL_CACHE = "transformers-cache";
 type LayerState = DeviceLayerState;
 const layerTint: Partial<Record<LayerState, string>> = {
   ready: colors.okBg,
@@ -112,9 +132,10 @@ const layerTint: Partial<Record<LayerState, string>> = {
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 // ponytail: 메모리 부족은 런타임이 던진 오류 문장으로만 가린다 — 런타임이 종류를 알려 주면 그걸로 바꾼다
 const isOutOfMemory = (e: unknown) =>
-  e instanceof RangeError || /out of memory|allocation failed|bad_alloc/i.test(reasonOf(e));
-const modelCached = async (cache: Cache) =>
-  (await cache.keys()).filter((request) => request.url.includes(EMBED_MODEL_ID));
+  e instanceof DeviceMemoryError ||
+  e instanceof RangeError ||
+  /out of memory|allocation failed|bad_alloc/i.test(reasonOf(e));
+const megabytes = (bytes: number) => Math.round(bytes / 1048576);
 
 const text = {
   back: "설정",
@@ -126,8 +147,6 @@ const text = {
   subscribed: (name: string) => `${name} 구독 중`,
   noSubscription: "구독 중인 팀이 없습니다",
   goStore: "스토어 보기",
-  nextBilling: "다음 결제일",
-  noBilling: "예정된 결제가 없습니다",
   modelTitle: "답변 방식 · 모델",
   answerMode: "답변 방식",
   answerModeHints: {
@@ -150,6 +169,10 @@ const text = {
     "작은 층을 지우면 이 기기의 기기 검색이 꺼지고, 기억 검색은 서버 임베딩으로 대체됩니다. [다시 켜기]를 누르기 전에는 모델을 다시 받지 않습니다. 이미 올라온 모델은 이 화면을 새로 고칠 때까지 메모리에 남습니다.",
   turnBackOn: "다시 켜기",
   cacheUnreadable: "이 환경은 모델 저장소를 조회할 수 없어 내려받았는지 확인하지 못합니다",
+  downloadProgress: (received: number, total: number) =>
+    `${megabytes(received)} / ${megabytes(total)}MB (${Math.floor((received / total) * 100)}%)`,
+  prepared: (loadMs: number, embedMs: number) =>
+    `모델 올리기 ${loadMs}ms · 문장 1개 ${embedMs}ms (이 기기 실측)`,
   smallStates: {
     unknown: "아직 확인하지 않았습니다",
     none: "내려받지 않았습니다 — 기억 검색은 서버 임베딩으로 합니다",
@@ -198,8 +221,9 @@ const text = {
     connections: "MCP 도구 · 모델 계정(내 API 키)",
     memory: "에이전트가 나에 대해 아는 사실 · 개인 스킬",
     skills: "스킬 초안 승인 · 버전",
+    network: "전화번호로 초대 · 내가 들인 사람들",
     operator: "패키지 버전 · 지표 · 공지",
-    admin: "초대 · 사용자 · 패키지 가격",
+    admin: "가입 신청 검토 · 사용자 · 패키지 가격",
     profile: "표시 이름 · 소개",
     usage: "호출 · 토큰 · 등급별",
   } satisfies Record<Sub, string>,
@@ -224,17 +248,33 @@ const text = {
   byokCalls: "내 계정(BYOK) 호출",
   times: (n: number) => `${n}회`,
   byTier: "등급별",
-  invite: "초대 만들기",
-  inviteUrl: "초대 링크",
-  inviteToken: "초대 토큰 (한 번만 표시됩니다)",
-  expires: "만료",
-  phoneOptional: "전화번호 (선택)",
-  invites: "초대 목록",
-  used: "사용됨",
-  unused: "미사용",
-  noInvites: "초대가 없습니다 — 위에서 초대를 만들면 여기에 보입니다",
+  // 관리자: 가입 신청(초대 대기) 검토 — 초대는 관리자도 «초대 · 네트워크» 에서 전화번호로 한다
+  waitlist: "가입 신청 검토",
+  noWaitlist:
+    "가입 신청이 없습니다 — 로그인 화면의 «초대 대기 신청» 으로 들어온 신청이 여기에 보입니다",
+  noPendingWaitlist: "검토를 기다리는 신청이 없습니다",
+  decided: "처리한 신청",
+  requested: (date: string) => `${date} 신청`,
+  purpose: "사용 목적",
+  noPurpose: "사용 목적이 없는 옛 신청입니다",
+  parent: "연결할 상위 회원",
+  parentHint: "이 신청자를 누구 아래에 붙일지 고릅니다. 승인하면 그 회원의 네트워크에 들어갑니다.",
+  parentSearch: "이름 또는 전화번호로 찾기",
+  search: "찾기",
+  searchRequired: "찾을 이름이나 전화번호를 입력해 주세요",
+  noHits: "찾은 회원이 없습니다 — 다른 이름이나 번호로 찾아 보세요",
+  change: "바꾸기",
+  approve: "승인",
+  approveBlocked: "상위 회원을 골라야 승인할 수 있습니다",
+  approved: (phone: string) => `${phone} 가입 신청을 승인했습니다`,
+  reject: "반려",
+  rejectReason: "반려 사유 (신청자가 로그인할 때 보게 됩니다)",
+  rejectBlocked: "반려 사유를 적어야 반려할 수 있습니다",
+  rejectConfirm: "반려 확정",
+  rejected: (phone: string) => `${phone} 가입 신청을 반려했습니다`,
+  rejectedWhy: (reason: string) => `반려 사유: ${reason}`,
   users: "사용자 목록",
-  noUsers: "사용자가 없습니다 — 초대를 수락한 사용자가 여기에 보입니다",
+  noUsers: "사용자가 없습니다 — 초대를 수락하거나 가입 신청이 승인된 사용자가 여기에 보입니다",
   prices: "패키지 가격",
   slug: "패키지 슬러그",
   price: "월 가격 (원, 0 = 무료)",
@@ -298,6 +338,8 @@ function SubScreen({
       return <MemoryScreen />;
     case "skills":
       return <SkillsScreen />;
+    case "network":
+      return <NetworkScreen />;
     case "operator":
       return <OperatorScreen />;
     case "admin":
@@ -363,12 +405,6 @@ function TierCard({ tier }: { tier: SettingsView["tier"] }) {
           <Chip tint={colors.accentSoft}>{tier.label}</Chip>
           <Text style={[s.text, { fontWeight: "600" }]}>
             {tier.subscription === null ? text.noSubscription : text.subscribed(tier.subscription)}
-          </Text>
-        </View>
-        <View style={s.between}>
-          <Text style={s.small}>{text.nextBilling}</Text>
-          <Text style={[s.text, mono]}>
-            {tier.nextBillingAt === null ? text.noBilling : dateLabel(tier.nextBillingAt)}
           </Text>
         </View>
         {tier.subscription === null && (
@@ -631,13 +667,12 @@ function DeviceCard() {
       setState("off");
       return;
     }
-    if (typeof caches === "undefined") {
-      setState("unknown");
-      setDetail(text.cacheUnreadable);
-      return;
-    }
-    const files = await modelCached(await caches.open(MODEL_CACHE));
-    setState(files.length > 0 ? "ready" : "none");
+    const model = await deviceModel();
+    setState(model.state);
+    if (model.state === "unknown") setDetail(text.cacheUnreadable);
+    else if (model.prepared)
+      setDetail(text.prepared(model.prepared.loadMs, model.prepared.embedMs));
+    else setDetail(model.reason ?? "");
   };
   const inspect = () => act.run(check);
   const turnBackOn = () =>
@@ -653,8 +688,12 @@ function DeviceCard() {
       setDetail("");
       setState("downloading");
       try {
-        await embedOnDevice(["상태 확인"], "query"); // 첫 호출이 모델을 내려받아 올린다
+        // 모델을 내려받아(네이티브는 진행률·이어 받기) 올리고, 문장 하나를 돌려 본다
+        const prepared = await prepareDevice(({ receivedBytes, totalBytes }) =>
+          setDetail(text.downloadProgress(receivedBytes, totalBytes)),
+        );
         setState("ready");
+        setDetail(prepared ? text.prepared(prepared.loadMs, prepared.embedMs) : "");
       } catch (e) {
         setState(isOutOfMemory(e) ? "oom" : "none");
         throw e; // 사유는 아래 ErrorNotice 에 보인다
@@ -663,13 +702,14 @@ function DeviceCard() {
   const remove = () =>
     act.run(async () => {
       // 먼저 «기기 검색 끔» 을 저장한다 — 저장에 실패하면 지우지 않고 사유를 보인다(지웠는데 다음 검색이 다시 받는 일이 없게)
-      setDeviceSearchOff(true);
-      const cache = await caches.open(MODEL_CACHE);
-      for (const request of await modelCached(cache)) await cache.delete(request);
+      // (네이티브는 [받기] 를 눌러야만 받으므로 꺼 둘 것이 없다 — 지우면 그대로 «미다운로드» 다)
+      if (DOWNLOADS_ON_FIRST_USE) setDeviceSearchOff(true);
+      await removeModel();
       setConfirming(false);
-      setState("off");
+      setDetail("");
+      setState(DOWNLOADS_ON_FIRST_USE ? "off" : "none");
     });
-  const canRemove = state === "ready" && typeof caches !== "undefined";
+  const canRemove = state === "ready";
   return (
     <View>
       <SectionHeading title={text.deviceTitle} />
@@ -826,6 +866,7 @@ const MENU: { sub: Sub; icon: LucideIcon }[] = [
   { sub: "connections", icon: Plug },
   { sub: "memory", icon: Brain },
   { sub: "skills", icon: Sparkles },
+  { sub: "network", icon: Network },
   { sub: "operator", icon: ShieldCheck },
   { sub: "admin", icon: UserCog },
   { sub: "profile", icon: User },
@@ -980,99 +1021,227 @@ function UsageDetail() {
   );
 }
 
-// ---- 하위: 관리자 (초대 · 사용자 · 패키지 가격) ----
+// ---- 하위: 관리자 (가입 신청 검토 · 사용자 · 패키지 가격) ----
+const waitlistTint: Record<WaitlistStatus, string> = {
+  pending: colors.accentSoft,
+  approved: colors.okBg,
+  rejected: colors.missBg,
+};
+// 표시 이름을 안 정한 회원은 번호만 보인다
+const userLabel = (user: AdminUser) =>
+  user.name === null ? user.phone : `${user.name} · ${user.phone}`;
+
+/** 가입 신청 한 건의 검토: 사용 목적 전문 → 상위 회원 고르기 → [승인] 또는 사유를 적고 [반려]. */
+function WaitlistPending({ item, onDecided }: { item: WaitlistView; onDecided: () => void }) {
+  const { api, notify } = useWorkspace();
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<AdminUser[]>();
+  const [parent, setParent] = useState<AdminUser>();
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const search = useAction();
+  const decide = useAction();
+  const find = () =>
+    search.run(async () => {
+      const query = q.trim();
+      if (!query) throw new Error(text.searchRequired);
+      setHits(await api.request<AdminUser[]>(`/api/admin/users?q=${encodeURIComponent(query)}`));
+    });
+  const approve = () =>
+    decide.run(async () => {
+      if (!parent) throw new Error(text.approveBlocked);
+      await api.request(`/api/admin/waitlist/${encodeURIComponent(item.id)}/approve`, {
+        parentId: parent.id,
+      });
+      notify(text.approved(item.phone));
+      onDecided();
+    });
+  const reject = () =>
+    decide.run(async () => {
+      await api.request(`/api/admin/waitlist/${encodeURIComponent(item.id)}/reject`, {
+        reason: reason.trim(),
+      });
+      notify(text.rejected(item.phone));
+      onDecided();
+    });
+  return (
+    <View style={{ gap: 10, paddingBottom: 14, borderBottomWidth: 1, borderColor: colors.line }}>
+      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+        <Text style={[s.text, mono, { fontWeight: "600" }]}>{item.phone}</Text>
+        <Chip tint={waitlistTint[item.status]}>{WAITLIST_STATUS_LABELS[item.status]}</Chip>
+        <Text style={s.small}>{text.requested(dateLabel(item.requestedAt))}</Text>
+      </View>
+      <Block title={text.purpose}>
+        {item.purpose ? (
+          <Text selectable style={s.text}>
+            {item.purpose}
+          </Text>
+        ) : (
+          <Text style={[s.small, { color: colors.warn }]}>{text.noPurpose}</Text>
+        )}
+      </Block>
+      <Block title={text.parent}>
+        {parent ? (
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Chip tint={colors.okBg}>{userLabel(parent)}</Chip>
+            <Button small disabled={decide.busy} onPress={() => setParent(undefined)}>
+              {text.change}
+            </Button>
+          </View>
+        ) : (
+          <>
+            <Text style={s.small}>{text.parentHint}</Text>
+            <Field
+              label={text.parentSearch}
+              value={q}
+              onChangeText={setQ}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              onSubmitEditing={() => void find()}
+            />
+            <ErrorNotice error={search.error} />
+            <Button small busy={search.busy} onPress={() => void find()}>
+              {text.search}
+            </Button>
+            {hits &&
+              (hits.length === 0 ? (
+                <Text style={s.small}>{text.noHits}</Text>
+              ) : (
+                <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                  {hits.map((user) => (
+                    <Choice
+                      key={user.id}
+                      label={userLabel(user)}
+                      selected={false}
+                      onPress={() => setParent(user)}
+                    />
+                  ))}
+                </View>
+              ))}
+          </>
+        )}
+      </Block>
+      <ErrorNotice error={decide.error} />
+      {rejecting ? (
+        <>
+          <Field
+            label={text.rejectReason}
+            value={reason}
+            onChangeText={setReason}
+            multiline
+            style={{ minHeight: 72 }}
+          />
+          {!reason.trim() && (
+            <Text style={[s.small, { color: colors.warn }]}>{text.rejectBlocked}</Text>
+          )}
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Button
+              small
+              danger
+              busy={decide.busy}
+              disabled={!reason.trim()}
+              onPress={() => void reject()}
+            >
+              {text.rejectConfirm}
+            </Button>
+            <Button small disabled={decide.busy} onPress={() => setRejecting(false)}>
+              {text.cancel}
+            </Button>
+          </View>
+        </>
+      ) : (
+        <>
+          {!parent && <Text style={[s.small, { color: colors.warn }]}>{text.approveBlocked}</Text>}
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Button
+              small
+              primary
+              busy={decide.busy}
+              disabled={!parent}
+              onPress={() => void approve()}
+            >
+              {text.approve}
+            </Button>
+            <Button small danger disabled={decide.busy} onPress={() => setRejecting(true)}>
+              {text.reject}
+            </Button>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+function WaitlistReview({ onDecided }: { onDecided: () => void }) {
+  const { api } = useWorkspace();
+  const waitlist = useLoad(() => api.request<WaitlistView[]>("/api/admin/waitlist"));
+  return (
+    <Card style={{ gap: 12 }}>
+      <Block title={text.waitlist}>
+        <Loaded state={waitlist}>
+          {(items) => {
+            const pending = items.filter((item) => item.status === "pending");
+            const decided = items.filter((item) => item.status !== "pending");
+            if (items.length === 0) return <Text style={s.small}>{text.noWaitlist}</Text>;
+            return (
+              <View style={{ gap: 14 }}>
+                {pending.length === 0 ? (
+                  <Text style={s.small}>{text.noPendingWaitlist}</Text>
+                ) : (
+                  pending.map((item) => (
+                    <WaitlistPending
+                      key={item.id}
+                      item={item}
+                      onDecided={() => {
+                        waitlist.retry();
+                        onDecided(); // 승인하면 사용자 목록에 한 명이 는다
+                      }}
+                    />
+                  ))
+                )}
+                {decided.length > 0 && (
+                  <Block title={text.decided}>
+                    {decided.map((item) => (
+                      <View key={item.id} style={{ gap: 2 }}>
+                        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                          <Text style={[s.text, mono]}>{item.phone}</Text>
+                          <Chip tint={waitlistTint[item.status]}>
+                            {WAITLIST_STATUS_LABELS[item.status]}
+                          </Chip>
+                          {item.decidedAt && (
+                            <Text style={s.small}>{dateLabel(item.decidedAt)}</Text>
+                          )}
+                        </View>
+                        {item.rejectReason && (
+                          <Text style={s.small}>{text.rejectedWhy(item.rejectReason)}</Text>
+                        )}
+                      </View>
+                    ))}
+                  </Block>
+                )}
+              </View>
+            );
+          }}
+        </Loaded>
+      </Block>
+    </Card>
+  );
+}
+
 function Admin() {
   const { api, notify } = useWorkspace();
-  const invites = useLoad(() => api.request<Invite[]>("/api/admin/invites"));
-  const users = useLoad(() => api.request<PublicUser[]>("/api/admin/users"));
+  const users = useLoad(() => api.request<AdminUser[]>("/api/admin/users"));
   const settings = useLoad(() =>
     api.request<{ settings: { id: string; value: unknown }[] }>("/api/admin/settings"),
   );
-  const [phone, setPhone] = useState("");
-  const [role, setRole] = useState<UserRole>("user");
-  const [issued, setIssued] = useState<{ token: string; url: string; expiresAt: number }>();
-  const inviteAct = useAction();
   const [slug, setSlug] = useState("");
   const [price, setPrice] = useState("");
   const priceAct = useAction();
   return (
     <View style={columns}>
       <View style={column}>
-        <Card style={{ gap: 12 }}>
-          <Block title={text.invite}>
-            <Field
-              label={text.phoneOptional}
-              keyboardType="phone-pad"
-              value={phone}
-              onChangeText={setPhone}
-            />
-            <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-              {USER_ROLES.map((r) => (
-                <Choice
-                  key={r}
-                  label={USER_ROLE_LABELS[r]}
-                  selected={role === r}
-                  onPress={() => setRole(r)}
-                />
-              ))}
-            </View>
-            <ErrorNotice error={inviteAct.error} />
-            <Button
-              small
-              primary
-              busy={inviteAct.busy}
-              onPress={() =>
-                inviteAct.run(async () => {
-                  setIssued(
-                    await api.request("/api/admin/invites", {
-                      ...(phone.trim() ? { phone: phone.trim() } : {}),
-                      role,
-                    }),
-                  );
-                  setPhone("");
-                  invites.retry();
-                })
-              }
-            >
-              {text.invite}
-            </Button>
-            {issued && (
-              <View style={{ gap: 4 }}>
-                {/* expo-clipboard 미설치 → 선택 가능한 텍스트로 둔다 (의도된 1회 노출) */}
-                <Text style={s.small}>{text.inviteToken}</Text>
-                <Text selectable style={[s.text, mono]}>
-                  {issued.token}
-                </Text>
-                <Text style={s.small}>{text.inviteUrl}</Text>
-                <Text selectable style={[s.text, mono]}>
-                  {issued.url}
-                </Text>
-                <Text style={s.small}>
-                  {text.expires} {dateLabel(new Date(issued.expiresAt).toISOString())}
-                </Text>
-              </View>
-            )}
-          </Block>
-        </Card>
-        <Card style={{ gap: 12 }}>
-          <Block title={text.invites}>
-            <Loaded state={invites}>
-              {(items) =>
-                items.length === 0 ? (
-                  <Text style={s.small}>{text.noInvites}</Text>
-                ) : (
-                  items.map((i) => (
-                    <Row
-                      key={i.id}
-                      label={`${i.phone ?? "—"} · ${USER_ROLE_LABELS[i.role]}`}
-                      value={`${i.usedBy ? text.used : text.unused} · ${text.expires} ${dateLabel(new Date(i.expiresAt).toISOString())}`}
-                    />
-                  ))
-                )
-              }
-            </Loaded>
-          </Block>
-        </Card>
+        <WaitlistReview onDecided={users.retry} />
       </View>
       <View style={column}>
         <Card style={{ gap: 12 }}>
@@ -1085,7 +1254,7 @@ function Admin() {
                   items.map((u) => (
                     <Row
                       key={u.id}
-                      label={u.phone}
+                      label={userLabel(u)}
                       value={`${USER_ROLE_LABELS[u.role]} · ${u.tier}`}
                     />
                   ))
