@@ -21,11 +21,12 @@ const LOOK: Record<
   { on: number; smile: number; x: number; y: number; tilt: number; work: number }
 > = {
   idle: { on: 0, smile: 0, x: 1, y: 1, tilt: 0, work: 0 },
-  listening: { on: 1, smile: 0, x: 1.12, y: 1.25, tilt: 0.7, work: 0 },
+  // 눈을 뜬 얼굴도 늘 웃는 눈 — 웃음 없는 큰 타원 눈은 귀엽지 않다(피커 #475)
+  listening: { on: 1, smile: 1, x: 1, y: 1.15, tilt: 0.7, work: 0 },
   thinking: { on: 1, smile: 1, x: 1.08, y: 1.35, tilt: 0, work: 1 },
   speaking: { on: 1, smile: 1, x: 1.08, y: 1.35, tilt: 0.25, work: 0 },
   happy: { on: 1, smile: 1, x: 1.15, y: 1.45, tilt: 0, work: 0 },
-  alert: { on: 1, smile: 0, x: 0.9, y: 1.45, tilt: 0, work: 0 },
+  alert: { on: 1, smile: 1, x: 1, y: 1.2, tilt: -0.5, work: 0 },
 };
 
 const spring = (v: Animated.Value, to: number) =>
