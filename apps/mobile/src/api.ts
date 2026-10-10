@@ -18,6 +18,15 @@ export function apiBase() {
   return API_URL;
 }
 
+// CopilotKit 폴리필(index.js)이 앱의 전역 fetch 를 XHR 로 바꾸는데, 빠른 응답에서 «완료»가 «헤더 받음»보다 먼저
+// 처리되면 200 을 «응답 없음» 으로 떨군다(피커 #473 «Network request … completed with status 200 but no response»).
+// 우리 요청은 스트리밍이 필요 없으니 원래 fetch 로 보낸다. 대화 스트리밍(CopilotKit)만 폴리필을 쓴다.
+export const plainFetch: typeof fetch = (input, init) =>
+  ((globalThis.fetch as { __originalFetch?: typeof fetch }).__originalFetch ?? globalThis.fetch)(
+    input,
+    init,
+  );
+
 export class MuseApi {
   constructor(readonly token: string) {}
   async request<T>(path: string, body?: unknown, method?: string): Promise<T> {
@@ -32,7 +41,7 @@ export class MuseApi {
         ms: Date.now() - t0,
         ...(error && { error }),
       });
-    const response = await fetch(`${apiBase()}${path}`, {
+    const response = await plainFetch(`${apiBase()}${path}`, {
       method: verb,
       headers: {
         Authorization: `Bearer ${this.token}`,
@@ -62,7 +71,7 @@ export class MuseApi {
 export async function createSession(
   accessKey?: string,
 ): Promise<{ token: string; mode: "sample" | "live" }> {
-  const response = await fetch(`${apiBase()}/api/session`, {
+  const response = await plainFetch(`${apiBase()}/api/session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ accessKey }),

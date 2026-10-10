@@ -6,7 +6,7 @@ import * as IntentLauncher from "expo-intent-launcher";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Platform, Text, View } from "react-native";
 import appJson from "../../app.json";
-import { apiBase } from "../api";
+import { apiBase, plainFetch } from "../api";
 import { Button, colors, s } from "../ui";
 
 type Latest = { version: string; url: string; sha256: string; size: number };
@@ -36,7 +36,7 @@ export function UpdateBanner() {
   const check = useCallback(async () => {
     if (Platform.OS !== "android") return;
     try {
-      const res = await fetch(`${apiBase()}/releases/latest.json`, { cache: "no-store" });
+      const res = await plainFetch(`${apiBase()}/releases/latest.json`, { cache: "no-store" });
       if (res.status === 404) return; // 릴리스를 안 내는 서버 — 기능 미구성이지 실패가 아니다
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const next = (await res.json()) as Latest;

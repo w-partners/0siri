@@ -10,6 +10,7 @@ import {
   embedQueryText,
   EMBED_MODEL_ID as MODEL,
 } from "../../../../packages/domain/src/osiri";
+import { plainFetch } from "../api";
 import {
   DeviceMemoryError,
   type DeviceModel,
@@ -84,7 +85,7 @@ export async function deviceModel(): Promise<DeviceModel> {
 // ---- 내려받기 ----
 /** 허브가 알려 주는 파일 크기 (받은 파일의 크기 검증·진행률·남은 공간 확인에 쓴다) */
 async function hubSizes(): Promise<Record<string, number>> {
-  const response = await fetch(`${HUB}/api/models/${MODEL}/tree/main?recursive=1`);
+  const response = await plainFetch(`${HUB}/api/models/${MODEL}/tree/main?recursive=1`);
   if (!response.ok) throw new Error(`허브 파일 목록을 받지 못했습니다 (HTTP ${response.status})`);
   const entries = (await response.json()) as { path: string; size: number }[];
   return Object.fromEntries(entries.map((entry) => [entry.path, entry.size]));

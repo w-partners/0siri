@@ -30,7 +30,7 @@ import {
 import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Accounts } from "../../../server/src/osiri/accounts.ts";
 import type { Room } from "../../../server/src/osiri/rooms.ts";
-import { apiBase, type MuseApi } from "../api";
+import { apiBase, type MuseApi, plainFetch } from "../api";
 import { ApiError, readApiPayload } from "../api-response";
 import { Button, Card, colors, ErrorNotice, Field, fonts, Skeleton, s, useWide } from "../ui";
 import {
@@ -435,7 +435,7 @@ type AuthResult = Awaited<ReturnType<Accounts["login"]>>;
 type InvitePreview = Awaited<ReturnType<Accounts["previewInvite"]>>;
 /** 실패는 ApiError(서버가 준 사유 문장 + 상태 코드)로 온다. */
 async function publicRequest<T>(path: string, body?: unknown) {
-  const response = await fetch(`${apiBase()}${path}`, {
+  const response = await plainFetch(`${apiBase()}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
