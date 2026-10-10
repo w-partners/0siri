@@ -18,6 +18,7 @@ import {
   publicUser,
 } from "./accounts.ts";
 import type { Otp } from "./otp.ts";
+import { modelsView } from "./routing.ts";
 
 type Env = { Variables: { owner: string } };
 
@@ -186,6 +187,11 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string, audi
   app.get("/admin/users", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
     return c.json(await accounts.listUsers(c.req.query("q")));
+  });
+  // 영시리가 지금 실제로 쓰는 서버 모델(등급별) — 라우팅이 읽는 바로 그 값(tierModels). 관리자만
+  app.get("/admin/models", async (c) => {
+    await accounts.requireRole(c.get("owner"), "admin");
+    return c.json(modelsView());
   });
   return app;
 }

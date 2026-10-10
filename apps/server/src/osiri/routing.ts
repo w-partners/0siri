@@ -148,6 +148,12 @@ export function tierModels(env = process.env) {
   return { 2: env.MODEL_TIER2 ?? base, 3: env.MODEL_TIER3 ?? base, 4: env.MODEL_TIER4 ?? base };
 }
 const tierEnvName = (tier: FixedTier) => `MODEL_TIER${tier}`;
+/** `GET /admin/models` 응답 — 관리자 화면이 이 타입을 가져다 쓴다 */
+export const modelsView = (env = process.env) => ({
+  tiers: tierModels(env),
+  unset: FIXED_TIERS.filter((t) => !env[tierEnvName(t)]).map(tierEnvName),
+});
+export type ModelsView = ReturnType<typeof modelsView>;
 /** "provider/model" 문자열의 제공자 → BYOK 계정 종류. 모르는 제공자면 undefined. */
 export function modelProvider(spec: string): Provider | undefined {
   const provider = spec

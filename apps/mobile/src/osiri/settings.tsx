@@ -45,7 +45,12 @@ import {
 } from "../../../../packages/domain/src/osiri";
 import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Accounts, WaitlistView } from "../../../server/src/osiri/accounts.ts";
-import type { ModelKeyRow, Routing, SettingsView } from "../../../server/src/osiri/routing.ts";
+import type {
+  ModelKeyRow,
+  ModelsView,
+  Routing,
+  SettingsView,
+} from "../../../server/src/osiri/routing.ts";
 import type { publicPackage } from "../../../server/src/osiri/store.ts";
 import appJson from "../../app.json";
 import {
@@ -1420,6 +1425,36 @@ function StoreRegister({ onRegistered }: { onRegistered: () => void }) {
   );
 }
 
+/** 영시리가 지금 쓰는 서버 모델 — `GET /api/admin/models`(서버 라우팅이 읽는 값 그대로). 웹·앱이 같은 서버라 같은 모델 */
+function ServerModels() {
+  const { api } = useWorkspace();
+  const models = useLoad(() => api.request<ModelsView>("/api/admin/models"));
+  return (
+    <Card style={{ gap: 8 }}>
+      <Block title="영시리 모델 (서버)">
+        <Loaded state={models}>
+          {(m) => (
+            <>
+              {FIXED_TIERS.map((t) => (
+                <Text key={t} style={s.text}>
+                  {TIER_LABELS[t]} · <Text style={mono}>{m.tiers[t] || "없음"}</Text>
+                </Text>
+              ))}
+              {m.unset.length > 0 && (
+                <Text style={s.small}>{m.unset.join("·")} 미설정 → 모두 기본 모델(MODEL)</Text>
+              )}
+              <Text style={s.small}>
+                답마다 아래 작은 글씨에 어느 등급이 답했는지 나온다 · 기기 대화 모델은 아직 꺼져
+                있다
+              </Text>
+            </>
+          )}
+        </Loaded>
+      </Block>
+    </Card>
+  );
+}
+
 function Admin({ meId }: { meId: string }) {
   const { api, notify } = useWorkspace();
   const users = useLoad(() => api.request<AdminUser[]>("/api/admin/users"));
@@ -1433,6 +1468,7 @@ function Admin({ meId }: { meId: string }) {
   return (
     <View style={columns}>
       <View style={column}>
+        <ServerModels />
         <WaitlistReview onDecided={users.retry} />
         <StoreRegister onRegistered={packages.retry} />
       </View>
