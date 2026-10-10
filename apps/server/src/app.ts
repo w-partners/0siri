@@ -40,14 +40,16 @@ import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
+import { OsiriMcp, osiriMcpRoutes, roomForThread, waitForApproval } from "./osiri/osiri-mcp.ts";
 import { otpGateway } from "./osiri/otp.ts";
 import { roomPersona } from "./osiri/persona.ts";
-import { roomRoutes, workerRoutes } from "./osiri/room-routes.ts";
+import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
 import { Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
+import { gatewayLlm } from "./osiri/team-runtime.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { SearchService } from "./search.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -86,10 +88,42 @@ export async function createApp(
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
   const feed = new Feed(db, new SearchService(db));
+  // 0Siri MCP — 구독 세션(그 사람 컨테이너·PC)에 밖에서 붙는 기억·도구. 승인은 앱 카드로
+  const osiriMcp = new OsiriMcp(db, { memories, mcp, approvals, rooms });
   const subscriptions = new Subscriptions(db, {
     dir: `${config.dataDir}/subscriptions`,
     ...(config.subscriptionImage ? { image: config.subscriptionImage } : {}),
+    gate: async (owner, ask) => {
+      const approval = await approvals.request(owner, {
+        roomId: await roomForThread(rooms, owner, ask.threadId),
+        toolName: `agent:${ask.kind}`,
+        input: ask.input,
+        title: ask.title,
+        summary: `${ask.actor} 이(가) 내 구독 작업 공간에서 하려는 일입니다 — 승인해야 진행됩니다`,
+        evidence: JSON.stringify(ask.input, null, 2)?.slice(0, 4000),
+        requestedBy: ask.actor,
+      });
+      return Boolean(await waitForApproval(approvals, owner, approval.id));
+    },
+    mcpServers: async (owner, threadId) => [
+      {
+        type: "http",
+        name: "0siri",
+        url: `${config.publicUrl.replace(/\/$/, "")}/api/mcp?thread=${encodeURIComponent(threadId)}`,
+        headers: [{ name: "Authorization", value: `Bearer ${await osiriMcp.tokenFor(owner)}` }],
+      },
+    ],
   });
+  // 팀 역할 모델: 구독을 켜 둔 사람은 그 구독 세션(역할마다 세션), 아니면 공용키
+  const teamLlm: TeamLlmFor = async (owner, team) => {
+    const sub = await subscriptions.activeFor(owner);
+    return sub ? subscriptions.teamLlm(owner, sub, team) : gatewayLlm();
+  };
+  const publish = process.env.OSIRI_PUBLISH?.split(":");
+  const publishTool =
+    publish?.length === 2
+      ? { serverId: publish[0] as string, tool: publish[1] as string }
+      : undefined;
   const osiri = {
     db,
     rooms,
@@ -103,6 +137,21 @@ export async function createApp(
     skills,
     feed,
     subscriptions,
+    osiriMcp,
+    operator,
+    teamLlm,
+    /** 방 하나의 팀 루프 (Provisioner 가 부른다) */
+    teamRuntime: (owner: string, roomId: string, packageId: string) =>
+      teamRuntime(
+        { db, rooms, approvals, bus, mcp, skills, catalog },
+        owner,
+        roomId,
+        packageId,
+        teamLlm,
+        {
+          ...(publishTool ? { publishTool } : {}),
+        },
+      ),
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   agent.osiri = { memories, routing, subscriptions };
@@ -204,6 +253,8 @@ export async function createApp(
       "content-disposition": 'attachment; filename="osiri-runner.mjs"',
     }),
   );
+  // 0Siri MCP 는 자기 열쇠로 인증한다(사용자 로그인 토큰이 아니다) — 인증 미들웨어보다 앞에
+  app.route("/api", osiriMcpRoutes(osiriMcp));
   app.route("/api/worker", workerRoutes(osiri));
   // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
   app.route("/api/worker", skillWorkerRoutes(skills));

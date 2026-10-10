@@ -4,7 +4,7 @@ import { runDocker } from "./computer.ts";
 import { readConfig } from "./config.ts";
 import { createStore } from "./db.ts";
 import { warmUp } from "./osiri/embeddings.ts";
-import { modelEnvFrom, Provisioner } from "./osiri/provisioner.ts";
+import { Provisioner } from "./osiri/provisioner.ts";
 
 const config = readConfig();
 const db = await createStore({
@@ -19,15 +19,17 @@ if (config.taskWorkerEnabled) {
   osiri.feed.start();
 }
 const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
+  runtime: osiri.teamRuntime,
   docker: runDocker,
-  apiUrl: config.publicUrl,
-  registryUrl: config.registryUrl,
-  modelEnv: modelEnvFrom(process.env),
 });
+// 쓰지 않는 구독 어댑터 프로세스·컨테이너를 정리한다(세션·로그인은 남아 다음 사용 때 이어진다)
+osiri.subscriptions.startReaper();
+// 구독자들의 반려 신호에서 팀 공통 스킬 초안을 찾아 운영자 콘솔에 올린다 (§17.1 → §17.2, 하루 한 번)
+osiri.operator.startSkillDiscovery();
 if (config.teamProvisionerEnabled) provisioner.start();
 else
   console.log(
-    "[osiri] 팀 프로비저너 꺼짐 (TEAM_PROVISIONER_ENABLED=false) — 구독해도 팀 워커 컨테이너가 뜨지 않고 큐에만 쌓입니다",
+    "[osiri] 팀 프로비저너 꺼짐 (TEAM_PROVISIONER_ENABLED=false) — 구독해도 팀 루프가 돌지 않고 큐에만 쌓입니다",
   );
 // 탈퇴 요청 후 보존 기간이 지난 계정을 지운다 (기동 직후 한 번 + 주기적으로). 지운 내용은 로그와 system 감사 로그에 남는다
 osiri.accounts.startPurgeSweep({

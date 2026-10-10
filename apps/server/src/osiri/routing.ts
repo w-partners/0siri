@@ -163,6 +163,8 @@ export function modelProvider(spec: string): Provider | undefined {
   if (provider === "gemini" || provider === "google-gemini") return "google";
   return MODEL_PROVIDERS.find((p) => p === provider);
 }
+/** "provider/model" 의 모델 ID — 게이트웨이에 보내는 이름(채팅 엔진 adapter 와 같은 규칙). 접두가 없으면 그대로 */
+export const modelId = (spec: string) => spec.trim().replace(/^[^/:]*[/:]/, "");
 // 단가 없는 모델은 모델마다 한 번만 알린다 (호출마다 찍으면 로그가 묻힌다)
 const warnedUnpriced = new Set<string>();
 /** 단가표(원/1M 토큰) — MODEL_PRICES_KRW='{"openai/gpt-5.5":{"in":2500,"out":10000}}'. 없으면 절감액은 "측정 중". */

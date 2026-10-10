@@ -62,12 +62,13 @@ test("server place cannot be activated without SUBSCRIPTION_IMAGE", async () => 
 });
 
 /** 가짜 PC 러너 — 서버가 «open» 하면 이 프로세스 안의 가짜 ACP 에이전트로 이어 준다 */
-async function fakeRunner(target: string, key: string, calls: string[]) {
+async function fakeRunner(target: string, key: string, calls: string[], seen: string[] = []) {
   const ws = new WebSocket(target);
   const agents = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
   ws.on("message", (raw) => {
     const msg = JSON.parse(String(raw));
     if (msg.t === "data") agents.get(msg.id)?.enqueue(new TextEncoder().encode(msg.d));
+    if (msg.t === "mkdir") calls.push(`mkdir ${msg.path}`);
     if (msg.t !== "open") return;
     calls.push("spawn");
     const input = new ReadableStream<Uint8Array>({ start: (c) => void agents.set(msg.id, c) });
@@ -79,8 +80,9 @@ async function fakeRunner(target: string, key: string, calls: string[]) {
       () => ({
         initialize: async () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} }),
         authenticate: async () => ({}),
-        newSession: async () => {
+        newSession: async ({ cwd, mcpServers }) => {
           calls.push("new");
+          seen.push(`${cwd} ${mcpServers.map((m) => m.name).join(",")}`);
           return { sessionId: `s${calls.length}` };
         },
         resumeSession: async ({ sessionId }) => {
@@ -91,6 +93,24 @@ async function fakeRunner(target: string, key: string, calls: string[]) {
         prompt: async ({ sessionId, prompt }) => {
           const text = prompt[0]?.type === "text" ? prompt[0].text : "";
           calls.push(`prompt ${sessionId} ${text}`);
+          if (text.includes("파일을 써")) {
+            const { outcome } = await agent.requestPermission({
+              sessionId,
+              toolCall: {
+                toolCallId: "w1",
+                title: "메모.md 쓰기",
+                kind: "edit",
+                rawInput: { path: "메모.md" },
+              },
+              options: [
+                { optionId: "yes", name: "허용", kind: "allow_once" },
+                { optionId: "no", name: "거절", kind: "reject_once" },
+              ],
+            });
+            calls.push(
+              `permission ${outcome.outcome === "selected" ? outcome.optionId : "cancelled"}`,
+            );
+          }
           await agent.sessionUpdate({
             sessionId,
             update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "답" } },
@@ -119,7 +139,7 @@ test("one ACP session per chat thread: kept across turns, resumed after a restar
       .ask(
         owner,
         prefs,
-        { threadId: "t1", opening: `OPEN ${latest}`, latest },
+        { threadId: "t1", brief: "B", opening: `OPEN ${latest}`, latest },
         (t) => (said += t),
         new AbortController().signal,
       )
@@ -161,4 +181,116 @@ test("subscription prompt carries recent turns and ends on the user's message", 
   assert.match(prompt, /^PERSONA/);
   assert.ok(prompt.endsWith("사용자: 둘째 질문"));
   assert.ok(!prompt.includes("{}"), "tool results are not replayed");
+});
+
+/** 옵션이 다른 Subscriptions 를 자기 HTTP 서버와 함께 띄운다 */
+async function standUp(options: Partial<ConstructorParameters<typeof Subscriptions>[1]> = {}) {
+  const s = new Subscriptions(db, { dir: join(directory, "subs"), ...options });
+  const http = createServer();
+  s.attach(http);
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  return {
+    s,
+    target: `ws://127.0.0.1:${(http.address() as AddressInfo).port}/api/subscription/runner`,
+    close: () => http.close(),
+  };
+}
+const collect = async (run: (onText: (t: string) => void) => Promise<unknown>) => {
+  let said = "";
+  const result = await run((t) => {
+    said += t;
+  });
+  return { result, said };
+};
+
+test("agent write/exec requests go to the app approval gate; no gate or a refusal means reject", async () => {
+  const owner = "user-e";
+  const prefs = await subs.update(owner, { active: true, place: "pc", provider: "claude" });
+  const asked: string[] = [];
+  let answer = true;
+  const { s, target, close } = await standUp({
+    gate: async (_owner, ask) => {
+      asked.push(
+        `${ask.actor} ${ask.threadId} ${ask.kind} ${ask.title} ${JSON.stringify(ask.input)}`,
+      );
+      return answer;
+    },
+  });
+  const calls: string[] = [];
+  const runner = await fakeRunner(target, await s.issueRunnerKey(owner), calls);
+  const turn = (latest: string) =>
+    s.ask(
+      owner,
+      prefs,
+      { threadId: "t-gate", brief: "B", opening: latest, latest },
+      () => {},
+      new AbortController().signal,
+    );
+  await turn("파일을 써 줘");
+  answer = false;
+  await turn("파일을 써 줘 다시");
+  assert.deepEqual(asked, [
+    '영시리 t-gate edit 메모.md 쓰기 {"path":"메모.md"}',
+    '영시리 t-gate edit 메모.md 쓰기 {"path":"메모.md"}',
+  ]);
+  assert.ok(calls.includes("permission yes") && calls.includes("permission no"));
+  runner.close();
+  close();
+
+  // 게이트가 없는 구성은 전부 거절(fail-closed)
+  const bare = await standUp();
+  const calls2: string[] = [];
+  const runner2 = await fakeRunner(bare.target, await bare.s.issueRunnerKey(owner), calls2);
+  await bare.s.ask(
+    owner,
+    prefs,
+    { threadId: "t-gate2", brief: "B", opening: "파일을 써", latest: "파일을 써" },
+    () => {},
+    new AbortController().signal,
+  );
+  assert.ok(calls2.includes("permission no"));
+  runner2.close();
+  bare.close();
+});
+
+test("team roles: one session per role in teams/<slug>, 0Siri MCP attached, new instructions announced", async () => {
+  const owner = "user-f";
+  const prefs = await subs.update(owner, { active: true, place: "pc", provider: "codex" });
+  const { s, target, close } = await standUp({
+    mcpServers: async (_owner, threadId) => [
+      { type: "http", name: "0siri", url: `https://x/api/mcp?thread=${threadId}`, headers: [] },
+    ],
+  });
+  const calls: string[] = [];
+  const seen: string[] = [];
+  const runner = await fakeRunner(target, await s.issueRunnerKey(owner), calls, seen);
+  const llm = s.teamLlm(owner, prefs, { roomId: "r1", slug: "legal-marketing" });
+  assert.equal(await llm("drafter", 3, "초안 담당", "글 1"), "답");
+  assert.equal(await llm("drafter", 3, "초안 담당", "글 2"), "답");
+  assert.equal(await llm("reviewer", 3, "검수 담당", "검토 1"), "답");
+  assert.equal(await llm("drafter", 3, "초안 담당 + 스킬", "글 3"), "답");
+  assert.deepEqual(calls, [
+    "spawn",
+    "mkdir teams/legal-marketing",
+    "new",
+    "prompt s3 초안 담당\n\n글 1",
+    "prompt s3 글 2",
+    "mkdir teams/legal-marketing",
+    "new",
+    "prompt s7 검수 담당\n\n검토 1",
+    "prompt s3 [지시가 바뀌었습니다 — 지금부터 아래 지시를 따른다]\n초안 담당 + 스킬\n\n글 3",
+  ]);
+  assert.deepEqual(seen, [
+    "/work/teams/legal-marketing 0siri",
+    "/work/teams/legal-marketing 0siri",
+  ]);
+  assert.ok(await db.get(owner, "subscriptionSessions", "team:r1:drafter"));
+
+  // 유휴 정리: 쓰지 않는 어댑터를 닫는다 → 다음 호출은 같은 세션을 resume
+  assert.deepEqual(await s.reap(Date.now() + 31 * 60_000), { adapters: 1, containers: 0 });
+  calls.length = 0;
+  assert.equal(await llm("drafter", 3, "초안 담당 + 스킬", "글 4"), "답");
+  assert.deepEqual(calls, ["spawn", "resume s3", "prompt s3 글 4"]);
+  runner.close();
+  close();
 });

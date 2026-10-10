@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // 0Siri 구독 러너 — 내 PC 의 ChatGPT·Claude 구독으로 영시리가 답하게 한다.
 // 이 PC 가 0Siri 서버로 «바깥으로» 접속한다(열리는 포트 없음). 서버가 대화 한 턴을 보내면
-// 이 PC 에서 ACP 어댑터를 띄워 그대로 이어 주고, 끝나면 닫는다. 로그인 정보는 이 PC 밖으로 나가지 않는다.
+// 이 PC 에서 ACP 어댑터를 띄워 그대로 이어 준다(대화방·팀 역할마다 세션이 이어진다). 로그인 정보는 이 PC 밖으로 나가지 않는다.
 //
 // 준비: Node 22 이상, 그리고 쓸 CLI 에 이 PC 에서 로그인해 두기
 //   ChatGPT 구독 → npm i -g @openai/codex && codex login
 //   Claude 구독  → npm i -g @anthropic-ai/claude-code && claude auth login
 // 실행: node osiri-runner.mjs <서버주소> <열쇠>     (앱 설정 › 모델 사용 › 내 PC 에서 이 줄을 복사)
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { relative, resolve } from "node:path";
 
 const [server, key] = process.argv.slice(2);
 if (!server || !key) {
@@ -60,6 +62,10 @@ function connect() {
         });
       });
       console.log(`[0Siri] 대화 한 턴 시작 (${msg.provider})`);
+    } else if (msg.t === "mkdir") {
+      // 팀 작업 폴더(teams/<팀>) — 이 폴더 밖은 만들지 않는다
+      const target = resolve(process.cwd(), String(msg.path));
+      if (!relative(process.cwd(), target).startsWith("..")) mkdirSync(target, { recursive: true });
     } else if (msg.t === "data") {
       children.get(msg.id)?.stdin.write(msg.d);
     } else if (msg.t === "close") {

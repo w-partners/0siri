@@ -56,9 +56,11 @@ export interface RoomDeps {
   /** 사용량 장부 — 타임라인의 «누가 답했는지» 출처 */
   routing?: Pick<Routing, "answers">;
   /** 스킬 — 결재함이 개인 스킬 초안을 승인 대기와 함께 낸다. 없는 구성에서는 스킬 초안이 결재함에 오지 않는다 */
-  skills?: Pick<Skills, "pendingDrafts">;
+  skills?: Pick<Skills, "pendingDrafts"> & Partial<Pick<Skills, "equipped">>;
   /** 목표 분해기. 안 주면 catalog 로 `teamDecomposer` 를 만든다 */
   decomposer?: GoalDecomposer;
+  /** 팀 역할 모델 선택(구독 세션 또는 공용키). 없으면 공용키 게이트웨이 */
+  teamLlm?: TeamLlmFor;
 }
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const stageSchema = z.enum(BOARD_STAGES);
@@ -115,52 +117,84 @@ async function holdStream(
   detach();
 }
 
+/** 팀 역할을 어느 모델로 돌릴지 — 그 사람이 구독을 켜 두었으면 그 구독 세션, 아니면 공용키 게이트웨이 */
+export type TeamLlmFor = (
+  owner: string,
+  team: { roomId: string; slug: string },
+) => Llm | Promise<Llm>;
+
+/**
+ * 방 하나의 팀 런타임을 서버 안에서 만든다. 워커 API 는 이 프로세스의 `workerRoutes` 를 직접 부른다(네트워크 없음).
+ * 모델은 부를 때마다 `llmFor` 로 고른다 — 구독을 켜고 끄면 다음 호출부터 바로 따른다.
+ */
+export async function teamRuntime(
+  deps: RoomDeps & { catalog: Pick<Catalog, "packageById"> },
+  owner: string,
+  roomId: string,
+  packageId: string,
+  llmFor: TeamLlmFor = () => gatewayLlm(),
+  options: { log?: (line: string) => void; publishTool?: { serverId: string; tool: string } } = {},
+) {
+  const origin = "http://osiri.internal";
+  const pkg = await deps.catalog.packageById(packageId);
+  const team = await loadTeam(pkg.runtime.teamYaml);
+  const slug = team.package.slug;
+  const worker = workerRoutes(deps);
+  worker.onError((error, c) =>
+    c.json(
+      { error: errorText(error) },
+      error instanceof AppError ? error.status : error instanceof z.ZodError ? 422 : 500,
+    ),
+  );
+  const token = await issueWorkerToken(deps.db, owner, roomId, packageId);
+  const runtime = new TeamRuntime({
+    apiUrl: origin,
+    workerToken: token,
+    team,
+    llm: async (...args) => (await llmFor(owner, { roomId, slug }))(...args),
+    fetchFn: async (input, init) => worker.request(String(input).slice(origin.length), init),
+    log: options.log ?? ((line) => console.log(`[team] room=${roomId}: ${line}`)),
+    maxPolls: 1,
+  });
+  return {
+    runtime,
+    tick: () => runtime.tick(options.publishTool),
+    weeklyReport: () => runtime.weeklyReport(),
+    // 이 런타임에만 쓴 워커 토큰은 남기지 않는다
+    close: () => deps.db.remove("system", "worker-tokens", sha(token)),
+  };
+}
+
 /**
  * 기본 목표 분해기: 그 방 팀의 팀장(root)에게 분해를 맡긴다 — 팀 런타임의 `decompose()` 를 서버 안에서 돌리고,
- * 결과는 워커 API(이 프로세스의 `workerRoutes`)로 등록한다. 등록된 단기 목표는 팀 워커의 다음 tick 이 집어 실행한다.
+ * 결과는 워커 API(이 프로세스의 `workerRoutes`)로 등록한다. 등록된 단기 목표는 팀 루프의 다음 tick 이 집어 실행한다.
  */
 export function teamDecomposer(
   deps: RoomDeps & { catalog: Pick<Catalog, "packageById"> },
-  llm: () => Llm = gatewayLlm,
+  llmFor: TeamLlmFor = () => gatewayLlm(),
 ): GoalDecomposer {
-  const origin = "http://osiri.internal";
   return async ({ owner, room, goal }) => {
-    if (room.packageId === null)
+    const packageId = room.packageId;
+    if (packageId === null)
       throw new AppError(
         "이 방에는 구독한 팀이 없어 목표를 나눌 수 없습니다. 팀을 구독한 방에서 시작하세요",
         422,
       );
-    const pkg = await deps.catalog.packageById(room.packageId);
-    let team: Awaited<ReturnType<typeof loadTeam>>;
-    let model: Llm;
+    // 분해할 수 있는가(팀 정의·모델)를 먼저 확인한다 — 못 하면 목표를 시작하지 않는다
     try {
-      team = await loadTeam(pkg.runtime.teamYaml);
-      model = llm();
+      const team = await loadTeam((await deps.catalog.packageById(packageId)).runtime.teamYaml);
+      await llmFor(owner, { roomId: room.id, slug: team.package.slug });
     } catch (error) {
       throw new AppError(`목표를 나눌 수 없습니다: ${errorText(error)}`, 503);
     }
-    const worker = workerRoutes(deps);
-    worker.onError((error, c) =>
-      c.json(
-        { error: errorText(error) },
-        error instanceof AppError ? error.status : error instanceof z.ZodError ? 422 : 500,
-      ),
-    );
     return async () => {
-      const token = await issueWorkerToken(deps.db, owner, room.id, room.packageId);
+      const team = await teamRuntime(deps, owner, room.id, packageId, llmFor, {
+        log: (line) => console.log(`[osiri] 목표 분해 room=${room.id}: ${line}`),
+      });
       try {
-        const runtime = new TeamRuntime({
-          apiUrl: origin,
-          workerToken: token,
-          team,
-          llm: model,
-          fetchFn: async (input, init) => worker.request(String(input).slice(origin.length), init),
-          log: (line) => console.log(`[osiri] 목표 분해 room=${room.id}: ${line}`),
-        });
-        return await runtime.decompose(goal.title, goal);
+        return await team.runtime.decompose(goal.title, goal);
       } finally {
-        // 이 분해에만 쓴 워커 토큰은 남기지 않는다
-        await deps.db.remove("system", "worker-tokens", sha(token));
+        await team.close();
       }
     };
   };
@@ -171,7 +205,7 @@ export function roomRoutes(deps: RoomDeps) {
   const { db, rooms, approvals, bus, routing } = deps;
   const catalog = deps.catalog;
   const decomposer =
-    deps.decomposer ?? (catalog ? teamDecomposer({ ...deps, catalog }) : undefined);
+    deps.decomposer ?? (catalog ? teamDecomposer({ ...deps, catalog }, deps.teamLlm) : undefined);
   // 현황판 역할 설명의 출처는 팀 패키지 역할표 하나다
   if (catalog) rooms.setRoleSource(async (id) => (await catalog.packageById(id)).roles);
   // 방 항목의 «타사 입점» 표기도 같은 패키지가 출처다
@@ -611,7 +645,7 @@ export async function issueWorkerToken(
 }
 
 /** 워커(도커 컨테이너) 라우트 — 워커 토큰으로 인증. /api/worker 에 마운트, 사용자 인증 미들웨어보다 앞에. */
-export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
+export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDeps) {
   type WorkerEnv = { Variables: { owner: string; roomId: string; packageId: string | null } };
   const app = new Hono<WorkerEnv>();
   app.use("*", async (c, next) => {
@@ -628,6 +662,10 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp }: RoomDeps) {
     c.set("packageId", grant.packageId);
     await next();
   });
+  // 그 방 팀이 장착한 스킬 — 팀 런타임이 역할 지시에 붙인다. 스킬 저장소가 없는 구성이면 장착된 것도 없다
+  app.get("/skills/active", async (c) =>
+    c.json(skills?.equipped ? await skills.equipped(c.get("owner"), c.get("roomId")) : []),
+  );
   // external 실행 보류 → 승인 카드
   app.post("/approvals/request", async (c) => {
     const body = z

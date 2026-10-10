@@ -26,6 +26,7 @@ import {
 } from "../../../../packages/domain/src/osiri.ts";
 import { runDocker } from "../computer.ts";
 import type { Store } from "../db.ts";
+import type { Llm } from "./team-runtime.ts";
 
 export interface SubscriptionPrefs {
   id: "subscription";
@@ -64,6 +65,8 @@ interface AcpPipe {
   output: ReadableStream<Uint8Array>;
   /** 에이전트가 세션을 열 작업 폴더(에이전트 쪽 절대경로) */
   cwd: string;
+  /** cwd 아래 하위 폴더를 만든다(팀 폴더) */
+  mkdir(relative: string): Promise<void>;
   close(): void;
 }
 
@@ -117,6 +120,8 @@ class Runner {
     send({ t: "open", id, provider });
     return {
       cwd: this.cwd,
+      // 러너가 메시지를 순서대로 처리하므로 이어지는 session/new 보다 먼저 만들어진다
+      mkdir: async (path) => send({ t: "mkdir", path }),
       output,
       input: new WritableStream<Uint8Array>({
         write: (chunk) => send({ t: "data", id, d: decoder.decode(chunk, { stream: true }) }),
@@ -141,8 +146,21 @@ export class Subscriptions {
       dir: string;
       /** SUBSCRIPTION_IMAGE — 없으면 서버 구독은 꺼져 있다(PC 러너만 가능) */
       image?: string;
+      /**
+       * 에이전트의 쓰기·명령 요청을 앱 승인 카드로 묻는다(승인 게이트는 컨테이너 밖). 없으면 전부 거절(fail-closed).
+       * true = 사용자가 승인
+       */
+      gate?: (owner: string, request: PermissionAsk) => Promise<boolean>;
+      /** 세션에 붙일 MCP 서버(0Siri MCP — 기억·우리 도구). 세션을 열거나 다시 붙일 때마다 부른다 */
+      mcpServers?: (owner: string, threadId: string) => Promise<acp.McpServer[]>;
+      /** 이만큼 쓰지 않은 어댑터 프로세스를 닫는다(세션은 디스크에 남아 다음 턴에 resume) */
+      idleAdapterMs?: number;
+      /** 이만큼 쓰지 않은 서버 구독 컨테이너를 멈춘다(볼륨·로그인은 남는다 — 다음 사용 때 다시 뜬다) */
+      idleContainerMs?: number;
     },
   ) {}
+  /** 컨테이너 이름 → 마지막 사용 시각 (유휴 정리용) */
+  private readonly used = new Map<string, number>();
 
   async prefs(owner: string): Promise<SubscriptionPrefs> {
     return (
@@ -189,6 +207,7 @@ export class Subscriptions {
     const image = this.options.image;
     if (!image) throw new Error("서버 구독 실행이 설정되어 있지 않습니다 (SUBSCRIPTION_IMAGE)");
     const name = this.container(owner);
+    this.used.set(name, Date.now());
     const state = await this.docker(["inspect", "-f", "{{.State.Running}}", name]);
     if (state.ok && state.out.trim() === "true") return name;
     if (state.ok) await this.docker(["rm", "-f", name]);
@@ -340,7 +359,7 @@ export class Subscriptions {
     });
   }
 
-  // ---- 중개: ACP 한 턴 ----
+  // ---- 중개: ACP 연결 ----
   private async pipe(owner: string, prefs: SubscriptionPrefs): Promise<AcpPipe> {
     if (prefs.place === "pc") {
       const runner = this.runners.get(owner);
@@ -363,13 +382,17 @@ export class Subscriptions {
     });
     return {
       cwd: "/home/agent",
+      mkdir: async (relative) => {
+        const r = await this.docker(["exec", name, "mkdir", "-p", `/home/agent/${relative}`]);
+        if (!r.ok) throw new Error(`작업 폴더를 만들지 못했습니다: ${r.err}`);
+      },
       input: Writable.toWeb(child.stdin as Writable) as WritableStream<Uint8Array>,
       output: Readable.toWeb(child.stdout as Readable) as ReadableStream<Uint8Array>,
       close: () => child.kill(),
     };
   }
 
-  /** 사람마다 살아 있는 ACP 연결 하나(wgolf-acp-test 의 aoe acp-runner 와 같은 모양). 대화방마다 세션 하나 */
+  /** 사람마다 살아 있는 ACP 연결 하나(wgolf-acp-test 의 aoe acp-runner 와 같은 모양). 대화방·팀 역할마다 세션 하나 */
   private readonly live = new Map<string, Promise<Live>>();
 
   private async connect(owner: string, prefs: SubscriptionPrefs): Promise<Live> {
@@ -384,10 +407,33 @@ export class Subscriptions {
     const opening = (async () => {
       const pipe = await this.pipe(owner, prefs);
       const listeners = new Map<string, (text: string) => void>();
+      const contexts = new Map<string, { threadId: string; actor: string }>();
       const conn = new acp.ClientSideConnection(
         () => ({
-          // 승인 게이트는 컨테이너 밖이다 — 파일 쓰기·명령 실행 요청은 v1 에서 전부 거절한다(fail-closed)
-          requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+          // 승인 게이트는 컨테이너 밖이다 — 쓰기·명령 요청은 앱 승인 카드로 묻고, 물을 수 없으면 거절(fail-closed)
+          requestPermission: async ({ sessionId, toolCall, options }) => {
+            const context = contexts.get(sessionId);
+            const allow = options.find((o) => o.kind === "allow_once");
+            const reject = options.find((o) => o.kind === "reject_once");
+            const refuse = reject
+              ? { outcome: { outcome: "selected" as const, optionId: reject.optionId } }
+              : { outcome: { outcome: "cancelled" as const } };
+            if (!context || !allow || !this.options.gate) return refuse;
+            const approved = await this.options
+              .gate(owner, {
+                ...context,
+                title: toolCall.title ?? "에이전트 작업",
+                kind: toolCall.kind ?? "other",
+                input: toolCall.rawInput ?? null,
+              })
+              .catch((error: unknown) => {
+                console.error(`[osiri] 구독 승인 게이트 실패: ${(error as Error).message}`);
+                return false;
+              });
+            return approved
+              ? { outcome: { outcome: "selected" as const, optionId: allow.optionId } }
+              : refuse;
+          },
           // 지금 답을 기다리는 세션의 글자만 흘린다(세션을 다시 붙일 때 되풀이되는 옛 기록은 버린다)
           sessionUpdate: async ({ sessionId, update }) => {
             if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text")
@@ -397,7 +443,16 @@ export class Subscriptions {
         acp.ndJsonStream(pipe.input, pipe.output),
       );
       await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
-      const live: Live = { key, pipe, conn, listeners, sessions: new Map() };
+      const live: Live = {
+        key,
+        pipe,
+        conn,
+        listeners,
+        contexts,
+        sessions: new Map(),
+        busy: 0,
+        lastUsed: Date.now(),
+      };
       void conn.closed.finally(() => {
         if (this.live.get(owner) === opening) this.live.delete(owner);
       });
@@ -411,28 +466,57 @@ export class Subscriptions {
   }
 
   /**
-   * 한 턴. 대화방(threadId)마다 ACP 세션 하나를 끝까지 이어 쓴다 — 첫 턴에만 페르소나·이전 대화를 싣고
-   * 그 뒤로는 새 사용자 말만 보낸다. 프로세스가 내려갔다 오면 저장해 둔 세션 ID 로 resume 한다.
+   * 한 턴. 대화방(threadId)마다 ACP 세션 하나를 끝까지 이어 쓴다 — 처음 열 때만 `opening`(지시 + 이전 대화),
+   * 그 뒤로는 새 말(`latest`)만 보낸다. 지시(`brief`)가 바뀌었으면 그 턴에 새 지시를 앞에 붙인다.
+   * 프로세스가 내려갔다 오면 저장해 둔 세션 ID 로 resume 한다. `folder` 는 작업 폴더(cwd 아래, 예: teams/legal).
    */
   async ask(
     owner: string,
     prefs: SubscriptionPrefs,
-    turn: { threadId: string; opening: string; latest: string },
+    turn: {
+      threadId: string;
+      brief: string;
+      opening: string;
+      latest: string;
+      folder?: string;
+      actor?: string;
+    },
     onText: (text: string) => void,
     signal: AbortSignal,
-  ): Promise<{ session: "live" | "resumed" | "new" | "rebuilt"; resumeError?: string }> {
+  ): Promise<{ session: SessionState; resumeError?: string }> {
     const live = await this.connect(owner, prefs);
+    live.busy++;
+    live.lastUsed = Date.now();
+    try {
+      return await this.turn(owner, live, turn, onText, signal);
+    } finally {
+      live.busy--;
+      live.lastUsed = Date.now();
+      if (prefs.place === "server") this.used.set(this.container(owner), Date.now());
+    }
+  }
+
+  private async turn(
+    owner: string,
+    live: Live,
+    turn: Parameters<Subscriptions["ask"]>[2],
+    onText: (text: string) => void,
+    signal: AbortSignal,
+  ): Promise<{ session: SessionState; resumeError?: string }> {
+    const cwd = turn.folder ? `${live.pipe.cwd}/${turn.folder}` : live.pipe.cwd;
+    const briefHash = sha(turn.brief);
     let sessionId = live.sessions.get(turn.threadId);
-    let session: "live" | "resumed" | "new" | "rebuilt" = "live";
+    let session: SessionState = "live";
     let resumeError: string | undefined;
+    let stored = await this.db.get<StoredSession>(owner, SESSIONS, turn.threadId);
     if (!sessionId) {
-      const stored = await this.db.get<StoredSession>(owner, SESSIONS, turn.threadId);
+      const mcpServers = (await this.options.mcpServers?.(owner, turn.threadId)) ?? [];
       if (stored && stored.key === live.key) {
         try {
           await live.conn.resumeSession({
             sessionId: stored.sessionId,
             cwd: stored.cwd,
-            mcpServers: [],
+            mcpServers,
           });
           sessionId = stored.sessionId;
           session = "resumed";
@@ -443,19 +527,23 @@ export class Subscriptions {
         }
       } else session = "new";
       if (!sessionId) {
-        sessionId = (await live.conn.newSession({ cwd: live.pipe.cwd, mcpServers: [] })).sessionId;
-        await this.db.put(owner, SESSIONS, {
-          id: turn.threadId,
-          key: live.key,
-          sessionId,
-          cwd: live.pipe.cwd,
-        } satisfies StoredSession);
+        if (turn.folder) await live.pipe.mkdir(turn.folder);
+        sessionId = (await live.conn.newSession({ cwd, mcpServers })).sessionId;
+        stored = { id: turn.threadId, key: live.key, sessionId, cwd, briefHash };
+        await this.db.put(owner, SESSIONS, stored);
       }
       live.sessions.set(turn.threadId, sessionId);
     }
-    const text = session === "live" || session === "resumed" ? turn.latest : turn.opening;
+    const fresh = session === "new" || session === "rebuilt";
+    let text = fresh ? turn.opening : turn.latest;
+    if (!fresh && stored?.briefHash !== briefHash) {
+      // 지시가 바뀌었다(페르소나 수정·스킬 장착) — 세션은 잇고 새 지시를 알린다
+      text = `[지시가 바뀌었습니다 — 지금부터 아래 지시를 따른다]\n${turn.brief}\n\n${turn.latest}`;
+      if (stored) await this.db.put(owner, SESSIONS, { ...stored, briefHash });
+    }
     const id = sessionId;
     live.listeners.set(id, onText);
+    live.contexts.set(id, { threadId: turn.threadId, actor: turn.actor ?? "영시리" });
     const cancel = () => void live.conn.cancel({ sessionId: id }).catch(() => {});
     signal.addEventListener("abort", cancel, { once: true });
     try {
@@ -466,8 +554,108 @@ export class Subscriptions {
     }
     return { session, ...(resumeError ? { resumeError } : {}) };
   }
+
+  /**
+   * 팀 역할을 그 사람 구독으로 돌리는 모델 함수 — 역할마다 세션 하나(`team:<방>:<역할>`), 작업 폴더 `teams/<팀>`.
+   * 팀 지시문(system)은 서버에서 세션으로 보내는 프롬프트일 뿐, 그 사람 쪽에 파일로 깔리지 않는다.
+   */
+  teamLlm(owner: string, prefs: SubscriptionPrefs, team: { roomId: string; slug: string }): Llm {
+    return async (role, _tier, system, user) => {
+      let out = "";
+      await this.ask(
+        owner,
+        prefs,
+        {
+          threadId: `team:${team.roomId}:${role}`,
+          brief: system,
+          opening: `${system}\n\n${user}`,
+          latest: user,
+          folder: `teams/${team.slug.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+          actor: role,
+        },
+        (t) => {
+          out += t;
+        },
+        AbortSignal.timeout(20 * 60_000),
+      );
+      if (!out.trim())
+        throw new Error(`내 구독(${prefs.provider})이 빈 답을 돌려주었습니다 (역할 ${role})`);
+      return out;
+    };
+  }
+
+  /** 유휴 정리: 쓰지 않는 어댑터 프로세스를 닫고, 오래 쓰지 않은 서버 구독 컨테이너를 멈춘다 */
+  async reap(now = Date.now()) {
+    const adapterMs = this.options.idleAdapterMs ?? 30 * 60_000;
+    const containerMs = this.options.idleContainerMs ?? 6 * 3600_000;
+    let adapters = 0;
+    let containers = 0;
+    for (const [owner, opening] of this.live) {
+      const live = await opening.catch(() => undefined);
+      if (live && live.busy === 0 && now - live.lastUsed > adapterMs) {
+        this.live.delete(owner);
+        live.pipe.close();
+        adapters++;
+      }
+    }
+    if (!this.options.image) return { adapters, containers };
+    const ps = await this.docker([
+      "ps",
+      "--filter",
+      "label=osiri.role=subscription",
+      "--format",
+      "{{.Names}}",
+    ]);
+    if (!ps.ok) {
+      console.error(`[osiri] 구독 컨테이너 목록을 읽지 못했습니다: ${ps.err}`);
+      return { adapters, containers };
+    }
+    for (const name of ps.out.split("\n").filter(Boolean)) {
+      // 서버가 다시 떴으면 기록이 없다 — 지금부터 센다
+      const last = this.used.get(name) ?? (this.used.set(name, now), now);
+      if (now - last <= containerMs) continue;
+      if (await this.inUse(name)) continue;
+      const stop = await this.docker(["stop", "-t", "10", name]);
+      if (stop.ok) {
+        this.used.delete(name);
+        containers++;
+      } else console.error(`[osiri] 구독 컨테이너를 멈추지 못했습니다 ${name}: ${stop.err}`);
+    }
+    return { adapters, containers };
+  }
+  private async inUse(name: string) {
+    for (const [owner, opening] of this.live) {
+      if (this.container(owner) !== name) continue;
+      const live = await opening.catch(() => undefined);
+      if (live?.key.endsWith(":server")) return true;
+    }
+    return false;
+  }
+  startReaper(intervalMs = 5 * 60_000) {
+    const timer = setInterval(
+      () =>
+        void this.reap().then(
+          (r) =>
+            (r.adapters || r.containers) &&
+            console.log(`[osiri] 구독 유휴 정리: 어댑터 ${r.adapters} · 컨테이너 ${r.containers}`),
+          (error: Error) => console.error(`[osiri] 구독 유휴 정리 실패: ${error.message}`),
+        ),
+      intervalMs,
+    );
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
 }
 
+type SessionState = "live" | "resumed" | "new" | "rebuilt";
+/** 에이전트가 앱 승인을 구하는 작업 하나 */
+export interface PermissionAsk {
+  threadId: string;
+  actor: string;
+  title: string;
+  kind: string;
+  input: unknown;
+}
 const SESSIONS = "subscriptionSessions";
 /** 대화방 → ACP 세션. 세션 기록 자체는 CLI 가 그 사람 홈(컨테이너 볼륨·본인 PC)에 남긴다 */
 interface StoredSession {
@@ -475,13 +663,18 @@ interface StoredSession {
   key: string;
   sessionId: string;
   cwd: string;
+  /** 세션에 마지막으로 알린 지시(페르소나·역할 지시)의 해시 — 바뀌면 다음 턴에 새 지시를 붙인다 */
+  briefHash?: string;
 }
 interface Live {
   key: string;
   pipe: AcpPipe;
   conn: acp.ClientSideConnection;
   listeners: Map<string, (text: string) => void>;
+  contexts: Map<string, { threadId: string; actor: string }>;
   sessions: Map<string, string>;
+  busy: number;
+  lastUsed: number;
 }
 
 export function subscriptionRoutes(subs: Subscriptions) {

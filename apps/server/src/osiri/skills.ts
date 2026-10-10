@@ -280,6 +280,12 @@ export class Skills {
       .map((s) => ({ ...publicSkill(s), ...(s.reason ? { reason: s.reason } : {}) }))
       .sort(newestFirst);
   }
+  /** 그 방 팀이 지금 장착한 스킬 — 켜져 있는 활성 스킬만 (팀 런타임이 역할 지시에 붙인다) */
+  async equipped(owner: string, roomId: string): Promise<Skill[]> {
+    return (await this.listForUser(owner, { roomId })).filter(
+      (s) => (s.status === "active" || s.status === "retire_proposed") && s.enabled,
+    );
+  }
   /** 한 패키지의 공통 스킬 (운영자 콘솔). 소유 확인은 호출자(Operator)가 먼저 한다. */
   async packageSkills(packageId: string): Promise<Skill[]> {
     return (await this.packageSkillsStored(packageId)).map(publicSkill).sort(newestFirst);

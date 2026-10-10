@@ -107,8 +107,10 @@ const text = {
   measuring: "측정 중",
   metricsNote: "집계만 보여요. 사용자의 원본 데이터는 열람할 수 없어요.",
   queueEmpty: "승인할 스킬 초안이 없습니다",
-  queueEmptyDetail: "팀이 패키지 공통 스킬 초안을 내면 여기에 올라와요. 승인해야 팀에 장착돼요.",
+  queueEmptyDetail:
+    "여러 구독자에게서 같은 종류의 반려가 반복되면 하루 한 번 공통 스킬 초안이 올라와요. 반려 문장은 오지 않아요. 승인해야 팀에 장착돼요.",
   refresh: "새로 고침",
+  discover: "지금 찾기",
   notice: "공지 내용",
   noticeHint: "구독자 방에 올라갈 공지를 적어 주세요",
   publish: "공지 발행",
@@ -271,6 +273,12 @@ function PackagePanel({
       await api.request("/api/operator/rollback", { packageId: pkg.id });
       setConfirming(false);
       reloadVersions();
+    });
+  const discover = () =>
+    act.run(async () => {
+      await api.request("/api/operator/skills/discover", { packageId: pkg.id });
+      queue.setData(await api.request<Skill[]>(`/api/operator/skills?${q}`));
+      onChanged();
     });
   const publish = () =>
     act.run(async () => {
@@ -438,8 +446,8 @@ function PackagePanel({
   ) : queue.data.length === 0 ? (
     <Card>
       <Empty icon={Check} title={text.queueEmpty} detail={text.queueEmptyDetail}>
-        <Button small onPress={queue.retry}>
-          {text.refresh}
+        <Button small onPress={discover}>
+          {text.discover}
         </Button>
       </Empty>
     </Card>

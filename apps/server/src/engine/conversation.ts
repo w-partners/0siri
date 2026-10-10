@@ -473,6 +473,7 @@ export class ConversationAgent extends AbstractAgent {
                 sub,
                 {
                   threadId: input.threadId,
+                  brief: subscriptionPrompt(persona, []),
                   opening: subscriptionPrompt(persona, input.messages),
                   latest: latestText,
                 },
@@ -670,8 +671,15 @@ export function subscriptionPrompt(
     .slice(-20);
   return [
     persona ?? "너는 영시리(0Siri), 이 사람의 개인 에이전트다. 한국어로 간결하게 답한다.",
-    "아래는 최근 대화다. 마지막 «사용자» 말에만 답하라. 파일을 쓰거나 명령을 실행하지 마라 — 허용되지 않는다.",
-    "",
-    ...turns.map((m) => `${m.who}: ${m.text}`),
+    "이 사람에 대한 기억은 0siri 도구(memory_search·memory_save)로 찾고 남긴다 — 기억은 서버 한 곳에 있다.",
+    "파일 쓰기·명령 실행은 사용자가 앱에서 승인해야 진행된다. 연결된 서비스는 0siri 의 tools_list·tool_call 로 쓴다.",
+    ...(turns.length
+      ? [
+          "",
+          "아래는 이 대화방의 이전 대화다. 마지막 «사용자» 말에 답하라.",
+          "",
+          ...turns.map((m) => `${m.who}: ${m.text}`),
+        ]
+      : []),
   ].join("\n");
 }

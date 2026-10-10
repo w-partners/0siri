@@ -257,9 +257,10 @@ test("#3 프로비저너 — 방 조회가 404 가 아닌 오류로 실패하면
   } as unknown as Rooms;
   const logs: string[] = [];
   const provisioner = new Provisioner(db, flaky, new Catalog(db, rooms), {
+    runtime: async () => {
+      throw new Error("이 테스트는 루프를 띄우지 않는다");
+    },
     docker,
-    apiUrl: "http://127.0.0.1:1",
-    modelEnv: {},
     log: (line) => logs.push(line),
   });
   assert.equal((await provisioner.drainOnce()).stopped, 1);

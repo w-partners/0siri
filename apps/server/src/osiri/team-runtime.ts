@@ -1,5 +1,6 @@
 // 0Siri 팀 런타임 (0SIRI-SPEC §7, §8, §15.3, §15.4, §22-8).
-// 사용자별 워커 컨테이너 안에서 돈다. DB 직접 접근 금지 — 0Siri 워커 API 로만 말한다 (§15.4-6).
+// 0Siri 서버 안에서 방마다 돈다(Provisioner). 모델 호출만 밖으로 — 그 사람 구독 세션(ACP) 또는 공용키 게이트웨이.
+// DB 직접 접근 금지 — 0Siri 워커 API 로만 말한다 (§15.4-6). 팀 정의(지시문)는 서버를 떠나지 않는다.
 // 흐름: 목표 분해(팀장) → 감지 → 초안 → GEO → 검수 → [승인 대기] → 발행 → 주간 보고. 유일한 정지점은 발행 전 승인.
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
@@ -8,7 +9,7 @@ import {
   REJECT_REASON_KINDS,
   type WorkerPresenceState,
 } from "../../../../packages/domain/src/osiri.ts";
-import { tierModels } from "./routing.ts";
+import { modelId, tierModels } from "./routing.ts";
 
 export interface TeamAgent {
   title: string;
@@ -131,7 +132,17 @@ export class TeamRuntime {
     const agent = this.options.team.agents[role];
     if (!agent) throw new Error(`역할 없음: ${role}`);
     const tier = agent["x-osiri-tier"] ?? 3;
-    return this.options.llm(role, tier, `${agent.description}\n\n${agent.instruction}`, user);
+    // 장착된 스킬(운영자가 승인한 팀 공통 + 그 사람이 승인한 개인)을 역할 지시에 붙인다 (§17.2-4)
+    const skills = await this.api<{ name: string; appliesTo: string }[]>("/skills/active");
+    const equipped = skills.length
+      ? `\n\n[장착된 스킬]\n${skills.map((s) => `- ${s.name}: ${s.appliesTo}`).join("\n")}`
+      : "";
+    return this.options.llm(
+      role,
+      tier,
+      `${agent.description}\n\n${agent.instruction}${equipped}`,
+      user,
+    );
   }
 
   /**
@@ -438,37 +449,73 @@ export function tickInterval(raw = process.env.TEAM_INTERVAL_MS): number {
   return interval;
 }
 
-/** OpenAI 호환 게이트웨이 호출 (new-api 등). 모델은 티어별 환경변수. */
-export function gatewayLlm(env = process.env): Llm {
+/**
+ * 공용키 게이트웨이 호출 (new-api 등). 모델은 티어별 환경변수.
+ * 영시리 대화와 같은 규칙: OPENAI_CHAT_COMPLETIONS=true 일 때만 /chat/completions, 아니면 Responses + stream
+ * (codex 채널은 Responses 스트림만 받는다 — /chat/completions 는 500, 피커 #475).
+ */
+export function gatewayLlm(env = process.env, fetchFn: typeof fetch = fetch): Llm {
   const base = env.OPENAI_BASE_URL;
   const key = env.OPENAI_API_KEY;
   if (!base || !key)
     throw new Error("OPENAI_BASE_URL / OPENAI_API_KEY 가 없어 팀 런타임을 시작할 수 없습니다");
   const models = tierModels(env);
+  const chat = env.OPENAI_CHAT_COMPLETIONS === "true";
   return async (_role, tier, system, user) => {
-    const response = await fetch(`${base}/chat/completions`, {
+    const model = modelId(models[tier]);
+    const response = await fetchFn(`${base}/${chat ? "chat/completions" : "responses"}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,
         "User-Agent": "0siri-team-runtime",
       },
-      body: JSON.stringify({
-        model: models[tier],
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
-      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify(
+        chat
+          ? {
+              model,
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content: user },
+              ],
+            }
+          : {
+              model,
+              instructions: system,
+              // codex 채널은 문자열 input 을 거절한다(«Input must be a list», 실측) — 메시지 목록으로
+              input: [{ role: "user", content: user }],
+              stream: true,
+              store: false,
+            },
+      ),
+      signal: AbortSignal.timeout(180_000),
     });
     if (!response.ok)
       throw new Error(`gateway ${response.status}: ${(await response.text()).slice(0, 200)}`);
-    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-    const content = data.choices?.[0]?.message?.content;
+    let content: string | undefined;
+    if (chat) {
+      const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+      content = data.choices?.[0]?.message?.content;
+    } else {
+      // SSE: response.output_text.delta 를 이어 붙인다. 실패 이벤트는 숨기지 않는다
+      content = "";
+      for (const line of (await response.text()).split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        let event: { type?: string; delta?: string; response?: { error?: { message?: string } } };
+        try {
+          event = JSON.parse(line.slice(5));
+        } catch {
+          continue;
+        }
+        if (event.type === "response.output_text.delta") content += event.delta ?? "";
+        if (event.type === "response.failed" || event.type === "error")
+          throw new Error(
+            `gateway 응답 실패 (model=${model}): ${event.response?.error?.message ?? line.slice(5, 200)}`,
+          );
+      }
+    }
     // 빈 답을 "" 로 넘기면 뒤에서 "JSON 이 아닙니다" 로만 보인다 — 여기서 원인을 밝힌다
-    if (!content?.trim())
-      throw new Error(`gateway 가 빈 응답을 돌려주었습니다 (model=${models[tier]})`);
+    if (!content?.trim()) throw new Error(`gateway 가 빈 응답을 돌려주었습니다 (model=${model})`);
     return content;
   };
 }

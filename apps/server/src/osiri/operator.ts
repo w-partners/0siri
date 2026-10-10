@@ -193,6 +193,18 @@ function parseSource(input: VersionSource): VersionSource {
   return { ...(imageDigest ? { imageDigest } : {}), ...(mcpUrl ? { mcpUrl } : {}) };
 }
 
+/** 스킬 발견 기준: 최근 30일, 같은 사유 3건 이상 · 2명 이상 (한 사람의 취향은 개인 기억으로 간다 — §17.4) */
+const DISCOVER_WINDOW_MS = 30 * 86_400_000;
+const DISCOVER_MIN_REJECTS = 3;
+const DISCOVER_MIN_PEOPLE = 2;
+/** 사유 종류별 «조이는» 점검 — 완화하는 문장은 없다 (§17.3) */
+const TIGHTEN: Record<RejectReasonKind, string> = {
+  tone: "승인을 요청하기 전에 문체·톤이 이 팀의 기준(정중함·과장 금지·전문가 어조)에 맞는지 다시 점검하고, 고친 곳을 검수 메모에 남긴다.",
+  fact: "사실·수치·인용은 출처(조문·판례·공식 자료의 원문 링크)를 붙여 확인된 것만 쓴다. 확인 못 한 문장은 [확인 필요]로 표시하고 승인을 요청하지 않는다.",
+  topic:
+    "초안을 쓰기 전에 주제가 사용자가 정한 목표·관심 범위 안인지 확인하고, 벗어나면 쓰지 않고 목표를 먼저 묻는다.",
+};
+
 export class Operator {
   private readonly checks: Record<ReviewItem, ReviewCheck>;
   private readonly probeMcp: (url: string) => Promise<number>;
@@ -498,6 +510,73 @@ export class Operator {
     return this.skills.decideAsOperator(userId, skillId, decision, reason);
   }
 
+  /**
+   * 신호 → 팀 공통 스킬 초안 (§17.1 수집 → §17.2 발견·초안). 구독자 전원의 결재 반려를 사유 종류로 모아,
+   * 같은 사유가 여러 사람에게서 반복되면 «검수 보강» 초안을 운영자 콘솔에 올린다. 장착은 운영자 승인 뒤에만.
+   * 사용자가 쓴 반려 문장·대화·파일은 쓰지 않는다 — 종류별 건수와 사람 수만. 기준을 «조이는» 초안만 낸다(§17.3).
+   */
+  async discoverSkills(packageId: string, now = Date.now()): Promise<{ drafted: string[] }> {
+    const since = new Date(now - DISCOVER_WINDOW_MS).toISOString();
+    const tally = new Map<RejectReasonKind, { rejects: number; people: Set<string> }>();
+    const subscribers = await this.subscribers(packageId);
+    for (const { owner, roomId } of subscribers)
+      for (const approval of await this.db.listByField<Approval>(
+        owner,
+        "approvals",
+        "roomId",
+        roomId,
+      )) {
+        if (approval.status !== "rejected" || !approval.reasonKind) continue;
+        if ((approval.decidedAt ?? "") < since) continue;
+        const entry = tally.get(approval.reasonKind) ?? { rejects: 0, people: new Set<string>() };
+        entry.rejects++;
+        entry.people.add(owner);
+        tally.set(approval.reasonKind, entry);
+      }
+    const existing = await this.skills.packageSkills(packageId);
+    const drafted: string[] = [];
+    for (const [kind, { rejects, people }] of tally) {
+      if (rejects < DISCOVER_MIN_REJECTS || people.size < DISCOVER_MIN_PEOPLE) continue;
+      const name = `검수 보강: ${REJECT_REASON_LABELS[kind]}`;
+      // 운영자가 이미 보고 있거나(초안) 쓰고 있거나 거절한 같은 이름이면 다시 내지 않는다 — 폐기된 것만 다시 제안
+      if (existing.some((s) => s.name === name && s.status !== "retired")) continue;
+      const first = subscribers[0] as { owner: string; roomId: string };
+      await this.skills.draft(
+        "system",
+        { roomId: first.roomId, packageId },
+        {
+          scope: "package",
+          name,
+          evidence: `최근 ${DISCOVER_WINDOW_MS / 86_400_000}일 «${REJECT_REASON_LABELS[kind]}» 반려 ${rejects}건 · 구독자 ${people.size}명 (반려 문장은 모으지 않음)`,
+          appliesTo: TIGHTEN[kind],
+          proposedBy: "signal",
+        },
+      );
+      drafted.push(name);
+    }
+    if (drafted.length)
+      console.log(`[osiri] 스킬 발견 package=${packageId}: ${drafted.join(", ")}`);
+    return { drafted };
+  }
+  /** 운영자 콘솔 «지금 찾기» — 자기 패키지만 */
+  async discoverSkillsAsOperator(userId: string, packageId: string) {
+    await this.requirePackage(userId, packageId);
+    return this.discoverSkills(packageId);
+  }
+  /** 매일 모든 패키지에서 찾는다 (기동 직후 한 번 + 주기) */
+  startSkillDiscovery(intervalMs = 24 * 3600_000) {
+    const run = async () => {
+      for (const pkg of await this.db.list<TeamPackage>("system", "packages"))
+        await this.discoverSkills(pkg.id).catch((error: Error) =>
+          console.error(`[osiri] 스킬 발견 실패 package=${pkg.id}: ${error.message}`),
+        );
+    };
+    void run().catch((error: Error) => console.error(`[osiri] 스킬 발견 실패: ${error.message}`));
+    const timer = setInterval(() => void run().catch(() => undefined), intervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
   // ---- 공지 ----
   /** 이 패키지 구독자 방마다 시스템 메시지로 공지한다. 못 보낸 방은 숨기지 않고 수로 돌려준다. */
   async notice(userId: string, packageId: string, text: string) {
@@ -573,6 +652,10 @@ export function operatorRoutes(operator: Operator) {
   app.get("/operator/skills", async (c) =>
     c.json(await operator.packageSkills(c.get("owner"), packageId(c.req.query("package_id")))),
   );
+  app.post("/operator/skills/discover", async (c) => {
+    const body = z.object({ packageId: z.string().min(1) }).parse(await c.req.json());
+    return c.json(await operator.discoverSkillsAsOperator(c.get("owner"), body.packageId));
+  });
   app.post("/operator/skills/:id/decide", async (c) => {
     const body = z
       .object({
