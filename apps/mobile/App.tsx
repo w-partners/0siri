@@ -5,14 +5,15 @@ import { StatusBar } from "expo-status-bar";
 import {
   Bell,
   Check,
+  ClipboardList,
+  Clock,
   Images,
-  Inbox,
   Lightbulb,
   type LucideIcon,
   Menu,
   MessageSquare,
+  Newspaper,
   Settings,
-  Sparkles,
   Store,
   Target,
   X,
@@ -30,15 +31,19 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { Section, Workspace } from "../../packages/domain/src";
+import { isHomeRoom } from "../../packages/domain/src/osiri";
 import { AgentWorkspaceProvider } from "./src/agent-workspace";
 import { apiBase, MuseApi } from "./src/api";
 import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
 import { AuthScreens, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
+import { AutomationScreen } from "./src/osiri/automation";
 import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
+import { FeedScreen } from "./src/osiri/feed";
 import { InboxScreen } from "./src/osiri/inbox";
 import {
   LiveChip,
+  NewRoomForm,
   type Room,
   type RoomFocus,
   RoomList,
@@ -58,34 +63,56 @@ import { ThreadsProvider } from "./src/threads";
 import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, Sheet, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
-type Tab = "rooms" | "inbox" | "skills" | "ideas" | "goals" | "media" | "store" | "settings";
+type Tab =
+  | "rooms"
+  | "feed"
+  | "ideas"
+  | "goals"
+  | "media"
+  | "inbox"
+  | "store"
+  | "automation"
+  | "settings";
 type StoreTab = "explore" | "mine";
 const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
-  { id: "rooms", label: "대화", icon: MessageSquare },
-  { id: "inbox", label: "피드", icon: Inbox },
-  { id: "skills", label: "스킬", icon: Sparkles },
+  { id: "rooms", label: "SI에이전트", icon: MessageSquare },
+  { id: "feed", label: "피드", icon: Newspaper },
   { id: "ideas", label: "아이디어", icon: Lightbulb },
   { id: "goals", label: "목표", icon: Target },
   { id: "media", label: "미디어", icon: Images },
+  { id: "inbox", label: "보고", icon: ClipboardList },
   { id: "store", label: "스토어", icon: Store },
+  { id: "automation", label: "자동화", icon: Clock },
   { id: "settings", label: "설정", icon: Settings },
 ];
-/** 하단 탭 6개 (Muse 하단 5 + 스킬 승인) · 나머지는 ≡ 메뉴 */
-const nav = tabs.filter((t) => !["store", "settings"].includes(t.id));
-const menu = tabs.filter((t) => ["store", "settings"].includes(t.id));
+/** 하단 탭 6개 (마스터 2026-10-10: SI에이전트 · 피드 · 아이디어 · 목표 · 미디어 · 보고) · 나머지는 ≡ 사이드 메뉴 */
+const menuIds: Tab[] = ["store", "automation", "settings"];
+const nav = tabs.filter((t) => !menuIds.includes(t.id));
+const menu = tabs.filter((t) => menuIds.includes(t.id));
 // 웹 사이드바 아래 진입 3개 (기획 화면 2). 채팅은 방 목록이, 목표는 방 안 상단 탭이 맡는다
-const sideNav: Tab[] = ["inbox", "skills", "ideas", "goals", "media", "store", "settings"];
+const sideNav: Tab[] = [
+  "feed",
+  "ideas",
+  "goals",
+  "media",
+  "inbox",
+  "store",
+  "automation",
+  "settings",
+];
 const titles: Record<Tab, string> = {
   rooms: "내 팀",
   store: "스토어",
-  inbox: "피드 · 결재함",
-  skills: "스킬 · 승인",
+  feed: "피드",
+  inbox: "보고 · 활동 · 결재함",
   ideas: "아이디어",
+  automation: "자동화",
   goals: "목표",
   media: "미디어 · 파일",
   settings: "설정",
 };
 const text = {
+  skillIdeas: "스킬화 제안",
   loading: "0Siri 를 여는 중…",
   retry: "다시 시도",
   dismiss: "닫기",
@@ -102,6 +129,7 @@ const legacy: Partial<Record<Section, Tab>> = {
   activity: "inbox",
   connections: "settings",
   apps: "settings",
+  skills: "ideas", // v0.8 의 스킬 탭은 아이디어 안으로 들어갔다
 };
 const isTab = (value: string): value is Tab => tabs.some((item) => item.id === value);
 
@@ -246,7 +274,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   // 방 목록은 rooms.tsx 의 한 벌을 본다 (사이드바·탭 배지·홈 채팅·딥링크가 같은 값)
   const { rooms, error: roomsError } = useRooms();
   // 기본 채팅 = 개인 방(영시리). 서버가 /api/rooms 호출 때 없으면 만든다
-  const personal = rooms?.find((r) => r.packageId === null);
+  const personal = rooms?.find(isHomeRoom);
   const pending = rooms?.reduce((sum, r) => sum + r.pendingApprovals, 0) ?? 0; // 탭 배지
   const [skipOnboarding, setSkipOnboarding] = useState(false);
   const [detail, setDetail] = useState<Detail>();
@@ -271,7 +299,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
-    if (rooms && !rooms.some((r) => r.packageId === null)) setError(text.noPersonal);
+    if (rooms && !rooms.some(isHomeRoom)) setError(text.noPersonal);
   }, [rooms]);
   // 열려 있는 방의 배지·상태도 목록이 바뀌면 따라간다
   useEffect(() => {
@@ -440,12 +468,20 @@ function Shell({
       <StoreScreen tab={storeTab} onTab={setStoreTab} onOpenRoom={openRoomById} />
     ) : tab === "inbox" ? (
       <InboxScreen onOpenRoom={openRoomById} />
-    ) : tab === "skills" ? (
-      <SkillsScreen />
+    ) : tab === "feed" ? (
+      <FeedScreen onOpenRoom={openRoomById} />
+    ) : tab === "automation" ? (
+      <AutomationScreen />
+    ) : tab === "ideas" ? (
+      <View style={{ gap: 18 }}>
+        <RoomScopedScreen kind="ideas" />
+        <Text style={s.heading}>{text.skillIdeas}</Text>
+        <SkillsScreen />
+      </View>
     ) : tab === "goals" ? (
       <TeamGoalsScreen onOpenRoom={openRoomById} />
-    ) : tab === "ideas" || tab === "media" ? (
-      <RoomScopedScreen kind={tab} />
+    ) : tab === "media" ? (
+      <RoomScopedScreen kind="media" />
     ) : tab === "settings" ? (
       <SettingsScreen onLogout={onLogout} />
     ) : (
@@ -596,6 +632,21 @@ function Shell({
         {!!toast && <Toast message={toast} bottom={94} onClose={clearToast} />}
         {menuOpen && (
           <Sheet title={text.menu} onClose={() => setMenuOpen(false)}>
+            {/* Muse 사이드 메뉴처럼: 맨 위에 대화방 (새 대화방 + 목록), 아래에 스토어 · 자동화 · 설정 */}
+            <NewRoomForm
+              onCreated={(next) => {
+                setMenuOpen(false);
+                openRoom(next);
+              }}
+            />
+            <RoomList
+              activeId={room?.id ?? personal?.id}
+              onOpen={(next, nextFocus) => {
+                setMenuOpen(false);
+                openRoom(next, nextFocus);
+              }}
+            />
+            <View style={{ height: 1, backgroundColor: colors.line, marginVertical: 8 }} />
             {menu.map((item) => (
               <Pressable
                 key={item.id}

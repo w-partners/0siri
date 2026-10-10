@@ -13,7 +13,11 @@ const db = await createStore({
 });
 await db.recoverInterruptedActions();
 const { app, agent, osiri } = await createApp(db, config);
-if (config.taskWorkerEnabled) agent.start();
+// 작업 워커와 함께 피드 관심 프롬프트도 주기적으로 돈다 (자동화 화면의 크론)
+if (config.taskWorkerEnabled) {
+  agent.start();
+  osiri.feed.start();
+}
 const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
   docker: runDocker,
   apiUrl: config.publicUrl,

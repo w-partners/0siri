@@ -554,3 +554,16 @@ export const SKILL_SIMILARITY_MIN = 0.82;
 /** 한 번에 훑는 최근 요청 수 */
 export const SKILL_SCAN_LIMIT = 200;
 export const SKILL_REPEAT_PREFIX = "반복 요청: ";
+
+/**
+ * 영시리 홈 방 = 패키지 없고 주제방이 아닌 방 하나. 주제방(사용자가 «새 대화방»으로 연 방)도 패키지가 없으므로
+ * «packageId === null» 만으로 홈을 고르면 주제방이 홈으로 잡힌다 — 이 판정 하나만 쓴다.
+ */
+export const isHomeRoom = (room: { packageId: string | null; topic?: boolean }) =>
+  room.packageId === null && !room.topic;
+/** 대화방 이름 길이 상한 */
+export const ROOM_TITLE_MAX = 40;
+/** 피드: 관심 프롬프트 기본 주기(시간) · 사람당 개수 · 한 번에 싣는 새 글 수 */
+export const FEED_EVERY_HOURS = 12;
+export const FEED_PROMPT_MAX = 10;
+export const FEED_RESULTS_PER_RUN = 5;

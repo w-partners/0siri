@@ -20,6 +20,7 @@ import {
   PROPOSAL_DECISIONS,
   REJECT_REASON_KINDS,
   REVIEW_ESCALATION_THRESHOLD,
+  ROOM_TITLE_MAX,
   WORKER_PRESENCE_STATES,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
@@ -182,6 +183,27 @@ export function roomRoutes(deps: RoomDeps) {
   app.get("/rooms", async (c) => {
     await rooms.ensurePersonalRoom(c.get("owner"));
     return c.json(await rooms.list(c.get("owner")));
+  });
+  app.post("/rooms", async (c) => {
+    const body = z
+      .object({
+        title: z.string().trim().min(1).max(ROOM_TITLE_MAX),
+        seed: z.string().max(4000).optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(await rooms.createTopic(c.get("owner"), body.title, body.seed));
+  });
+  app.patch("/rooms/:id", async (c) => {
+    const { title } = z
+      .object({ title: z.string().trim().min(1).max(ROOM_TITLE_MAX) })
+      .parse(await c.req.json());
+    const room = await rooms.get(c.get("owner"), c.req.param("id"));
+    if (!room.topic) throw new AppError("팀 방·영시리 방 이름은 바꿀 수 없습니다", 409);
+    return c.json(await rooms.patch(c.get("owner"), room.id, { title }));
+  });
+  app.delete("/rooms/:id", async (c) => {
+    await rooms.removeTopic(c.get("owner"), c.req.param("id"));
+    return c.json({ ok: true });
   });
   app.post("/rooms/:id/pin", async (c) => {
     const body = z.object({ pinned: z.boolean() }).parse(await c.req.json());

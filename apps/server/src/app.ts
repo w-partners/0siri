@@ -34,6 +34,7 @@ import {
 import { Accounts } from "./osiri/accounts.ts";
 import { Approvals } from "./osiri/approvals.ts";
 import { EventBus } from "./osiri/events.ts";
+import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
@@ -44,6 +45,7 @@ import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
 import { rateLimit } from "./rate-limit.ts";
+import { SearchService } from "./search.ts";
 import { WorkspaceService } from "./workspace.ts";
 
 export async function createApp(
@@ -79,7 +81,20 @@ export async function createApp(
   const routing = new Routing(db, rooms);
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
-  const osiri = { db, rooms, approvals, bus, mcp, accounts, memories, catalog, routing, skills };
+  const feed = new Feed(db, new SearchService(db));
+  const osiri = {
+    db,
+    rooms,
+    approvals,
+    bus,
+    mcp,
+    accounts,
+    memories,
+    catalog,
+    routing,
+    skills,
+    feed,
+  };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   agent.osiri = { memories, routing };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
@@ -224,6 +239,7 @@ export async function createApp(
     accountDeletionRoutes(accounts, (owner, input) => rooms.audit(owner, input)),
   );
   app.route("/api", skillRoutes(skills));
+  app.route("/api", feedRoutes(feed, accounts));
   app.route("/api", operatorRoutes(operator));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));
   app.get("/api/calendar/events", async (c) => {

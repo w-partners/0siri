@@ -14,6 +14,7 @@ import {
   type GoalLevel,
   type GoalMetricKey,
   type GoalStatus,
+  isHomeRoom,
   METRIC_PERIOD_DAYS,
   type MetricPeriod,
   PERSONAL_CHARACTER_ID,
@@ -43,6 +44,7 @@ export interface Room {
   lastSeenAt?: string; // 부재 중 진척 요약 기준
   archived?: boolean; // 해지 시 읽기 전용
   muted?: boolean; // 알림 끔 (방 목록 항목은 항상 boolean 으로 낸다)
+  topic?: boolean; // 사용자가 «새 대화방»으로 연 영시리 주제방 (packageId 없음, 홈 아님)
 }
 /** 방 목록 카드 — `GET /rooms` 항목 */
 export type RoomCard = Room & {
@@ -224,9 +226,27 @@ export class Rooms {
     if (!room) throw new AppError("방을 찾을 수 없습니다", 404);
     return room;
   }
+  /** 주제방: 영시리와 주제 하나로 따로 이야기하는 방. seed 가 있으면 그 내용을 첫 카드로 싣는다(피드 «토론»). */
+  async createTopic(owner: string, title: string, seed?: string): Promise<Room> {
+    const room = {
+      ...(await this.create(owner, { packageId: null, title, character: PERSONAL_CHARACTER_ID })),
+      topic: true,
+    };
+    await this.db.put(owner, "rooms", room);
+    if (seed) await this.post(owner, room.id, { role: "user", kind: "text", text: seed });
+    this.bus.publish(owner, { type: "board", roomId: room.id });
+    return room;
+  }
+  /** 주제방만 지운다 — 홈 방과 팀 방(구독)은 여기서 지우지 않는다. ponytail: 메시지는 남는다(방이 없어 보이지 않음) */
+  async removeTopic(owner: string, roomId: string) {
+    const room = await this.get(owner, roomId);
+    if (!room.topic) throw new AppError("직접 만든 대화방만 지울 수 있습니다", 409);
+    await this.db.remove(owner, "rooms", roomId);
+    this.bus.publish(owner, { type: "board", roomId });
+  }
   async ensurePersonalRoom(owner: string): Promise<Room> {
     const rooms = await this.db.list<Room>(owner, "rooms");
-    const personal = rooms.find((room) => room.packageId === null);
+    const personal = rooms.find(isHomeRoom);
     return (
       personal ??
       this.create(owner, {

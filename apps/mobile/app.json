@@ -3,7 +3,7 @@
     "name": "0Siri",
     "slug": "osiri",
     "scheme": "osiri",
-    "version": "0.9.0",
+    "version": "0.10.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -13,9 +13,7 @@
     },
     "android": {
       "package": "app.osiri.mobile",
-      "permissions": [
-        "android.permission.REQUEST_INSTALL_PACKAGES"
-      ],
+      "permissions": ["android.permission.REQUEST_INSTALL_PACKAGES"],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -27,10 +25,7 @@
               "pathPrefix": "/invite"
             }
           ],
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ]
+          "category": ["BROWSABLE", "DEFAULT"]
         }
       ]
     },

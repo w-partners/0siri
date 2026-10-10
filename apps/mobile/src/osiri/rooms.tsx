@@ -9,9 +9,12 @@ import {
   Images,
   Lightbulb,
   List,
+  MessageSquarePlus,
   MoreHorizontal,
   Plus,
   Search,
+  SlidersHorizontal,
+  Sparkles,
   Users,
 } from "lucide-react-native";
 import {
@@ -43,6 +46,7 @@ import {
   GOAL_LEVEL_LABELS,
   GOAL_METRIC_LABELS,
   GOAL_UNBLOCK_LABEL,
+  isHomeRoom,
   PERSONAL_ROOM_TITLE,
   PRESENCE_LABELS,
   PRESENCE_STATES,
@@ -53,6 +57,7 @@ import {
   REJECT_REASON_LABELS,
   REPORT_METRIC_KEYS,
   type RejectReasonKind,
+  ROOM_TITLE_MAX,
   SKILL_STATUS_LABELS,
   STAGE_LABELS,
   THIRD_PARTY_LABEL,
@@ -82,6 +87,7 @@ import {
   dateLabel,
   Empty,
   ErrorNotice,
+  Field,
   fonts,
   IconButton,
   relativeDate,
@@ -162,6 +168,20 @@ const text = {
   teams: "대화방 목록",
   allRooms: "전체",
   addTeam: "팀 추가",
+  newRoom: "새 대화방",
+  newRoomPlaceholder: "예: 이사 준비, 이번 달 블로그",
+  createRoom: "만들기",
+  roomSettings: "방 설정",
+  roomName: "방 이름",
+  saveName: "이름 저장",
+  teamRoomNote: "팀 방 — 이름은 팀이 정합니다. 구독 해지는 스토어 › 내 팀에서.",
+  homeRoomNote: "영시리 기본 방 — 지울 수 없어요.",
+  pinRow: "맨 위에 고정",
+  notify: "알림",
+  on: "켬",
+  off: "끔",
+  roomSkills: "이 방에 장착된 스킬",
+  deleteRoom: "이 대화방 삭제",
   digestTitle: "결재 요약",
   openInbox: "결재함 열기",
   goRoom: "방으로 이동",
@@ -438,7 +458,7 @@ export function useUserEvent(
 }
 
 const roomTitle = (room: Room) =>
-  room.packageId === null ? `${PERSONAL_ROOM_TITLE} · ${text.personalRole}` : room.title;
+  isHomeRoom(room) ? `${PERSONAL_ROOM_TITLE} · ${text.personalRole}` : room.title;
 
 /** 작업 중인 방의 작은 움직임 표시 (기획 «캐릭터 표시 규칙» 화면 2) */
 function WorkingDot() {
@@ -482,7 +502,8 @@ function WorkingDot() {
 function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () => void }) {
   const { navigate } = useWorkspace();
   const { rooms } = useRooms();
-  const teams = (rooms ?? []).filter((r) => r.packageId !== null && !r.archived);
+  const teams = (rooms ?? []).filter((r) => !isHomeRoom(r) && !r.archived);
+  const [creating, setCreating] = useState(false);
   const cell = (key: string, label: string, onPress: () => void, face: ReactNode, badge = 0) => (
     <Pressable
       key={key}
@@ -529,8 +550,148 @@ function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () 
           r.pendingApprovals,
         ),
       )}
+      {cell(
+        "new",
+        text.newRoom,
+        () => setCreating(true),
+        <MessageSquarePlus size={20} color={colors.accent} />,
+      )}
       {cell("add", text.addTeam, () => navigate("store"), <Plus size={20} color={colors.accent} />)}
+      {creating && (
+        <Sheet title={text.newRoom} onClose={() => setCreating(false)}>
+          <NewRoomForm
+            onCreated={(room) => {
+              setCreating(false);
+              onOpen(room);
+            }}
+          />
+        </Sheet>
+      )}
     </ScrollView>
+  );
+}
+
+/** 새 대화방(주제방): 이름 하나로 영시리와 따로 이야기할 방을 연다 (마스터 2026-10-10 «대화방을 추가하는 것도 없고»). */
+export function NewRoomForm({ onCreated }: { onCreated: (room: Room) => void }) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const [title, setTitle] = useState("");
+  return (
+    <View style={{ gap: 8, paddingBottom: 8 }}>
+      <Field
+        label={text.newRoom}
+        placeholder={text.newRoomPlaceholder}
+        value={title}
+        maxLength={ROOM_TITLE_MAX}
+        onChangeText={setTitle}
+      />
+      <Button
+        small
+        primary
+        icon={MessageSquarePlus}
+        busy={act.busy}
+        disabled={!title.trim()}
+        onPress={() =>
+          act.run(async () => {
+            const room = await api.request<Room>("/api/rooms", { title: title.trim() });
+            const list = await refreshRooms(api);
+            setTitle("");
+            onCreated(list?.find((r) => r.id === room.id) ?? room);
+          })
+        }
+      >
+        {text.createRoom}
+      </Button>
+      <ErrorNotice error={act.error} />
+    </View>
+  );
+}
+
+/** 방별 설정 (마스터 2026-10-10 «방별 설정이 있어야 하지 않아?»): 이름(내가 만든 방) · 고정 · 알림 · 이 방 스킬 · 삭제(내가 만든 방). */
+function RoomSettings({
+  room,
+  onChanged,
+  onSkills,
+  onDeleted,
+}: {
+  room: Room;
+  onChanged: (room: Room) => void;
+  onSkills: () => void;
+  onDeleted: () => void;
+}) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const [title, setTitle] = useState(room.title);
+  const save = (fn: () => Promise<unknown>) =>
+    act.run(async () => {
+      await fn();
+      const list = await refreshRooms(api);
+      const next = list?.find((r) => r.id === room.id);
+      if (next) onChanged(next);
+    });
+  const toggle = (label: string, on: boolean, path: "pin" | "mute", key: "pinned" | "muted") => (
+    <View style={[s.row, { gap: 8, alignItems: "center" }]}>
+      <Text style={[s.text, { flex: 1 }]}>{label}</Text>
+      <Choice
+        label={text.on}
+        selected={on}
+        disabled={act.busy}
+        onPress={() => save(() => api.request(`/api/rooms/${room.id}/${path}`, { [key]: true }))}
+      />
+      <Choice
+        label={text.off}
+        selected={!on}
+        disabled={act.busy}
+        onPress={() => save(() => api.request(`/api/rooms/${room.id}/${path}`, { [key]: false }))}
+      />
+    </View>
+  );
+  return (
+    <View style={{ gap: 14 }}>
+      {room.topic ? (
+        <View style={{ gap: 8 }}>
+          <Field
+            label={text.roomName}
+            value={title}
+            maxLength={ROOM_TITLE_MAX}
+            onChangeText={setTitle}
+          />
+          <Button
+            small
+            disabled={act.busy || !title.trim() || title.trim() === room.title}
+            onPress={() =>
+              save(() => api.request(`/api/rooms/${room.id}`, { title: title.trim() }, "PATCH"))
+            }
+          >
+            {text.saveName}
+          </Button>
+        </View>
+      ) : (
+        <Text style={s.muted}>{room.packageId ? text.teamRoomNote : text.homeRoomNote}</Text>
+      )}
+      {toggle(text.pinRow, !!room.pinned, "pin", "pinned")}
+      {toggle(text.notify, !room.muted, "mute", "muted")}
+      <Button small icon={Sparkles} onPress={onSkills}>
+        {text.roomSkills}
+      </Button>
+      {room.topic && (
+        <Button
+          small
+          danger
+          disabled={act.busy}
+          onPress={() =>
+            act.run(async () => {
+              await api.request(`/api/rooms/${room.id}`, undefined, "DELETE");
+              await refreshRooms(api);
+              onDeleted();
+            })
+          }
+        >
+          {text.deleteRoom}
+        </Button>
+      )}
+      <ErrorNotice error={act.error} />
+    </View>
   );
 }
 
@@ -607,7 +768,7 @@ export function RoomList({
       <ErrorNotice error={actionError} />
       {shown.map((room) => {
         const active = room.id === activeId;
-        const personal = room.packageId === null;
+        const personal = isHomeRoom(room);
         const status =
           room.lastReport ?? (isPresence(room.presence) ? PRESENCE_LABELS[room.presence] : "");
         return (
@@ -1376,9 +1537,7 @@ export function RoomScopedScreen({ kind }: { kind: "ideas" | "media" }) {
         {null}
       </LoadState>
     );
-  const list = [...state.rooms].sort(
-    (a, b) => Number(b.packageId === null) - Number(a.packageId === null),
-  );
+  const list = [...state.rooms].sort((a, b) => Number(isHomeRoom(b)) - Number(isHomeRoom(a)));
   const room = list.find((r) => r.id === picked) ?? list[0];
   if (!room) return <Text style={s.muted}>{text.noMessages}</Text>;
   return (
@@ -1429,6 +1588,9 @@ export function RoomScreen({
   const [mood, setMood] = useState<Mood>("idle");
   const [teams, setTeams] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 영시리와 이야기하는 방(홈·주제방): 팀 탭·현황판·팀 입력 안내 없이 대화만
+  const plain = home || !!room.topic;
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState("");
@@ -1546,7 +1708,7 @@ export function RoomScreen({
   };
 
   const pending = board?.pendingApprovals ?? room.pendingApprovals;
-  const title = room.packageId === null ? PERSONAL_ROOM_TITLE : room.title;
+  const title = isHomeRoom(room) ? PERSONAL_ROOM_TITLE : room.title;
   // 현황판이 오기 전에는 방 목록 항목(서버 값)의 상태를 같은 대응표로 읽는다
   const character = board?.character ?? {
     assetId: room.character,
@@ -1658,7 +1820,7 @@ export function RoomScreen({
               </Card>
             </View>
           )}
-          {!home && timeline.messages.length === 0 && !timeline.digest && (
+          {!plain && timeline.messages.length === 0 && !timeline.digest && (
             <Text style={[s.muted, { paddingHorizontal: 16 }]}>{text.noMessages}</Text>
           )}
           {timeline.messages.filter((m) => !isPendingCard(m)).map(render)}
@@ -1677,6 +1839,13 @@ export function RoomScreen({
             <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
           </View>
         )}
+        <View style={{ position: "absolute", right: 8, top: 4 }}>
+          <IconButton
+            icon={SlidersHorizontal}
+            label={text.roomSettings}
+            onPress={() => setSettingsOpen(true)}
+          />
+        </View>
         <Character
           assetId={character.assetId}
           state={character.state}
@@ -1711,7 +1880,7 @@ export function RoomScreen({
       {home && !desktop && (
         <RoomStrip onOpen={(next) => onOpenRoom?.(next)} onAll={() => setTeams(true)} />
       )}
-      {!home && (
+      {!plain && (
         <View
           accessibilityRole="tablist"
           style={[s.row, { borderBottomWidth: 1, borderBottomColor: colors.line }]}
@@ -1747,7 +1916,7 @@ export function RoomScreen({
       )}
       {tab === "chat" ? (
         <>
-          {board && !home && (
+          {board && !plain && (
             <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
               {/* 웹은 현황판 고정, 앱은 요약 한 줄로 접고 누르면 펼친다 */}
               {!desktop && (
@@ -1793,7 +1962,8 @@ export function RoomScreen({
               footer={
                 waiting.length ? <View style={{ gap: 10 }}>{waiting.map(render)}</View> : null
               }
-              placeholder={home ? undefined : text.composer}
+              placeholder={plain ? undefined : text.composer}
+              welcome={home}
               answerLabel={answerLabel}
               anchor={anchor}
               online={!offline}
@@ -1823,6 +1993,22 @@ export function RoomScreen({
             onOpen={(next, nextFocus) => {
               setTeams(false);
               onOpenRoom?.(next, nextFocus);
+            }}
+          />
+        </Sheet>
+      )}
+      {settingsOpen && (
+        <Sheet title={text.roomSettings} subtitle={title} onClose={() => setSettingsOpen(false)}>
+          <RoomSettings
+            room={room}
+            onChanged={(next) => onOpenRoom?.(next)}
+            onSkills={() => {
+              setSettingsOpen(false);
+              setSkillsOpen(true);
+            }}
+            onDeleted={() => {
+              setSettingsOpen(false);
+              onBack();
             }}
           />
         </Sheet>

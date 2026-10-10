@@ -11,6 +11,8 @@ export type Section =
   | "store"
   | "inbox"
   | "skills"
+  | "feed"
+  | "automation"
   | "ideas"
   | "media"
   | "settings";

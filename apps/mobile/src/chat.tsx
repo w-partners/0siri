@@ -225,6 +225,7 @@ export function ChatScreen({
   header,
   footer,
   placeholder,
+  welcome = true,
   answerLabel,
   anchor,
   online = true,
@@ -248,6 +249,8 @@ export function ChatScreen({
   /** 대화 끝(가장 최근 자리)에 붙는 카드 — 지금 결정해야 하는 승인 카드 */
   footer?: ReactNode;
   placeholder?: string;
+  /** 대화가 비었을 때 영시리 환영 문구·추천을 보일지 — 팀 방·주제방은 위 타임라인이 첫 화면이라 끈다 */
+  welcome?: boolean;
   /** 답변마다 «누가 답했는지» 한 줄 (기기에서 답함 · 서버 주력 · 기억에서 찾음). 모르면 undefined. */
   answerLabel?: (messageId: string) => string | undefined;
 }) {
@@ -580,7 +583,7 @@ export function ChatScreen({
             </Button>
           </>
         )}
-        {!visible.length ? (
+        {!visible.length && welcome ? (
           <View
             style={{
               flexGrow: 1,

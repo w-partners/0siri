@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  isHomeRoom,
   LOGIN_FAILS_BEFORE_RESET_HINT,
   PASSWORD_MIN,
   PASSWORD_RESET_HINT,
@@ -781,7 +782,7 @@ export function Onboarding({
 
   const personalRoom = async () => {
     const rooms = await api.request<Room[]>("/api/rooms");
-    const personal = rooms.find((room) => room.packageId === null);
+    const personal = rooms.find(isHomeRoom);
     if (!personal) throw new Error(text.noPersonalRoom);
     return personal.id;
   };
