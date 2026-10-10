@@ -47,4 +47,4 @@
 2. 모델 티어 2~4 가 실제 어떤 모델인지는 `.env` MODEL_TIER* 가 정본 — 운영 전 마스터와 단가(`MODEL_PRICES_KRW`) 확정.
 3. Android `usesCleartextTraffic` 는 도메인이 생겼으므로 끌 수 있다(tailnet 직결 테스트가 끝나면).
 4. 네이티브 기기 임베딩(LiteRT-LM 또는 onnxruntime-react-native)은 미착수 — 현재는 전부 서버 폴백(배지로 드러남). 스펙 §11.2 실측 후 `deviceLlmEnabled` 판단.
-5. 서브에이전트가 보고한 서버 공백: 승인 decide 에 "revise" 없음 · 승인 카드 payload 에 inputHash 없음 · `RoomBoard.nextReportAt` 미기록 · BYOK 공급자 목록 API 없음 · 구독별 월 사용량 없음.
+5. 서브에이전트가 보고한 서버 공백 중 남은 것: `RoomBoard.nextReportAt` 미기록 · BYOK 공급자 목록 API 없음 · 구독별 월 사용량 없음. (승인 카드 inputHash 는 원래 있었고, decide revise 는 v0.20.0 에서 추가)
