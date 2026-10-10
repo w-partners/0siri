@@ -9,7 +9,11 @@ import { z } from "zod";
 import {
   SKILL_DECISIONS,
   SKILL_MEASURE_NOTE,
+  SKILL_REPEAT_MIN,
+  SKILL_REPEAT_PREFIX,
+  SKILL_SCAN_LIMIT,
   SKILL_SCOPES,
+  SKILL_SIMILARITY_MIN,
   SKILL_STATUSES,
   type SkillDecision,
   type SkillScope,
@@ -17,7 +21,8 @@ import {
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import type { Rooms } from "./rooms.ts";
+import { asDocument, embed } from "./embeddings.ts";
+import type { RoomMessage, Rooms } from "./rooms.ts";
 
 /** 계약의 Skill. `packageId`·`enabled` 는 화면이 소속·켜짐을 알 수 있게 덧붙인 필드다. */
 export interface Skill {
@@ -171,6 +176,61 @@ export class Skills {
         detail: skill.evidence,
       });
     return publicSkill(skill);
+  }
+
+  // ---- 스킬 후보 찾기 ----
+  /**
+   * 내가 여러 번 비슷하게 요청한 것을 찾아 개인 스킬 초안으로 낸다(결정은 사용자가 스킬 탭에서).
+   * 최근 요청을 임베딩해 탐욕적으로 묶고(첫 요청이 기준), `SKILL_REPEAT_MIN` 번 이상 반복된 묶음만 초안이 된다.
+   * 같은 이름의 스킬이 이미 있으면(어떤 상태든) 다시 내지 않는다.
+   * 임베딩이 실패하면 그대로 실패한다 — 후보가 «없다» 로 보이게 삼키지 않는다.
+   * ponytail: 요청 n개에 묶음 k개 → O(n·k) 내적. SKILL_SCAN_LIMIT(200) 안에서는 충분하다.
+   */
+  async findCandidates(
+    owner: string,
+    embedTexts: (texts: string[]) => Promise<number[][]> = (texts) => embed(texts.map(asDocument)),
+  ): Promise<{ scanned: number; created: Skill[] }> {
+    const asks = (await this.db.list<RoomMessage>(owner, "messages"))
+      .filter((m) => m.role === "user" && (m.text ?? "").trim().length >= 6)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, SKILL_SCAN_LIMIT);
+    if (asks.length < SKILL_REPEAT_MIN) return { scanned: asks.length, created: [] };
+    const vectors = await embedTexts(asks.map((m) => (m.text ?? "").trim()));
+    const groups: { seed: number[]; items: RoomMessage[] }[] = [];
+    asks.forEach((ask, i) => {
+      const v = vectors[i] as number[];
+      const group = groups.find(
+        (g) => g.seed.reduce((sum, x, k) => sum + x * (v[k] ?? 0), 0) >= SKILL_SIMILARITY_MIN,
+      );
+      if (group) group.items.push(ask);
+      else groups.push({ seed: v, items: [ask] });
+    });
+    const taken = new Set(
+      (await this.db.list<StoredSkill>(owner, PERSONAL_KIND)).map((s) => s.name),
+    );
+    const created: Skill[] = [];
+    for (const { items } of groups.filter((g) => g.items.length >= SKILL_REPEAT_MIN)) {
+      const oldest = items[items.length - 1] as RoomMessage;
+      const name = `${SKILL_REPEAT_PREFIX}${(oldest.text ?? "").trim().slice(0, 40)}`;
+      if (taken.has(name)) continue;
+      const room = await this.rooms.get(owner, oldest.roomId);
+      const examples = items.slice(0, 3).map((m) => `«${(m.text ?? "").trim().slice(0, 80)}»`);
+      created.push(
+        await this.draft(
+          owner,
+          { roomId: room.id, packageId: room.packageId },
+          {
+            scope: "personal",
+            name,
+            evidence: `최근 ${items.length}번 비슷하게 요청했습니다 — ${examples.join(" · ")}`,
+            appliesTo: `${room.title} 대화에서 같은 종류의 요청을 받으면, 매번 처음부터 묻지 않고 이 방식으로 바로 처리합니다`,
+            proposedBy: "영시리",
+          },
+        ),
+      );
+      taken.add(name);
+    }
+    return { scanned: asks.length, created };
   }
 
   // ---- 조회 ----
@@ -446,6 +506,7 @@ export function skillRoutes(skills: Skills) {
       }),
     ),
   );
+  app.post("/skills/scan", async (c) => c.json(await skills.findCandidates(c.get("owner"))));
   app.post("/skills/:id/decide", async (c) => {
     const body = z
       .object({ decision: z.enum(SKILL_DECISIONS), reason: z.string().max(1000).optional() })

@@ -245,8 +245,31 @@ export async function prepareDevice(
   await embedOnDevice(["상태 확인"], "query");
   prepared = { loadMs, embedMs: Math.round(performance.now() - started) };
   // TEMP-PROBE-BEGIN (서버 벡터와 코사인 대조용 — 최종 빌드에서 뺀다)
-  const PROBE: { kind: "query" | "document"; text: string }[] = [{"kind": "query", "text": "커피 취향"}, {"kind": "document", "text": "아메리카노는 얼음 없이, 설탕은 넣지 않는다"}, {"kind": "query", "text": "회의 자료 어디"}, {"kind": "document", "text": "주간 회의 슬라이드는 드라이브 '팀/주간' 폴더에 둔다"}, {"kind": "document", "text": "The quick brown fox jumps over the lazy dog. 12345 😀 mixed 한글 English."}, {"kind": "query", "text": "11월 제주도 휴가 계획이 어떻게 되지?"}];
+  const PROBE: { kind: "query" | "document"; text: string }[] = [
+    { kind: "query", text: "커피 취향" },
+    { kind: "document", text: "아메리카노는 얼음 없이, 설탕은 넣지 않는다" },
+    { kind: "query", text: "회의 자료 어디" },
+    { kind: "document", text: "주간 회의 슬라이드는 드라이브 '팀/주간' 폴더에 둔다" },
+    {
+      kind: "document",
+      text: "The quick brown fox jumps over the lazy dog. 12345 😀 mixed 한글 English.",
+    },
+    { kind: "query", text: "11월 제주도 휴가 계획이 어떻게 되지?" },
+  ];
   console.log(`[embed-probe-ms] load ${loadMs} first ${Math.round(performance.now() - started)}`);
+  {
+    const { Tokenizer } = await import("@huggingface/tokenizers");
+    const tk = new Tokenizer(
+      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer.json"))),
+      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer_config.json"))),
+    );
+    for (const [i, t] of PROBE.entries()) {
+      const s = t.kind === "query" ? embedQueryText(t.text) : embedDocumentText(t.text);
+      console.log(`[embed-probe-ids] ${i} ${tk.encode(s).ids.join(",")}`);
+    }
+    const big = BigInt64Array.from([2, 105, 262143], BigInt);
+    console.log(`[embed-probe-ids] bigint ${Array.from(big, String).join(",")}`);
+  }
   for (const [i, t] of PROBE.entries()) {
     const t0 = performance.now();
     const [v] = await embedOnDevice([t.text], t.kind);

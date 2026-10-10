@@ -543,3 +543,14 @@ export const ROLE_SELF_MESSAGE = "자기 역할은 바꿀 수 없습니다. 다�
 export const STORE_GRANT_REQUIRED_MESSAGE =
   "관리자가 사용을 허용한 팀만 쓸 수 있습니다. 관리자에게 요청하세요";
 export const STORE_GRANT_REQUIRED_LABEL = "관리자 허용 필요";
+
+/**
+ * 스킬 후보 찾기 (마스터 2026-10-10 «스킬화 할 수 있는 부분을 찾아서 스킬화 승인»):
+ * 내 요청을 EmbeddingGemma 로 묶어 비슷한 요청이 이만큼 반복되면 스킬 초안을 낸다.
+ */
+export const SKILL_REPEAT_MIN = 3;
+/** 같은 종류의 요청으로 볼 코사인 유사도 하한 (정규화 벡터 내적) */
+export const SKILL_SIMILARITY_MIN = 0.82;
+/** 한 번에 훑는 최근 요청 수 */
+export const SKILL_SCAN_LIMIT = 200;
+export const SKILL_REPEAT_PREFIX = "반복 요청: ";
