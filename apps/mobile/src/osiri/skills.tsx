@@ -36,7 +36,8 @@ const text = {
   retireHeading: "폐기 제안",
   count: (n: number) => `${n}건`,
   emptyDrafts: "승인 대기 중인 스킬 초안이 없습니다",
-  emptyDraftsDetail: "«스킬 후보 찾기»를 누르거나 팀이 같은 패턴을 반복해서 배우면 초안이 여기에 올라와요.",
+  emptyDraftsDetail:
+    "«스킬 후보 찾기»를 누르거나 팀이 같은 패턴을 반복해서 배우면 초안이 여기에 올라와요.",
   emptyActive: "장착된 스킬이 없습니다",
   emptyActiveDetail: "초안을 승인하면 버전이 붙어 여기에 장착돼요.",
   goChat: "대화하러 가기",
