@@ -58,7 +58,7 @@ const STATUS: Record<SubscriptionProvider, string[]> = {
 };
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
-/** ACP 한 번 대화에 쓰는 양방향 통로 — 컨테이너 docker exec 든 PC 러너든 모양이 같다 */
+/** ACP 연결 하나에 쓰는 양방향 통로 — 컨테이너 docker exec 든 PC 러너든 모양이 같다 */
 interface AcpPipe {
   input: WritableStream<Uint8Array>;
   output: ReadableStream<Uint8Array>;
@@ -369,41 +369,119 @@ export class Subscriptions {
     };
   }
 
-  /** 한 턴: 새 세션에 프롬프트를 보내고 답 글자를 흘려 준다 */
-  async ask(
-    owner: string,
-    prefs: SubscriptionPrefs,
-    prompt: string,
-    onText: (text: string) => void,
-    signal: AbortSignal,
-  ) {
-    const pipe = await this.pipe(owner, prefs);
-    try {
+  /** 사람마다 살아 있는 ACP 연결 하나(wgolf-acp-test 의 aoe acp-runner 와 같은 모양). 대화방마다 세션 하나 */
+  private readonly live = new Map<string, Promise<Live>>();
+
+  private async connect(owner: string, prefs: SubscriptionPrefs): Promise<Live> {
+    const key = `${prefs.provider}:${prefs.place}`;
+    const existing = this.live.get(owner);
+    if (existing) {
+      const live = await existing.catch(() => undefined);
+      if (live && live.key === key && !live.conn.signal.aborted) return live;
+      live?.pipe.close();
+      this.live.delete(owner);
+    }
+    const opening = (async () => {
+      const pipe = await this.pipe(owner, prefs);
+      const listeners = new Map<string, (text: string) => void>();
       const conn = new acp.ClientSideConnection(
         () => ({
           // 승인 게이트는 컨테이너 밖이다 — 파일 쓰기·명령 실행 요청은 v1 에서 전부 거절한다(fail-closed)
           requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-          sessionUpdate: async ({ update }) => {
+          // 지금 답을 기다리는 세션의 글자만 흘린다(세션을 다시 붙일 때 되풀이되는 옛 기록은 버린다)
+          sessionUpdate: async ({ sessionId, update }) => {
             if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text")
-              onText(update.content.text);
+              listeners.get(sessionId)?.(update.content.text);
           },
         }),
         acp.ndJsonStream(pipe.input, pipe.output),
       );
       await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
-      // ponytail: 턴마다 새 세션(대화 맥락은 프롬프트에 싣는다). 느리면 세션을 살려 두고 session/load
-      const { sessionId } = await conn.newSession({ cwd: pipe.cwd, mcpServers: [] });
-      const cancel = () => void conn.cancel({ sessionId }).catch(() => {});
-      signal.addEventListener("abort", cancel, { once: true });
-      try {
-        return await conn.prompt({ sessionId, prompt: [{ type: "text", text: prompt }] });
-      } finally {
-        signal.removeEventListener("abort", cancel);
-      }
-    } finally {
-      pipe.close();
-    }
+      const live: Live = { key, pipe, conn, listeners, sessions: new Map() };
+      void conn.closed.finally(() => {
+        if (this.live.get(owner) === opening) this.live.delete(owner);
+      });
+      return live;
+    })();
+    this.live.set(owner, opening);
+    opening.catch(() => {
+      if (this.live.get(owner) === opening) this.live.delete(owner);
+    });
+    return opening;
   }
+
+  /**
+   * 한 턴. 대화방(threadId)마다 ACP 세션 하나를 끝까지 이어 쓴다 — 첫 턴에만 페르소나·이전 대화를 싣고
+   * 그 뒤로는 새 사용자 말만 보낸다. 프로세스가 내려갔다 오면 저장해 둔 세션 ID 로 resume 한다.
+   */
+  async ask(
+    owner: string,
+    prefs: SubscriptionPrefs,
+    turn: { threadId: string; opening: string; latest: string },
+    onText: (text: string) => void,
+    signal: AbortSignal,
+  ): Promise<{ session: "live" | "resumed" | "new" | "rebuilt"; resumeError?: string }> {
+    const live = await this.connect(owner, prefs);
+    let sessionId = live.sessions.get(turn.threadId);
+    let session: "live" | "resumed" | "new" | "rebuilt" = "live";
+    let resumeError: string | undefined;
+    if (!sessionId) {
+      const stored = await this.db.get<StoredSession>(owner, SESSIONS, turn.threadId);
+      if (stored && stored.key === live.key) {
+        try {
+          await live.conn.resumeSession({
+            sessionId: stored.sessionId,
+            cwd: stored.cwd,
+            mcpServers: [],
+          });
+          sessionId = stored.sessionId;
+          session = "resumed";
+        } catch (error) {
+          // 잇지 못한 것은 숨기지 않는다 — 새 세션으로 시작했다고 답 아래에 남긴다
+          resumeError = error instanceof Error ? error.message : String(error);
+          session = "rebuilt";
+        }
+      } else session = "new";
+      if (!sessionId) {
+        sessionId = (await live.conn.newSession({ cwd: live.pipe.cwd, mcpServers: [] })).sessionId;
+        await this.db.put(owner, SESSIONS, {
+          id: turn.threadId,
+          key: live.key,
+          sessionId,
+          cwd: live.pipe.cwd,
+        } satisfies StoredSession);
+      }
+      live.sessions.set(turn.threadId, sessionId);
+    }
+    const text = session === "live" || session === "resumed" ? turn.latest : turn.opening;
+    const id = sessionId;
+    live.listeners.set(id, onText);
+    const cancel = () => void live.conn.cancel({ sessionId: id }).catch(() => {});
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      await live.conn.prompt({ sessionId: id, prompt: [{ type: "text", text }] });
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      live.listeners.delete(id);
+    }
+    return { session, ...(resumeError ? { resumeError } : {}) };
+  }
+}
+
+const SESSIONS = "subscriptionSessions";
+/** 대화방 → ACP 세션. 세션 기록 자체는 CLI 가 그 사람 홈(컨테이너 볼륨·본인 PC)에 남긴다 */
+interface StoredSession {
+  id: string;
+  key: string;
+  sessionId: string;
+  cwd: string;
+}
+interface Live {
+  key: string;
+  pipe: AcpPipe;
+  conn: acp.ClientSideConnection;
+  listeners: Map<string, (text: string) => void>;
+  sessions: Map<string, string>;
 }
 
 export function subscriptionRoutes(subs: Subscriptions) {

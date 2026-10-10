@@ -468,16 +468,24 @@ export class ConversationAgent extends AbstractAgent {
                 runId: input.runId,
               });
               subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
-              await subscriptions.ask(
+              const asked = await subscriptions.ask(
                 this.owner,
                 sub,
-                subscriptionPrompt(persona, input.messages),
+                {
+                  threadId: input.threadId,
+                  opening: subscriptionPrompt(persona, input.messages),
+                  latest: latestText,
+                },
                 (delta) => {
                   if (delta)
                     subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta });
                 },
                 turn.signal,
               );
+              if (asked.resumeError)
+                console.error(
+                  `[osiri] 구독 세션을 잇지 못해 새로 시작 thread=${input.threadId}: ${asked.resumeError}`,
+                );
               subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId });
               // 비용은 본인 구독으로 나간다(0원). 토큰 수는 ACP 가 알려주지 않는다
               await routing
@@ -489,7 +497,7 @@ export class ConversationAgent extends AbstractAgent {
                   tokensUnreported: true,
                   scriptSaved: false,
                   source: "subscription",
-                  reason: `내 구독(${SUBSCRIPTION_PROVIDER_LABELS[sub.provider]}) · ${SUBSCRIPTION_PLACE_LABELS[sub.place]}`,
+                  reason: `내 구독(${SUBSCRIPTION_PROVIDER_LABELS[sub.provider]}) · ${SUBSCRIPTION_PLACE_LABELS[sub.place]} · ${SESSION_LABELS[asked.session]}`,
                   threadId: input.threadId,
                   runId: input.runId,
                   messageIds: [messageId],
@@ -637,7 +645,14 @@ export class ConversationAgent extends AbstractAgent {
   }
 }
 
-/** 구독 사용: ACP 에이전트는 턴마다 새 세션이라 최근 대화를 프롬프트에 싣는다 */
+const SESSION_LABELS = {
+  live: "세션 이어감",
+  resumed: "세션 다시 붙임",
+  new: "새 세션",
+  rebuilt: "세션을 잇지 못해 기록으로 새로 시작",
+} as const;
+
+/** 구독 사용: 대화방의 ACP 세션을 처음 열 때 한 번 보내는 말 — 페르소나 + 그 방의 이전 대화 */
 export function subscriptionPrompt(
   persona: string | undefined,
   messages: RunAgentInput["messages"],

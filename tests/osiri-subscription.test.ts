@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import * as acp from "@agentclientprotocol/sdk";
 import { WebSocket } from "ws";
 import { createStore, type Store } from "../apps/server/src/db.ts";
 import { subscriptionPrompt } from "../apps/server/src/engine/conversation.ts";
@@ -58,6 +59,96 @@ test("server place cannot be activated without SUBSCRIPTION_IMAGE", async () => 
     /SUBSCRIPTION_IMAGE/,
   );
   assert.equal((await subs.update("user-c", { active: true, place: "pc" })).active, true);
+});
+
+/** 가짜 PC 러너 — 서버가 «open» 하면 이 프로세스 안의 가짜 ACP 에이전트로 이어 준다 */
+async function fakeRunner(target: string, key: string, calls: string[]) {
+  const ws = new WebSocket(target);
+  const agents = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
+  ws.on("message", (raw) => {
+    const msg = JSON.parse(String(raw));
+    if (msg.t === "data") agents.get(msg.id)?.enqueue(new TextEncoder().encode(msg.d));
+    if (msg.t !== "open") return;
+    calls.push("spawn");
+    const input = new ReadableStream<Uint8Array>({ start: (c) => void agents.set(msg.id, c) });
+    const output = new WritableStream<Uint8Array>({
+      write: (chunk) =>
+        ws.send(JSON.stringify({ t: "data", id: msg.id, d: new TextDecoder().decode(chunk) })),
+    });
+    const agent: acp.AgentSideConnection = new acp.AgentSideConnection(
+      () => ({
+        initialize: async () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: {} }),
+        authenticate: async () => ({}),
+        newSession: async () => {
+          calls.push("new");
+          return { sessionId: `s${calls.length}` };
+        },
+        resumeSession: async ({ sessionId }) => {
+          calls.push(`resume ${sessionId}`);
+          return {};
+        },
+        cancel: async () => {},
+        prompt: async ({ sessionId, prompt }) => {
+          const text = prompt[0]?.type === "text" ? prompt[0].text : "";
+          calls.push(`prompt ${sessionId} ${text}`);
+          await agent.sessionUpdate({
+            sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "답" } },
+          });
+          return { stopReason: "end_turn" };
+        },
+      }),
+      acp.ndJsonStream(output, input),
+    );
+  });
+  await new Promise((resolve) => {
+    ws.on("open", () => ws.send(JSON.stringify({ t: "hello", key, cwd: "/work" })));
+    ws.once("message", resolve);
+  });
+  return ws;
+}
+
+test("one ACP session per chat thread: kept across turns, resumed after a restart", async () => {
+  const owner = "user-d";
+  const prefs = await subs.update(owner, { active: true, place: "pc", provider: "codex" });
+  const calls: string[] = [];
+  const runner = await fakeRunner(url, await subs.issueRunnerKey(owner), calls);
+  const ask = (s: Subscriptions, latest: string) => {
+    let said = "";
+    return s
+      .ask(
+        owner,
+        prefs,
+        { threadId: "t1", opening: `OPEN ${latest}`, latest },
+        (t) => (said += t),
+        new AbortController().signal,
+      )
+      .then((r) => ({ ...r, said }));
+  };
+  assert.deepEqual(await ask(subs, "하나"), { session: "new", said: "답" });
+  assert.deepEqual(await ask(subs, "둘"), { session: "live", said: "답" });
+  assert.deepEqual(
+    calls,
+    ["spawn", "new", "prompt s2 OPEN 하나", "prompt s2 둘"],
+    "one process, one session; later turns send only the new message",
+  );
+
+  // 서버가 다시 뜬 것처럼: 새 Subscriptions 가 같은 DB 에서 저장된 세션 ID 로 이어 붙인다
+  runner.close();
+  const restarted = new Subscriptions(db, { dir: join(directory, "subs") });
+  const server2 = createServer();
+  restarted.attach(server2);
+  await new Promise<void>((resolve) => server2.listen(0, "127.0.0.1", resolve));
+  calls.length = 0;
+  const runner2 = await fakeRunner(
+    `ws://127.0.0.1:${(server2.address() as AddressInfo).port}/api/subscription/runner`,
+    await restarted.issueRunnerKey(owner),
+    calls,
+  );
+  assert.deepEqual(await ask(restarted, "셋"), { session: "resumed", said: "답" });
+  assert.deepEqual(calls, ["spawn", "resume s2", "prompt s2 셋"]);
+  runner2.close();
+  server2.close();
 });
 
 test("subscription prompt carries recent turns and ends on the user's message", () => {
