@@ -565,6 +565,10 @@ export const isHomeRoom = (room: { packageId: string | null; topic?: boolean }) 
 /** 대화방 이름 길이 상한 */
 export const ROOM_TITLE_MAX = 40;
 /** 문자 인증 용도 — 같은 번호라도 용도가 다르면 서로의 인증번호로 통과하지 않는다(공용 OTP 서비스 purpose) */
+/** 설정 «오류 보고·제안» — page-picker 로 함께 간다 */
+export const REPORT_KINDS = ["bug", "idea"] as const;
+export type ReportKind = (typeof REPORT_KINDS)[number];
+export const REPORT_KIND_LABELS: Record<ReportKind, string> = { bug: "오류", idea: "제안" };
 export const OTP_PURPOSES = ["signup", "reset"] as const;
 export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 /** 피드: 관심 프롬프트 기본 주기(시간) · 사람당 개수 · 한 번에 싣는 새 글 수 */

@@ -33,6 +33,7 @@ import {
 } from "./osiri/account-routes.ts";
 import { Accounts } from "./osiri/accounts.ts";
 import { Approvals } from "./osiri/approvals.ts";
+import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
@@ -138,6 +139,7 @@ export async function createApp(
       return c.json({ error: "요청 데이터가 올바르지 않습니다." }, 400);
     // Provider and document errors are useful, but raw stack traces and token-bearing responses are not.
     console.error(`[OpenMuse] ${error.name}`);
+    noteServerError({ status: 502, name: error.name, path: c.req.path });
     return c.json(
       {
         error:
@@ -224,6 +226,7 @@ export async function createApp(
     "/api",
     privateAccountRoutes(accounts, config.publicUrl, (owner, input) => rooms.audit(owner, input)),
   );
+  app.route("/api", bugReportRoutes(accounts, config.pagePickerBase, config.pagePickerKeyFile));
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));

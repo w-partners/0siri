@@ -49,6 +49,8 @@ export interface Config {
   /** 문자 인증: 공용 OTP 서비스 주소(OTP_BASE)와 서비스 키 파일(OTP_KEY_FILE, 600). 키 원문은 env 에 두지 않는다 */
   otpBase?: string;
   otpKeyFile?: string;
+  pagePickerBase?: string;
+  pagePickerKeyFile?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -163,6 +165,8 @@ export function readConfig(): Config {
     releasesDir: process.env.RELEASES_DIR?.trim() || undefined,
     otpBase: process.env.OTP_BASE?.trim().replace(/\/$/, "") || undefined,
     otpKeyFile: process.env.OTP_KEY_FILE?.trim() || undefined,
+    pagePickerBase: process.env.PAGE_PICKER_BASE?.trim().replace(/\/$/, "") || undefined,
+    pagePickerKeyFile: process.env.PAGE_PICKER_KEY_FILE?.trim() || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

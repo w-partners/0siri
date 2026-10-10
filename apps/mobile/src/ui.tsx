@@ -18,6 +18,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { openReport } from "./osiri/diag";
 import { t } from "./strings";
 
 // 색 토큰의 유일한 출처 — «0Siri 종합 기획» §03 공통 디자인 규칙의 팔레트(:root / prefers-color-scheme: dark)를 그대로 옮겼다.
@@ -343,8 +344,19 @@ export function Empty({
 }
 export function ErrorNotice({ error }: { error?: string }) {
   return error ? (
-    <View accessibilityRole="alert" style={s.error}>
+    <View accessibilityRole="alert" style={[s.error, { gap: 6 }]}>
       <Text style={[s.text, { color: colors.danger }]}>{error}</Text>
+      {/* 오류를 본 그 자리에서 보고 — 화면의 오류 문구가 보고서에 함께 간다 */}
+      <Pressable
+        accessibilityRole="button"
+        hitSlop={6}
+        onPress={() => openReport({ kind: "bug", error })}
+        style={{ alignSelf: "flex-start" }}
+      >
+        <Text style={[s.small, { color: colors.danger, textDecorationLine: "underline" }]}>
+          이 오류 보고하기
+        </Text>
+      </Pressable>
     </View>
   ) : null;
 }

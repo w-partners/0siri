@@ -39,9 +39,11 @@ import { WorkspaceTools } from "./src/chat";
 import { Details } from "./src/details";
 import { AuthScreens, loadToken, logout, Onboarding, useMe } from "./src/osiri/auth";
 import { AutomationScreen } from "./src/osiri/automation";
+import { installDiag, setScreen } from "./src/osiri/diag";
 import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { FeedScreen } from "./src/osiri/feed";
 import { InboxScreen } from "./src/osiri/inbox";
+import { ReportHost } from "./src/osiri/report";
 import {
   LiveChip,
   NewRoomForm,
@@ -63,6 +65,8 @@ import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
 import { Badge, Button, colors, Drawer, ErrorNotice, fonts, IconButton, isDark, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
+
+installDiag(); // 첫 화면 전부터 로그·오류를 쥔다
 
 type Tab =
   | "rooms"
@@ -270,6 +274,8 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
   const [room, setRoom] = useState<Room>();
+  // 오류 보고의 «오류 발생 전 활동» — 지금 어느 화면·어느 방인지
+  useEffect(() => setScreen(room ? `room:${room.id}` : `tab:${tab}`), [room, tab]);
   // 방을 열 때 보일 곳 (목록 배지 → 승인 카드, 결재함 [방에서 보기]·활동 → 그 메시지)
   const [focus, setFocus] = useState<RoomFocus>();
   // 방 목록은 rooms.tsx 의 한 벌을 본다 (사이드바·탭 배지·홈 채팅·딥링크가 같은 값)
@@ -409,6 +415,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
                 .catch((e) => setError(String(e)))
             }
           />
+          <ReportHost />
         </ThreadsProvider>
       </AgentWorkspaceProvider>
     </WorkspaceContext.Provider>

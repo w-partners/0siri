@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowLeft,
   Brain,
+  Bug,
   LogOut,
   type LucideIcon,
   Network,
@@ -46,6 +47,7 @@ import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Accounts, WaitlistView } from "../../../server/src/osiri/accounts.ts";
 import type { ModelKeyRow, Routing, SettingsView } from "../../../server/src/osiri/routing.ts";
 import type { publicPackage } from "../../../server/src/osiri/store.ts";
+import appJson from "../../app.json";
 import {
   Button,
   Card,
@@ -71,6 +73,7 @@ import {
   removeModel,
 } from "./device-embed";
 import { DeviceMemoryError } from "./device-embed.types";
+import { openReport } from "./diag";
 import { setCharacterPref } from "./eve";
 import { MemoryScreen } from "./memory";
 import { NetworkScreen } from "./network";
@@ -337,6 +340,10 @@ export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           )
         }
       </Loaded>
+      {/* 버전 표시는 여기 한 곳만 (app.json 이 정본, 마스터 2026-10-10 «버전 표시는 설정에다가 해») */}
+      {!sub && (
+        <Text style={[s.small, mono, { textAlign: "center" }]}>0Siri v{appJson.expo.version}</Text>
+      )}
     </ScrollView>
   );
 }
@@ -921,6 +928,12 @@ function Menu({
             onPress={() => open(item.sub)}
           />
         ))}
+        <LinkRow
+          icon={Bug}
+          title="오류 보고 · 제안"
+          detail="불편한 점이나 바라는 점을 개발팀에 바로 보냅니다"
+          onPress={() => openReport()}
+        />
         {deleteAfter ? (
           <View style={{ padding: 12, borderRadius: 10, backgroundColor: colors.warnBg }}>
             <Text style={s.text}>{text.deleteAccepted(dateLabel(deleteAfter))}</Text>

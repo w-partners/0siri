@@ -1,6 +1,7 @@
 // 0Siri 방 목록(화면 2)·팀 채팅방(화면 3)·SSE 스트림 — «0Siri 종합 기획» §03, 계약은 docs/0siri-api-contract.md.
 // 타입은 서버 정의를 type-import, 라벨·목록은 packages/domain/src/osiri.ts 에서만 가져온다(여기서 다시 적지 않는다).
 import { fetch as streamFetch } from "expo/fetch";
+import { BlurView } from "expo-blur";
 import {
   ArrowLeft,
   BellOff,
@@ -73,7 +74,6 @@ import type {
   TeamGoal,
 } from "../../../server/src/osiri/rooms.ts";
 import type { Skill } from "../../../server/src/osiri/skills.ts";
-import appJson from "../../app.json";
 import { apiBase } from "../api";
 import { ApiError } from "../api-response";
 import { ChatScreen } from "../chat";
@@ -88,6 +88,7 @@ import {
   Field,
   fonts,
   IconButton,
+  isDark,
   relativeDate,
   Sheet,
   Skeleton,
@@ -493,16 +494,39 @@ function WorkingDot() {
   );
 }
 
-// ponytail: 웹은 진짜 블러(backdrop-filter) + 아래로 사라지는 마스크, 앱은 배경색 그라데이션(RN 0.81 new arch).
-// 앱도 블러가 필요하면 expo-blur 를 붙인다(네이티브 모듈 추가 → APK 재빌드).
+// 대화가 캐릭터 양옆으로 올라가며 흐려진다(Muse) — 머리는 덮개가 아니라 반투명 블러 유리다.
+// 웹: backdrop-filter + 아래로 사라지는 마스크. 앱: expo-blur(Android 는 Dimezis), 아래 가장자리는 약한 블러 한 겹으로 부드럽게.
 const fadeBehind = (bg: string): object =>
   Platform.OS === "web"
     ? {
-        backdropFilter: "blur(10px)",
-        backgroundColor: `${bg}cc`,
-        maskImage: "linear-gradient(to bottom, #000 72%, transparent)",
+        backdropFilter: "blur(12px)",
+        backgroundColor: `${bg}59`,
+        maskImage: "linear-gradient(to bottom, #000 78%, transparent)",
       }
-    : { experimental_backgroundImage: `linear-gradient(to bottom, ${bg} 72%, ${bg}00)` };
+    : {};
+function BlurBehind() {
+  if (Platform.OS === "web") return null;
+  const tint = isDark ? "dark" : "light";
+  const edge = 22;
+  return (
+    <>
+      <BlurView
+        pointerEvents="none"
+        intensity={45}
+        tint={tint}
+        experimentalBlurMethod="dimezisBlurView"
+        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: edge }}
+      />
+      <BlurView
+        pointerEvents="none"
+        intensity={15}
+        tint={tint}
+        experimentalBlurMethod="dimezisBlurView"
+        style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: edge }}
+      />
+    </>
+  );
+}
 
 /**
  * 홈(영시리 대화) 위 대화방 줄 — 팀을 붙일 때마다 방이 늘므로 목록이 늘 보이게 (마스터 2026-10-10).
@@ -1873,6 +1897,7 @@ export function RoomScreen({
           },
         ]}
       >
+        {float && <BlurBehind />}
         {!home && !desktop && (
           <View style={{ position: "absolute", left: 8, top: 4 }}>
             <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
@@ -1909,11 +1934,7 @@ export function RoomScreen({
             <Text style={[s.text, { fontWeight: "700" }]}>{title}</Text>
             {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
           </View>
-          <Text style={s.small}>
-            {statusLine}
-            {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
-            {home && <Text style={mono}> · 0Siri v{appJson.expo.version}</Text>}
-          </Text>
+          <Text style={s.small}>{statusLine}</Text>
         </View>
         {home && !desktop && <RoomStrip onOpen={(next) => onOpenRoom?.(next)} />}
       </View>
