@@ -10,13 +10,16 @@ const style: Partial<MarkdownStyles> = {
   text: textStyle,
   paragraph: { marginTop: 0, marginBottom: 6 },
   list: { marginBottom: 6 },
+  // 목록 번호·점은 라이브러리 기본(검정)이라 어두운 테마에서 안 보였다
+  listOrderedItemIcon: { color: colors.text },
+  listUnorderedItemIcon: { color: colors.text },
   headingContainer: { marginTop: 8, marginBottom: 4 },
   heading1: { fontSize: 21, lineHeight: 27 },
   heading2: { fontSize: 19, lineHeight: 25 },
   heading3: { fontSize: 17, lineHeight: 23 },
   link: { color: colors.blueDark, textDecorationLine: "underline" },
-  codeInline: { backgroundColor: "#E2E4E7", color: colors.text },
-  codeBlock: { backgroundColor: "#E2E4E7", color: colors.text },
+  codeInline: { backgroundColor: colors.sunk, color: colors.text },
+  codeBlock: { backgroundColor: colors.sunk, color: colors.text },
 };
 const renderCodeBlock: RenderRules["fence"] = (node, _children, _parent, styles) => (
   <Text key={node.key} selectable style={styles.codeBlock as TextStyle}>

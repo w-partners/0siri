@@ -533,8 +533,8 @@ function Shell({
           <View
             style={{
               paddingHorizontal: 22,
-              paddingTop: 10,
-              paddingBottom: 7,
+              paddingTop: 4,
+              paddingBottom: 4,
               alignItems: "center",
             }}
           >
@@ -544,16 +544,6 @@ function Shell({
                 flexDirection: "row",
                 width: "100%",
                 maxWidth: 420,
-                padding: 5,
-                backgroundColor: colors.card,
-                borderRadius: 40,
-                shadowColor: colors.text,
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.07,
-                shadowRadius: 18,
-                elevation: 3,
-                borderWidth: 1,
-                borderColor: colors.line,
               }}
             >
               {nav.map((item) => (
@@ -605,19 +595,18 @@ function NavButton({
       onPress={onPress}
       style={{
         flex: 1,
-        height: 47,
+        height: 40,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: active ? colors.accentSoft : "transparent",
-        borderRadius: 28,
-        gap: 2,
       }}
     >
-      <item.icon size={21} strokeWidth={1.8} color={active ? colors.accent : colors.text} />
-      <Text style={{ fontSize: 10, color: active ? colors.accent : colors.text }}>
-        {item.label}
-      </Text>
-      {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: 3, right: "22%" }} />}
+      {/* Muse 처럼 아이콘만 — 이름은 accessibilityLabel 로 읽힌다 */}
+      <item.icon
+        size={24}
+        strokeWidth={active ? 2.4 : 1.7}
+        color={active ? colors.accent : colors.muted}
+      />
+      {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: 0, right: "24%" }} />}
     </Pressable>
   );
 }

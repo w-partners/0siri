@@ -1119,7 +1119,22 @@ function Character({
       style={{ alignItems: "center" }}
     >
       <Animated.View style={own ? undefined : { transform }}>
-        <CharacterAvatar character={assetId} size={own ? 104 : 72} mood={ownMood} />
+        {/* 동그란 프로필 칸 하나만 차지한다 — 캐릭터는 그 안에서만 움직인다 */}
+        <View
+          style={{
+            width: 60,
+            height: 60,
+            borderRadius: 30,
+            overflow: "hidden",
+            alignItems: "center",
+            // 영시리는 몸 전체(높이 1.08배)가 원 위쪽에 들어가게 — 아래는 이름 알약이 살짝 덮는다
+            justifyContent: own ? "flex-start" : "center",
+            paddingTop: own ? 3 : 0,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <CharacterAvatar character={assetId} size={own ? 46 : 60} mood={ownMood} />
+        </View>
       </Animated.View>
       <Badge count={pending} style={{ position: "absolute", top: 0, right: -6 }} />
     </Pressable>
@@ -1544,19 +1559,18 @@ export function RoomScreen({
 
   return (
     <View style={{ flex: 1 }}>
-      <View
-        style={[s.row, { paddingHorizontal: 8, paddingTop: 4, justifyContent: "space-between" }]}
-      >
-        {home || desktop ? (
-          <View />
-        ) : (
-          <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
+      {/* Muse 처럼: 위 가운데 작은 동그란 프로필 + 그 아래 이름·상태 알약. 양옆 버튼은 같은 줄 */}
+      <View style={{ alignItems: "center", paddingTop: 4, paddingBottom: 6 }}>
+        {!home && !desktop && (
+          <View style={{ position: "absolute", left: 8, top: 4 }}>
+            <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
+          </View>
         )}
         {home && !desktop && (
-          <IconButton icon={Users} label={text.teams} onPress={() => setTeams(true)} />
+          <View style={{ position: "absolute", right: 8, top: 4 }}>
+            <IconButton icon={Users} label={text.teams} onPress={() => setTeams(true)} />
+          </View>
         )}
-      </View>
-      <View style={{ alignItems: "center", gap: 2, paddingBottom: 8 }}>
         <Character
           assetId={character.assetId}
           state={character.state}
@@ -1565,13 +1579,28 @@ export function RoomScreen({
           label={`${title} · ${statusLine}`}
           onPress={() => void openSummary()}
         />
-        <View style={[s.row, { gap: 6 }]}>
-          <Text style={[s.title, { fontSize: 20 }]}>{title}</Text>
-          {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
+        <View
+          style={{
+            marginTop: -6,
+            paddingHorizontal: 14,
+            paddingVertical: 4,
+            borderRadius: 999,
+            backgroundColor: colors.surface,
+            alignItems: "center",
+            borderWidth: 1,
+            borderColor: colors.line,
+          }}
+        >
+          <View style={[s.row, { gap: 6 }]}>
+            <Text style={[s.text, { fontWeight: "700" }]}>{title}</Text>
+            {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
+          </View>
+          <Text style={s.small}>
+            {statusLine}
+            {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
+            {home && <Text style={mono}> · 0Siri v{appJson.expo.version}</Text>}
+          </Text>
         </View>
-        <Text style={s.muted}>{statusLine}</Text>
-        {/* 버전 표시는 여기 한 곳만 (app.json 이 정본) */}
-        {home && <Text style={[s.small, mono]}>0Siri v{appJson.expo.version}</Text>}
       </View>
       {!home && (
         <View
