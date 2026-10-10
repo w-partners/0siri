@@ -1,7 +1,8 @@
 import { ArrowUpRight, Check, ChevronRight, type LucideIcon, X } from "lucide-react-native";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Appearance,
   Image,
   Modal,
@@ -432,6 +433,61 @@ export function Sheet({
             {children}
           </ScrollView>
         </View>
+      </View>
+    </Modal>
+  );
+}
+/**
+ * 왼쪽에서 밀려 나오는 사이드 메뉴 (Muse 처럼 — 마스터 2026-10-10 «상단 메뉴를 선택하면 사이드메뉴가 안나와?»).
+ * 화면 높이 전체, 폭은 화면의 85%(최대 340). 오른쪽 어두운 곳을 누르거나 뒤로 버튼이면 닫힌다.
+ */
+export function Drawer({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const panel = Math.min(340, Math.round(width * 0.85));
+  const x = useRef(new Animated.Value(-panel)).current;
+  useEffect(() => {
+    Animated.timing(x, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: Platform.OS !== "web",
+    }).start();
+  }, [x]);
+  const close = () =>
+    Animated.timing(x, {
+      toValue: -panel,
+      duration: 180,
+      useNativeDriver: Platform.OS !== "web",
+    }).start(onClose);
+  return (
+    <Modal transparent animationType="fade" visible onRequestClose={close}>
+      <View style={{ flex: 1, flexDirection: "row" }}>
+        <Animated.View
+          accessibilityViewIsModal
+          style={{
+            width: panel,
+            backgroundColor: colors.bg,
+            paddingTop: insets.top + 8,
+            paddingBottom: Math.max(insets.bottom, 12),
+            transform: [{ translateX: x }],
+          }}
+        >
+          <View style={{ alignItems: "flex-end", paddingHorizontal: 8 }}>
+            <IconButton icon={X} label={t.common.close} onPress={close} />
+          </View>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 24 }}
+          >
+            {children}
+          </ScrollView>
+        </Animated.View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t.common.close}
+          onPress={close}
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)" }}
+        />
       </View>
     </Modal>
   );

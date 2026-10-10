@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  ArrowUpRight,
   Bell,
   ChevronRight,
   CircleDollarSign,
@@ -15,7 +16,8 @@ import {
   X,
 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Modal, Pressable, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Artifact, BrowserSession } from "../../../packages/domain/src";
 import type {
   AgentArtifact,
@@ -27,6 +29,7 @@ import type {
   RunEvent,
 } from "../../../packages/domain/src/agent";
 import { useAgentWorkspace } from "./agent-workspace";
+import { HtmlFrame } from "./osiri/html-frame";
 import { ActivityScreen, ConnectionsScreen } from "./screens";
 import { t } from "./strings";
 import {
@@ -38,6 +41,7 @@ import {
   Empty,
   ErrorNotice,
   Field,
+  IconButton,
   Mascot,
   resultSummary,
   SectionHeading,
@@ -561,9 +565,48 @@ function display(value: unknown): string {
         ? "—"
         : JSON.stringify(value, null, 2) || "";
 }
+/** 아티팩트가 HTML 페이지면 그 원문 — 영시리의 save_artifact 가 { type: "html", content, filename } 으로 남긴다 */
+const htmlOf = (artifact: AgentArtifact) =>
+  artifact.data.type === "html" && typeof artifact.data.content === "string"
+    ? artifact.data.content
+    : null;
+
+/** HTML 아티팩트: 원문을 글자로 늘어놓지 않고 «열기» 로 페이지를 전체 화면에 띄운다 (Muse 처럼 대화 안에서 깔끔한 참조) */
+function HtmlArtifactCard({ artifact, html }: { artifact: AgentArtifact; html: string }) {
+  const [open, setOpen] = useState(false);
+  const insets = useSafeAreaInsets();
+  return (
+    <Card style={{ gap: 10, backgroundColor: colors.card }}>
+      <View style={s.between}>
+        <Text style={[s.heading, { flex: 1 }]}>{artifact.title}</Text>
+        <Chip>HTML</Chip>
+      </View>
+      {!!artifact.summary && <Text style={s.muted}>{artifact.summary}</Text>}
+      <Button small primary icon={ArrowUpRight} onPress={() => setOpen(true)}>
+        {t.agent.artifact.open}
+      </Button>
+      {open && (
+        <Modal visible animationType="slide" onRequestClose={() => setOpen(false)}>
+          <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
+            <View style={[s.between, { paddingHorizontal: 12, paddingVertical: 6 }]}>
+              <Text numberOfLines={1} style={[s.heading, { flex: 1 }]}>
+                {artifact.title}
+              </Text>
+              <IconButton icon={X} label={t.common.close} onPress={() => setOpen(false)} />
+            </View>
+            <HtmlFrame html={html} />
+          </View>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
 export function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
   const [expanded, setExpanded] = useState(false);
   const rows = Object.entries(artifact.data);
+  const html = htmlOf(artifact);
+  if (html) return <HtmlArtifactCard artifact={artifact} html={html} />;
   return (
     <Card style={{ gap: 13, backgroundColor: colors.card }}>
       <View style={s.between}>

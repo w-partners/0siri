@@ -264,6 +264,9 @@ export const t = {
     artifact: {
       showSummary: "요약 보기",
       exploreFull: "전체 결과 보기",
+      open: "열기",
+      mine: "영시리가 만든 것",
+      mineEmpty: "아직 없어요 — 대화에서 «… 페이지로 만들어줘» 처럼 시키면 여기에 모여요.",
     },
     delegate: {
       title: "결과를 맡기기",

@@ -60,7 +60,7 @@ import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
 import { UpdateBanner } from "./src/osiri/update";
 import { ThreadsProvider } from "./src/threads";
-import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, Sheet, s } from "./src/ui";
+import { Badge, Button, colors, Drawer, ErrorNotice, fonts, IconButton, isDark, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
 type Tab =
@@ -632,8 +632,8 @@ function Shell({
         )}
         {!!toast && <Toast message={toast} bottom={94} onClose={clearToast} />}
         {menuOpen && (
-          <Sheet title={text.menu} onClose={() => setMenuOpen(false)}>
-            {/* Muse 사이드 메뉴처럼: 맨 위에 대화방 (새 대화방 + 목록), 아래에 스토어 · 자동화 · 설정 */}
+          <Drawer onClose={() => setMenuOpen(false)}>
+            {/* Muse 사이드 메뉴처럼(왼쪽에서 밀려 나온다): 맨 위에 대화방 (새 대화방 + 목록), 아래에 스토어 · 자동화 · 설정 */}
             <NewRoomForm
               onCreated={(next) => {
                 setMenuOpen(false);
@@ -662,7 +662,7 @@ function Shell({
                 <Text style={s.text}>{item.label}</Text>
               </Pressable>
             ))}
-          </Sheet>
+          </Drawer>
         )}
         {detail && (
           <Details
