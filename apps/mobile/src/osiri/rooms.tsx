@@ -495,35 +495,61 @@ function WorkingDot() {
 }
 
 // 대화가 캐릭터 양옆으로 올라가며 흐려진다(Muse) — 머리는 덮개가 아니라 반투명 블러 유리다.
-// 웹: backdrop-filter + 아래로 사라지는 마스크. 앱: expo-blur(Android 는 Dimezis), 아래 가장자리는 약한 블러 한 겹으로 부드럽게.
+// 효과(블러+배경색)의 세기는 위에서 아래로 급하게 줄어드는 알파 곡선 하나를 웹·앱이 같이 쓴다
+// (마스터 2026-10-10 «중간 70, 25% 남은 지점 30, 10% 남은 지점 0 — 기하급수로»).
+const FADE: [number, number][] = [
+  [0, 1],
+  [50, 0.7],
+  [75, 0.3],
+  [90, 0],
+];
+const fadeAt = (pct: number) => {
+  const i = FADE.findIndex(([p]) => p >= pct);
+  if (i <= 0) return i === 0 ? FADE[0][1] : 0;
+  const [p0, a0] = FADE[i - 1];
+  const [p1, a1] = FADE[i];
+  return a0 + ((a1 - a0) * (pct - p0)) / (p1 - p0);
+};
+const STEPS = Array.from({ length: 19 }, (_, i) => i * 5); // 0,5,…,90
+const TINT = 0.45; // 맨 위 배경색 진하기 — 글자가 읽힐 만큼만
+const hex = (a: number) =>
+  Math.round(a * 255)
+    .toString(16)
+    .padStart(2, "0");
+const gradient = (color: (a: number) => string) =>
+  `linear-gradient(to bottom, ${STEPS.map((p) => `${color(fadeAt(p))} ${p}%`).join(", ")}, transparent 100%)`;
 const fadeBehind = (bg: string): object =>
   Platform.OS === "web"
     ? {
         backdropFilter: "blur(12px)",
-        backgroundColor: `${bg}59`,
-        maskImage: "linear-gradient(to bottom, #000 78%, transparent)",
+        backgroundImage: gradient((a) => `${bg}${hex(a * TINT)}`),
+        maskImage: gradient((a) => `rgba(0,0,0,${a.toFixed(3)})`),
       }
-    : {};
+    : { experimental_backgroundImage: gradient((a) => `${bg}${hex(a * TINT)}`) };
+// ponytail: 앱은 블러에 마스크를 씌울 수 없어 같은 곡선으로 세기를 낮춘 띠 18개를 쌓는다. 띠가 보이면 masked-view 로.
+// 효과는 머리 뒤에 깔린 층에만 — 머리 자체에 마스크를 걸면 캐릭터·이름 알약까지 같이 투명해진다
 function BlurBehind() {
-  if (Platform.OS === "web") return null;
+  const layer = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } as const;
+  if (Platform.OS === "web")
+    return <View pointerEvents="none" style={[layer, fadeBehind(colors.bg)]} />;
   const tint = isDark ? "dark" : "light";
-  const edge = 22;
   return (
     <>
-      <BlurView
-        pointerEvents="none"
-        intensity={45}
-        tint={tint}
-        experimentalBlurMethod="dimezisBlurView"
-        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: edge }}
-      />
-      <BlurView
-        pointerEvents="none"
-        intensity={15}
-        tint={tint}
-        experimentalBlurMethod="dimezisBlurView"
-        style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: edge }}
-      />
+      {STEPS.slice(0, -1).map((p) => {
+        const a = fadeAt(p + 2.5);
+        return a < 0.03 ? null : (
+          <BlurView
+            key={p}
+            pointerEvents="none"
+            intensity={Math.round(45 * a)}
+            tint={tint}
+            experimentalBlurMethod="dimezisBlurView"
+            style={{ position: "absolute", left: 0, right: 0, top: `${p}%`, height: "5%" }}
+          />
+        );
+      })}
+      {/* 배경색 그라데이션은 블러 위에 */}
+      <View pointerEvents="none" style={[layer, fadeBehind(colors.bg)]} />
     </>
   );
 }
@@ -1892,8 +1918,7 @@ export function RoomScreen({
             left: 0,
             right: 0,
             zIndex: 2,
-            paddingBottom: 22,
-            ...fadeBehind(colors.bg),
+            paddingBottom: 40,
           },
         ]}
       >
@@ -2019,7 +2044,7 @@ export function RoomScreen({
               header={
                 float ? (
                   <>
-                    <View style={{ height: Math.max(0, headHeight - 22) }} />
+                    <View style={{ height: Math.max(0, headHeight - 40) }} />
                     {header}
                   </>
                 ) : (
