@@ -8,10 +8,8 @@ import {
   ChevronUp,
   Images,
   Lightbulb,
-  List,
   MessageSquarePlus,
   MoreHorizontal,
-  Plus,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -28,6 +26,7 @@ import {
 import {
   Animated,
   AppState,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -165,9 +164,6 @@ const text = {
   unmute: "알림 켜기",
   noMatch: "찾는 방이 없어요",
   back: "뒤로",
-  teams: "대화방 목록",
-  allRooms: "전체",
-  addTeam: "팀 추가",
   newRoom: "새 대화방",
   newRoomPlaceholder: "예: 이사 준비, 이번 달 블로그",
   createRoom: "만들기",
@@ -494,16 +490,27 @@ function WorkingDot() {
   );
 }
 
+// ponytail: 웹은 진짜 블러(backdrop-filter) + 아래로 사라지는 마스크, 앱은 배경색 그라데이션(RN 0.81 new arch).
+// 앱도 블러가 필요하면 expo-blur 를 붙인다(네이티브 모듈 추가 → APK 재빌드).
+const fadeBehind = (bg: string): object =>
+  Platform.OS === "web"
+    ? {
+        backdropFilter: "blur(10px)",
+        backgroundColor: `${bg}cc`,
+        maskImage: "linear-gradient(to bottom, #000 72%, transparent)",
+      }
+    : { experimental_backgroundImage: `linear-gradient(to bottom, ${bg} 72%, ${bg}00)` };
+
 /**
  * 홈(영시리 대화) 위 대화방 줄 — 팀을 붙일 때마다 방이 늘므로 목록이 늘 보이게 (마스터 2026-10-10).
  * 영시리 방은 지금 보고 있으므로 빼고, 팀 방을 동그란 얼굴로 가로로 나열한다. 결재 대기는 배지.
- * 전체 목록(검색·고정·알림)은 «전체» 로 여는 시트의 RoomList 가 맡는다 — 정렬은 서버가 한다.
+ * 전체 목록·새 대화방·스토어는 왼쪽 위 ≡ 메뉴 한 곳에만 둔다(마스터 2026-10-10 «전체 부분의 버튼이 두개야???»).
+ * 팀 방이 없으면 줄 자체를 그리지 않는다 — Muse 처럼 머리는 얼굴 하나만.
  */
-function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () => void }) {
-  const { navigate } = useWorkspace();
+function RoomStrip({ onOpen }: { onOpen: (room: Room) => void }) {
   const { rooms } = useRooms();
   const teams = (rooms ?? []).filter((r) => !isHomeRoom(r) && !r.archived);
-  const [creating, setCreating] = useState(false);
+  if (!teams.length) return null;
   const cell = (key: string, label: string, onPress: () => void, face: ReactNode, badge = 0) => (
     <Pressable
       key={key}
@@ -537,10 +544,9 @@ function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () 
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      style={{ flexGrow: 0, borderBottomWidth: 1, borderBottomColor: colors.line }}
+      style={{ flexGrow: 0, alignSelf: "stretch" }}
       contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 6, gap: 4 }}
     >
-      {cell("all", text.allRooms, onAll, <List size={20} color={colors.text} />)}
       {teams.map((r) =>
         cell(
           r.id,
@@ -549,23 +555,6 @@ function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () 
           <CharacterAvatar character={r.character} size={40} />,
           r.pendingApprovals,
         ),
-      )}
-      {cell(
-        "new",
-        text.newRoom,
-        () => setCreating(true),
-        <MessageSquarePlus size={20} color={colors.accent} />,
-      )}
-      {cell("add", text.addTeam, () => navigate("store"), <Plus size={20} color={colors.accent} />)}
-      {creating && (
-        <Sheet title={text.newRoom} onClose={() => setCreating(false)}>
-          <NewRoomForm
-            onCreated={(room) => {
-              setCreating(false);
-              onOpen(room);
-            }}
-          />
-        </Sheet>
       )}
     </ScrollView>
   );
@@ -1586,7 +1575,7 @@ export function RoomScreen({
   const [tab, setTab] = useState<RoomTab>("chat");
   const [boardOpen, setBoardOpen] = useState(false);
   const [mood, setMood] = useState<Mood>("idle");
-  const [teams, setTeams] = useState(false);
+  const [headHeight, setHeadHeight] = useState(0);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 영시리와 이야기하는 방(홈·주제방): 팀 탭·현황판·팀 입력 안내 없이 대화만
@@ -1830,10 +1819,28 @@ export function RoomScreen({
   );
   const waiting = messages?.filter(isPendingCard) ?? [];
 
+  // Muse 처럼 머리가 대화 위에 떠 있고, 대화가 그 밑으로 지나가며 흐려진다 (마스터 2026-10-10 «대화가 넘가면 블러 처리되는 것도 없고»).
+  // 팀 방은 탭 줄·현황판이 머리 아래 붙어 있어 지금처럼 쌓는다.
+  const float = plain && !desktop;
   return (
     <View style={{ flex: 1 }}>
       {/* Muse 처럼: 위 가운데 작은 동그란 프로필 + 그 아래 이름·상태 알약. 양옆 버튼은 같은 줄 */}
-      <View style={{ alignItems: "center", paddingTop: 4, paddingBottom: 6 }}>
+      <View
+        pointerEvents="box-none"
+        onLayout={(e) => setHeadHeight(e.nativeEvent.layout.height)}
+        style={[
+          { alignItems: "center", paddingTop: 4, paddingBottom: 6 },
+          float && {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 2,
+            paddingBottom: 22,
+            ...fadeBehind(colors.bg),
+          },
+        ]}
+      >
         {!home && !desktop && (
           <View style={{ position: "absolute", left: 8, top: 4 }}>
             <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
@@ -1876,10 +1883,8 @@ export function RoomScreen({
             {home && <Text style={mono}> · 0Siri v{appJson.expo.version}</Text>}
           </Text>
         </View>
+        {home && !desktop && <RoomStrip onOpen={(next) => onOpenRoom?.(next)} />}
       </View>
-      {home && !desktop && (
-        <RoomStrip onOpen={(next) => onOpenRoom?.(next)} onAll={() => setTeams(true)} />
-      )}
       {!plain && (
         <View
           accessibilityRole="tablist"
@@ -1958,7 +1963,16 @@ export function RoomScreen({
               roomId={room.id}
               active
               onMood={setMood}
-              header={header}
+              header={
+                float ? (
+                  <>
+                    <View style={{ height: Math.max(0, headHeight - 22) }} />
+                    {header}
+                  </>
+                ) : (
+                  header
+                )
+              }
               footer={
                 waiting.length ? <View style={{ gap: 10 }}>{waiting.map(render)}</View> : null
               }
@@ -1985,17 +1999,6 @@ export function RoomScreen({
           {tab === "ideas" && <IdeasTab roomId={room.id} />}
           {tab === "files" && <FilesTab roomId={room.id} />}
         </ScrollView>
-      )}
-      {teams && (
-        <Sheet title={text.teams} onClose={() => setTeams(false)}>
-          <RoomList
-            activeId={room.id}
-            onOpen={(next, nextFocus) => {
-              setTeams(false);
-              onOpenRoom?.(next, nextFocus);
-            }}
-          />
-        </Sheet>
       )}
       {settingsOpen && (
         <Sheet title={text.roomSettings} subtitle={title} onClose={() => setSettingsOpen(false)}>
