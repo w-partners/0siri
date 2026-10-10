@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import "./config.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -46,6 +47,7 @@ import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
+import { Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { SearchService } from "./search.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -84,6 +86,10 @@ export async function createApp(
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
   const feed = new Feed(db, new SearchService(db));
+  const subscriptions = new Subscriptions(db, {
+    dir: `${config.dataDir}/subscriptions`,
+    ...(config.subscriptionImage ? { image: config.subscriptionImage } : {}),
+  });
   const osiri = {
     db,
     rooms,
@@ -96,9 +102,10 @@ export async function createApp(
     routing,
     skills,
     feed,
+    subscriptions,
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
-  agent.osiri = { memories, routing };
+  agent.osiri = { memories, routing, subscriptions };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -190,6 +197,13 @@ export async function createApp(
     "/api/auth",
     publicAccountRoutes(accounts, otpGateway(config.otpBase, config.otpKeyFile)),
   );
+  // 공개: 본인 PC 구독 러너 내려받기 (파일 하나, 비밀 없음 — 열쇠는 실행할 때 따로 넣는다)
+  app.get("/osiri-runner.mjs", async (c) =>
+    c.body(await readFile(new URL("../../runner/osiri-runner.mjs", import.meta.url), "utf8"), 200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "content-disposition": 'attachment; filename="osiri-runner.mjs"',
+    }),
+  );
   app.route("/api/worker", workerRoutes(osiri));
   // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
   app.route("/api/worker", skillWorkerRoutes(skills));
@@ -230,6 +244,7 @@ export async function createApp(
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
+  app.route("/api", subscriptionRoutes(subscriptions));
   app.route(
     "/api",
     storeRoutes(

@@ -53,6 +53,8 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.hos
       (config.webDist ? ` · web UI from ${config.webDist}` : " · web UI 없음 (WEB_DIST 미설정)"),
   ),
 );
+// 본인 PC 구독 러너가 바깥에서 접속하는 웹소켓 (/api/subscription/runner)
+osiri.subscriptions.attach(server as import("node:http").Server);
 const shutdown = () => {
   server.close(() => {
     provisioner.stop();

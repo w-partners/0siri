@@ -1,0 +1,14 @@
+# 구독 사용 이미지 — 사용자 한 명 = 컨테이너 하나 (기획 §08 «도커 내부»).
+# 안에는 그 사람의 CLI(claude·codex)·ACP 어댑터·로그인용 tmux 만 있다. DB·서버 .env·다른 사용자 볼륨은 없다.
+# 중개(서버)는 docker exec 표준입출력으로만 말한다 — 컨테이너로 들어오는 포트는 열지 않는다.
+# 빌드: docker build -f Dockerfile.subscription -t osiri/subscription .
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends tmux ca-certificates git \
+  && rm -rf /var/lib/apt/lists/*
+RUN npm install -g --silent @anthropic-ai/claude-code @openai/codex \
+  @agentclientprotocol/claude-agent-acp @agentclientprotocol/codex-acp \
+  && npm cache clean --force
+# 서버가 --user 로 볼륨 주인 uid 를 넘긴다. HOME 이 볼륨이라 로그인 정보는 그 사람 폴더에만 남는다
+ENV HOME=/home/agent
+WORKDIR /home/agent
+CMD ["sleep", "infinity"]

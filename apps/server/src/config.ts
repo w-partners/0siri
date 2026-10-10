@@ -33,6 +33,8 @@ export interface Config {
   host: string;
   publicUrl: string;
   dataDir: string;
+  /** 구독 사용(서버 컨테이너) 이미지 — SUBSCRIPTION_IMAGE. 없으면 서버 구독은 꺼지고 «내 PC» 만 된다 */
+  subscriptionImage?: string;
   databaseUrl?: string;
   accessKey?: string;
   encryptionKey?: string;
@@ -163,6 +165,7 @@ export function readConfig(): Config {
     registryUrl: process.env.REGISTRY_URL?.trim() || undefined,
     webDist: process.env.WEB_DIST?.trim() || undefined,
     releasesDir: process.env.RELEASES_DIR?.trim() || undefined,
+    subscriptionImage: process.env.SUBSCRIPTION_IMAGE?.trim() || undefined,
     otpBase: process.env.OTP_BASE?.trim().replace(/\/$/, "") || undefined,
     otpKeyFile: process.env.OTP_KEY_FILE?.trim() || undefined,
     pagePickerBase: process.env.PAGE_PICKER_BASE?.trim().replace(/\/$/, "") || undefined,

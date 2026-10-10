@@ -1,7 +1,7 @@
 // 0Siri 화면 7 · 연결 (MCP 도구 + 모델 계정 BYOK). 계약: docs/0siri-api-contract.md «연결 (화면 7)».
 // 캐릭터를 두지 않는다 — 도구·키 상태만 보인다. 키 원문은 제출 즉시 입력란에서 지우고 다시 그리지 않는다.
-import { type ReactNode, useState } from "react";
-import { Text, View } from "react-native";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Linking, Text, View } from "react-native";
 import {
   COMING_SOON_LABEL,
   MCP_AUTH_LABELS,
@@ -15,9 +15,16 @@ import {
   MODEL_KEY_PROVIDER_LABELS,
   MODEL_KEY_PROVIDERS,
   type ModelKeyErrorKind,
+  SUBSCRIPTION_PLACE_LABELS,
+  SUBSCRIPTION_PLACES,
+  SUBSCRIPTION_PROVIDER_LABELS,
+  SUBSCRIPTION_PROVIDERS,
+  type SubscriptionProvider,
+  type SubscriptionView,
 } from "../../../../packages/domain/src/osiri";
 import type { Mcp, McpTool } from "../../../server/src/osiri/mcp.ts";
 import type { ModelKeyRow } from "../../../server/src/osiri/routing.ts";
+import { apiBase } from "../api";
 import { ApiError } from "../api-response";
 import {
   Button,
@@ -94,10 +101,41 @@ const text = {
   keySaved: "키를 등록했습니다",
   removeKey: "이 키를 지우면 즉시 폐기되고 공용 열쇠(월 상한 적용)로 돌아갑니다.",
   missingRow: (label: string) => `서버 응답에 ${label} 항목이 없습니다`,
-  subscription: "ChatGPT·Claude 구독 계정 연결",
-  subscriptionChip: "지원 예정/제한",
-  subscriptionHint: "제공자가 공식 지원할 때만 엽니다. 기본 경로는 API 키입니다.",
+  subTitle: "모델 계정 (내 구독)",
+  subOn: "구독으로 답하는 중",
+  subOff: "꺼짐 — 공용 열쇠·API 키로 답함",
+  subProvider: "구독",
+  subPlace: "실행 위치",
+  subTurnOn: "내 구독으로 답하기",
+  subTurnOff: "끄기 (공용 열쇠로 돌아가기)",
+  subRule:
+    "대화 중 파일 쓰기·명령 실행은 막혀 있습니다. 비용은 본인 구독에서 나갑니다. 구독을 다른 서비스에서 쓰는 것은 제공자 약관을 확인하세요.",
+  serverOff: "서버 실행이 아직 설정되지 않았습니다 — «내 PC» 로 쓰세요",
+  serverHint: "내 전용 컨테이너에서 돕니다. 로그인 정보는 그 컨테이너 안에만 남습니다.",
+  openLogin: "로그인 터미널 열기",
+  checkLogin: "로그인 확인",
+  loggedIn: "로그인됨",
+  notLoggedIn: "로그인 안 됨",
+  terminal: "로그인 터미널",
+  openLink: "화면의 로그인 링크 열기",
+  terminalHint: "화면의 링크를 열어 로그인하고, 코드를 붙여 넣으라고 하면 아래에 넣으세요.",
+  typeHere: "터미널에 입력",
+  send: "보내기",
+  pcHint:
+    "내 PC 에서 러너를 실행해 두면, 영시리가 그 PC 의 구독으로 답합니다. 로그인 정보는 PC 밖으로 나가지 않습니다.",
+  pcPrep: (cli: string) => `준비: Node 22 이상, 그리고 그 PC 에서 ${cli}`,
+  pcConnected: (cwd: string) => `PC 러너 연결됨 · ${cwd}`,
+  pcDisconnected: "PC 러너 연결 안 됨",
+  pcDownload: "러너 내려받기 (osiri-runner.mjs)",
+  pcCommand: "PC 연결 명령 만들기",
+  pcCommandAgain: "새 명령 만들기 (옛 명령은 끊김)",
+  pcCommandHint: "이 줄을 PC 터미널에 붙여 넣으세요. 열쇠가 들어 있어 다시 보여 주지 않습니다.",
 };
+const CLI_LOGIN: Record<SubscriptionProvider, string> = {
+  codex: "npm i -g @openai/codex && codex login",
+  claude: "npm i -g @anthropic-ai/claude-code && claude auth login",
+};
+type SubView = SubscriptionView;
 
 // ---- 화면 7·8·11 이 같이 쓰는 조각 (설정·기억 화면이 여기서 가져간다 — 사본 금지) ----
 export const mono = { fontFamily: fonts.mono };
@@ -190,6 +228,7 @@ export function ConnectionsScreen() {
       </View>
       <View style={column}>
         <ModelKeysPanel />
+        <SubscriptionPanel />
       </View>
     </View>
   );
@@ -545,14 +584,6 @@ function ModelKeysPanel() {
             </>
           )}
         </Loaded>
-        {/* 누를 수 없는 안내 — 구독 OAuth 는 제공자 공식 지원 전에는 열지 않는다 */}
-        <View style={{ gap: 4 }}>
-          <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-            <Text style={s.text}>{text.subscription}</Text>
-            <Chip>{text.subscriptionChip}</Chip>
-          </View>
-          <Text style={s.small}>{text.subscriptionHint}</Text>
-        </View>
         <Text style={s.small}>{text.keyRule}</Text>
       </Card>
     </View>
@@ -687,6 +718,252 @@ function KeyCard({ item, onChanged }: { item: ModelKeyRow; onChanged: () => void
             })
           }
         />
+      )}
+    </View>
+  );
+}
+
+// ---- 모델 계정 (내 구독) — 서버 컨테이너 또는 내 PC 러너. 서버 osiri/subscription.ts ----
+function SubscriptionPanel() {
+  const { api, notify } = useWorkspace();
+  const view = useLoad(() => api.request<SubView>("/api/subscription"));
+  const save = useAction();
+  // 스켈레톤 없이 다시 읽는다 — retry 는 카드를 다시 그려 방금 만든 명령·터미널을 지운다
+  const refresh = async () => view.setData(await api.request<SubView>("/api/subscription"));
+  const put = (patch: Partial<Pick<SubView, "active" | "provider" | "place">>) =>
+    save.run(async () =>
+      view.setData(await api.request<SubView>("/api/subscription", patch, "PUT")),
+    );
+  return (
+    <View>
+      <SectionHeading title={text.subTitle} />
+      <Card style={{ gap: 14 }}>
+        <Loaded state={view} rows={3} height={44}>
+          {(sub) => (
+            <>
+              <Chip tint={sub.active ? colors.okBg : undefined}>
+                {sub.active
+                  ? `${text.subOn} · ${SUBSCRIPTION_PROVIDER_LABELS[sub.provider]} · ${SUBSCRIPTION_PLACE_LABELS[sub.place]}`
+                  : text.subOff}
+              </Chip>
+              <View style={{ gap: 6 }}>
+                <Text style={s.small}>{text.subProvider}</Text>
+                <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                  {SUBSCRIPTION_PROVIDERS.map((p) => (
+                    <Choice
+                      key={p}
+                      label={SUBSCRIPTION_PROVIDER_LABELS[p]}
+                      selected={sub.provider === p}
+                      onPress={() => void put({ provider: p })}
+                    />
+                  ))}
+                </View>
+                <Text style={s.small}>{text.subPlace}</Text>
+                <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                  {SUBSCRIPTION_PLACES.map((p) => (
+                    <Choice
+                      key={p}
+                      label={SUBSCRIPTION_PLACE_LABELS[p]}
+                      selected={sub.place === p}
+                      disabled={p === "server" && !sub.serverAvailable}
+                      onPress={() => void put({ place: p })}
+                    />
+                  ))}
+                </View>
+              </View>
+              {sub.place === "server" ? (
+                sub.serverAvailable ? (
+                  <ServerLogin provider={sub.provider} />
+                ) : (
+                  <Text style={s.small}>{text.serverOff}</Text>
+                )
+              ) : (
+                <PcRunner sub={sub} refresh={refresh} />
+              )}
+              <ErrorNotice error={save.error} />
+              <Button
+                small
+                primary={!sub.active}
+                busy={save.busy}
+                onPress={() =>
+                  void put({ active: !sub.active }).then(() =>
+                    notify(sub.active ? text.subOff : text.subOn),
+                  )
+                }
+              >
+                {sub.active ? text.subTurnOff : text.subTurnOn}
+              </Button>
+              <Text style={s.small}>{text.subRule}</Text>
+            </>
+          )}
+        </Loaded>
+      </Card>
+    </View>
+  );
+}
+
+/** 서버 컨테이너 안 tmux 로그인 터미널. 열려 있는 동안 2초마다 화면을 다시 읽는다 */
+function ServerLogin({ provider }: { provider: SubscriptionProvider }) {
+  const { api } = useWorkspace();
+  const [screen, setScreen] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [login, setLogin] = useState<{ loggedIn: boolean; detail: string }>();
+  const link = screen?.match(/https:\/\/[^\s]+/)?.[0];
+  const act = useAction();
+  useEffect(() => {
+    if (screen === null) return;
+    const timer = setInterval(() => {
+      void api
+        .request<{ screen: string | null }>("/api/subscription/terminal")
+        .then((r) => setScreen(r.screen ?? ""))
+        .catch(() => {});
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [api, screen === null]);
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.small}>{text.serverHint}</Text>
+      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+        <Button
+          small
+          busy={act.busy}
+          onPress={() =>
+            void act.run(async () => {
+              const r = await api.request<{ screen: string | null }>(
+                "/api/subscription/login",
+                { provider },
+                "POST",
+              );
+              setScreen(r.screen ?? "");
+            })
+          }
+        >
+          {text.openLogin}
+        </Button>
+        <Button
+          small
+          disabled={act.busy}
+          onPress={() =>
+            void act.run(async () =>
+              setLogin(await api.request(`/api/subscription/status?provider=${provider}`)),
+            )
+          }
+        >
+          {text.checkLogin}
+        </Button>
+        {login && (
+          <Chip tint={login.loggedIn ? colors.okBg : colors.warnBg}>
+            {login.loggedIn ? text.loggedIn : text.notLoggedIn}
+          </Chip>
+        )}
+      </View>
+      <ErrorNotice error={act.error} />
+      {screen !== null && (
+        <View style={{ gap: 6 }}>
+          <Text style={[s.small, { fontWeight: "600", color: colors.text }]}>{text.terminal}</Text>
+          <Text
+            selectable
+            style={[
+              mono,
+              {
+                fontSize: 12,
+                lineHeight: 17,
+                padding: 10,
+                borderRadius: 8,
+                backgroundColor: "#0b0f0e",
+                color: "#d7e3df",
+              },
+            ]}
+          >
+            {screen || " "}
+          </Text>
+          {/* 터미널은 줄바꿈으로 링크를 끊는다(-J 로 이어 붙인 뒤에도 폭에 걸리면) — 첫 https 링크를 버튼으로 연다 */}
+          {link && (
+            <Button small primary onPress={() => void Linking.openURL(link)}>
+              {text.openLink}
+            </Button>
+          )}
+          <Text style={s.small}>{text.terminalHint}</Text>
+          <Field
+            label={text.typeHere}
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={input}
+            onChangeText={setInput}
+            onSubmitEditing={() => void sendKeys()}
+          />
+          <Button small disabled={act.busy} onPress={() => void sendKeys()}>
+            {text.send}
+          </Button>
+        </View>
+      )}
+    </View>
+  );
+  async function sendKeys() {
+    const typed = input;
+    setInput("");
+    await act.run(async () => {
+      const r = await api.request<{ screen: string | null }>(
+        "/api/subscription/terminal",
+        { text: typed, enter: true },
+        "POST",
+      );
+      setScreen(r.screen ?? "");
+    });
+  }
+}
+
+/** 내 PC 러너: 명령 한 줄(열쇠 포함)을 만들어 보여 주고, 연결 상태를 보인다 */
+function PcRunner({ sub, refresh }: { sub: SubView; refresh: () => Promise<void> }) {
+  const { api } = useWorkspace();
+  const [command, setCommand] = useState<string>();
+  const act = useAction();
+  const download = `${apiBase()}/osiri-runner.mjs`;
+  // 사용자가 PC 에서 러너를 켜면 «연결됨» 으로 바뀌어야 한다 — 5초마다 상태만 다시 읽는다
+  const latest = useRef(refresh);
+  latest.current = refresh;
+  useEffect(() => {
+    const timer = setInterval(() => void latest.current().catch(() => {}), 5000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.small}>{text.pcHint}</Text>
+      <Text style={[s.small, mono]}>{text.pcPrep(CLI_LOGIN[sub.provider])}</Text>
+      <Chip tint={sub.runner.connected ? colors.okBg : undefined}>
+        {sub.runner.connected ? text.pcConnected(sub.runner.cwd) : text.pcDisconnected}
+      </Chip>
+      <Button small onPress={() => void Linking.openURL(download)}>
+        {text.pcDownload}
+      </Button>
+      <Button
+        small
+        busy={act.busy}
+        onPress={() =>
+          void act.run(async () => {
+            const { key } = await api.request<{ key: string }>(
+              "/api/subscription/runner-key",
+              {},
+              "POST",
+            );
+            setCommand(`node osiri-runner.mjs ${apiBase()} ${key}`);
+            await refresh();
+          })
+        }
+      >
+        {sub.runnerKeyIssued ? text.pcCommandAgain : text.pcCommand}
+      </Button>
+      <ErrorNotice error={act.error} />
+      {command && (
+        <View style={{ gap: 4 }}>
+          <Text
+            selectable
+            style={[mono, s.small, { padding: 8, borderRadius: 8, backgroundColor: colors.sunk }]}
+          >
+            {command}
+          </Text>
+          <Text style={s.small}>{text.pcCommandHint}</Text>
+        </View>
       )}
     </View>
   );

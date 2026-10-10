@@ -12,6 +12,10 @@ import {
 } from "../../../../packages/domain/src/agent.ts";
 import { calendarRangeSchema } from "../../../../packages/domain/src/index.ts";
 import { jevActionPrefix, parseJevAction } from "../../../../packages/domain/src/jev.ts";
+import {
+  SUBSCRIPTION_PLACE_LABELS,
+  SUBSCRIPTION_PROVIDER_LABELS,
+} from "../../../../packages/domain/src/osiri.ts";
 import { computerInstructions, computerTools } from "../computer-tools.ts";
 import type { Config } from "../config.ts";
 import { createJevAdapter, type JevAdapter } from "../jev/adapter.ts";
@@ -447,11 +451,62 @@ export class ConversationAgent extends AbstractAgent {
         let agent: ReturnType<typeof buildAgent> | undefined;
         let subscription: { unsubscribe(): void } | undefined;
         let cancelled = false;
+        const turn = new AbortController();
         void (async () => {
           let persona: string | undefined;
           let route: ChatRoute | undefined;
           try {
             persona = await this.persona?.(this.owner, input.threadId);
+            // 0Siri 구독 사용: 켜 둔 사람은 공용키·BYOK 대신 본인 구독(서버 컨테이너·내 PC)으로 답한다
+            const subscriptions = this.service.osiri?.subscriptions;
+            const sub = await subscriptions?.activeFor(this.owner);
+            if (subscriptions && sub) {
+              const messageId = randomUUID();
+              subscriber.next({
+                type: EventType.RUN_STARTED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+              await subscriptions.ask(
+                this.owner,
+                sub,
+                subscriptionPrompt(persona, input.messages),
+                (delta) => {
+                  if (delta)
+                    subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta });
+                },
+                turn.signal,
+              );
+              subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId });
+              // 비용은 본인 구독으로 나간다(0원). 토큰 수는 ACP 가 알려주지 않는다
+              await routing
+                ?.record(this.owner, {
+                  tier: 3,
+                  model: `subscription/${sub.provider}`,
+                  tokensIn: 0,
+                  tokensOut: 0,
+                  tokensUnreported: true,
+                  scriptSaved: false,
+                  source: "subscription",
+                  reason: `내 구독(${SUBSCRIPTION_PROVIDER_LABELS[sub.provider]}) · ${SUBSCRIPTION_PLACE_LABELS[sub.place]}`,
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  messageIds: [messageId],
+                })
+                .catch((error: unknown) =>
+                  console.error(
+                    `[osiri] 구독 사용량 적재 실패 run=${input.runId}: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+                );
+              subscriber.next({
+                type: EventType.RUN_FINISHED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.complete();
+              return;
+            }
             // 라우팅 실패도 숨기지 않는다 — 기본 모델로 조용히 넘어가면 설정·상한·BYOK 가 무시된다.
             route = await routing?.forChat(
               this.owner,
@@ -483,6 +538,7 @@ export class ConversationAgent extends AbstractAgent {
         })();
         return () => {
           cancelled = true;
+          turn.abort();
           browserAbort.abort();
           agent?.abortRun();
           subscription?.unsubscribe();
@@ -579,4 +635,28 @@ export class ConversationAgent extends AbstractAgent {
       task,
     };
   }
+}
+
+/** 구독 사용: ACP 에이전트는 턴마다 새 세션이라 최근 대화를 프롬프트에 싣는다 */
+export function subscriptionPrompt(
+  persona: string | undefined,
+  messages: RunAgentInput["messages"],
+) {
+  const text = (content: unknown) =>
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => (part?.type === "text" ? String(part.text ?? "") : "")).join("")
+        : "";
+  const turns = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ who: m.role === "user" ? "사용자" : "영시리", text: text(m.content).trim() }))
+    .filter((m) => m.text)
+    .slice(-20);
+  return [
+    persona ?? "너는 영시리(0Siri), 이 사람의 개인 에이전트다. 한국어로 간결하게 답한다.",
+    "아래는 최근 대화다. 마지막 «사용자» 말에만 답하라. 파일을 쓰거나 명령을 실행하지 마라 — 허용되지 않는다.",
+    "",
+    ...turns.map((m) => `${m.who}: ${m.text}`),
+  ].join("\n");
 }

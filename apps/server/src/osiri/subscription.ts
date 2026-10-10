@@ -1,0 +1,444 @@
+/**
+ * 구독 사용 — 사용자 본인의 ChatGPT·Claude 구독으로 영시리가 답한다 (마스터 2026-10-10).
+ *
+ * 기획 §08 의 경계 그대로 나눈다:
+ *  - 도커 내부: 사용자 한 명 = 컨테이너 하나(Dockerfile.subscription). CLI·ACP 어댑터·로그인 tmux 만. 로그인 정보는 그 사람 볼륨에만.
+ *  - 중개(이 파일): 컨테이너·PC 와 말하는 유일한 통로. 에이전트의 권한 요청은 전부 거절한다(승인 게이트는 컨테이너 밖, fail-closed).
+ *  - 도커 외부: 대화 기록·사용량은 서버 DB 에만 남는다.
+ *  - 본인 PC: 러너(apps/runner/osiri-runner.mjs)가 바깥으로 접속해 «도커 내부» 역할을 대신한다. 중개는 같은 ACP 로 말한다.
+ */
+import { type ChildProcess, spawn } from "node:child_process";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import type { IncomingMessage, Server } from "node:http";
+import { resolve } from "node:path";
+import { Readable, Writable } from "node:stream";
+import * as acp from "@agentclientprotocol/sdk";
+import { Hono } from "hono";
+import { type WebSocket, WebSocketServer } from "ws";
+import { z } from "zod";
+import {
+  SUBSCRIPTION_PLACES,
+  SUBSCRIPTION_PROVIDERS,
+  type SubscriptionPlace,
+  type SubscriptionProvider,
+  type SubscriptionView,
+} from "../../../../packages/domain/src/osiri.ts";
+import { runDocker } from "../computer.ts";
+import type { Store } from "../db.ts";
+
+export interface SubscriptionPrefs {
+  id: "subscription";
+  /** 켜져 있으면 영시리 대화가 공용키·BYOK 대신 이 구독으로 간다 */
+  active: boolean;
+  provider: SubscriptionProvider;
+  place: SubscriptionPlace;
+  /** 본인 PC 러너 열쇠의 해시. 원문은 발급 때 한 번만 보여 준다 */
+  runnerKeyHash?: string;
+}
+const DEFAULT_PREFS: SubscriptionPrefs = {
+  id: "subscription",
+  active: false,
+  provider: "codex",
+  place: "server",
+};
+
+const ADAPTER: Record<SubscriptionProvider, string> = {
+  claude: "claude-agent-acp",
+  codex: "codex-acp",
+};
+// 서버 컨테이너는 브라우저를 못 띄운다 → 화면에 코드·링크를 띄우는 로그인만 쓴다
+const LOGIN: Record<SubscriptionProvider, string> = {
+  claude: "claude auth login",
+  codex: "codex login --device-auth",
+};
+const STATUS: Record<SubscriptionProvider, string[]> = {
+  claude: ["claude", "auth", "status"],
+  codex: ["codex", "login", "status"],
+};
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** ACP 한 번 대화에 쓰는 양방향 통로 — 컨테이너 docker exec 든 PC 러너든 모양이 같다 */
+interface AcpPipe {
+  input: WritableStream<Uint8Array>;
+  output: ReadableStream<Uint8Array>;
+  /** 에이전트가 세션을 열 작업 폴더(에이전트 쪽 절대경로) */
+  cwd: string;
+  close(): void;
+}
+
+/** 본인 PC 러너 하나. 러너가 바깥으로 접속해 오므로 PC 쪽에 열린 포트가 없다 */
+class Runner {
+  private readonly pipes = new Map<
+    string,
+    { push: (text: string) => void; end: () => void; fail: (e: Error) => void }
+  >();
+  constructor(
+    readonly socket: WebSocket,
+    readonly cwd: string,
+  ) {
+    socket.on("message", (raw) => {
+      let msg: { t?: string; id?: string; d?: string; error?: string };
+      try {
+        msg = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+      const pipe = msg.id ? this.pipes.get(msg.id) : undefined;
+      if (!pipe) return;
+      if (msg.t === "data" && typeof msg.d === "string") pipe.push(msg.d);
+      else if (msg.t === "exit") {
+        if (msg.error) pipe.fail(new Error(`PC 러너: ${msg.error}`));
+        else pipe.end();
+        this.pipes.delete(msg.id as string);
+      }
+    });
+    socket.on("close", () => {
+      for (const pipe of this.pipes.values()) pipe.fail(new Error("PC 러너 연결이 끊겼습니다"));
+      this.pipes.clear();
+    });
+  }
+  open(provider: SubscriptionProvider): AcpPipe {
+    const id = randomBytes(8).toString("hex");
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const output = new ReadableStream<Uint8Array>({
+      start: (c) => {
+        controller = c;
+      },
+    });
+    this.pipes.set(id, {
+      push: (text) => controller.enqueue(encoder.encode(text)),
+      end: () => controller.close(),
+      fail: (e) => controller.error(e),
+    });
+    const send = (msg: object) => this.socket.send(JSON.stringify(msg));
+    send({ t: "open", id, provider });
+    return {
+      cwd: this.cwd,
+      output,
+      input: new WritableStream<Uint8Array>({
+        write: (chunk) => send({ t: "data", id, d: decoder.decode(chunk, { stream: true }) }),
+      }),
+      close: () => {
+        if (!this.pipes.delete(id)) return;
+        send({ t: "close", id });
+        try {
+          controller.close();
+        } catch {}
+      },
+    };
+  }
+}
+
+export class Subscriptions {
+  private readonly runners = new Map<string, Runner>();
+  constructor(
+    private readonly db: Store,
+    private readonly options: {
+      /** 사용자 볼륨을 둘 폴더 (<DATA_DIR>/subscriptions) */
+      dir: string;
+      /** SUBSCRIPTION_IMAGE — 없으면 서버 구독은 꺼져 있다(PC 러너만 가능) */
+      image?: string;
+    },
+  ) {}
+
+  async prefs(owner: string): Promise<SubscriptionPrefs> {
+    return (
+      (await this.db.get<SubscriptionPrefs>(owner, "settings", "subscription")) ?? DEFAULT_PREFS
+    );
+  }
+  async update(owner: string, patch: Partial<Omit<SubscriptionPrefs, "id">>) {
+    const next = { ...(await this.prefs(owner)), ...patch, id: "subscription" as const };
+    if (next.active && next.place === "server" && !this.options.image)
+      throw new Error(
+        "서버 구독 실행이 설정되어 있지 않습니다 (SUBSCRIPTION_IMAGE) — «내 PC» 로 쓰세요",
+      );
+    await this.db.put(owner, "settings", next);
+    return next;
+  }
+  async view(owner: string): Promise<SubscriptionView> {
+    const { runnerKeyHash, ...prefs } = await this.prefs(owner);
+    const runner = this.runners.get(owner);
+    return {
+      ...prefs,
+      serverAvailable: Boolean(this.options.image),
+      runnerKeyIssued: Boolean(runnerKeyHash),
+      runner: runner
+        ? { connected: true as const, cwd: runner.cwd }
+        : { connected: false as const },
+    };
+  }
+  /** 대화가 구독으로 가야 하면 그 설정, 아니면 undefined */
+  async activeFor(owner: string) {
+    const prefs = await this.prefs(owner);
+    return prefs.active ? prefs : undefined;
+  }
+
+  // ---- 도커 내부: 사용자별 컨테이너 ----
+  private container(owner: string) {
+    return `osiri-sub-${sha(owner).slice(0, 12)}`;
+  }
+  private async docker(args: string[], timeoutMs = 60_000) {
+    const result = await runDocker(args, { timeoutMs, maxOutputBytes: 200_000 });
+    return { ok: result.exitCode === 0, out: result.stdout, err: result.stderr.trim() };
+  }
+  /** 그 사람 컨테이너를 띄운다(이미 떠 있으면 그대로). 볼륨은 그 사람 폴더 하나뿐 */
+  private async ensure(owner: string) {
+    const image = this.options.image;
+    if (!image) throw new Error("서버 구독 실행이 설정되어 있지 않습니다 (SUBSCRIPTION_IMAGE)");
+    const name = this.container(owner);
+    const state = await this.docker(["inspect", "-f", "{{.State.Running}}", name]);
+    if (state.ok && state.out.trim() === "true") return name;
+    if (state.ok) await this.docker(["rm", "-f", name]);
+    const home = resolve(this.options.dir, sha(owner).slice(0, 24));
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    const uid = process.getuid?.() ?? 1000;
+    const gid = process.getgid?.() ?? 1000;
+    // 격리: 권한 전부 버림·권한 상승 금지·자원 상한. 들어오는 포트 없음, docker 소켓·서버 폴더 마운트 없음
+    const run = await this.docker(
+      [
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--restart",
+        "unless-stopped",
+        "--label",
+        `osiri.user=${owner}`,
+        "--label",
+        "osiri.role=subscription",
+        "--user",
+        `${uid}:${gid}`,
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "768m",
+        "--pids-limit",
+        "256",
+        "-v",
+        `${home}:/home/agent`,
+        image,
+      ],
+      120_000,
+    );
+    if (!run.ok) throw new Error(`구독 컨테이너를 띄우지 못했습니다: ${run.err || run.out}`);
+    return name;
+  }
+
+  /** 로그인 터미널(tmux «login» 세션)을 새로 연다 */
+  async login(owner: string, provider: SubscriptionProvider) {
+    const name = await this.ensure(owner);
+    await this.docker(["exec", name, "tmux", "kill-session", "-t", "login"]);
+    // 명령이 끝나도 화면을 남겨 둔다 — 결과(성공·실패 문구)를 사용자가 읽어야 한다
+    const script = `${LOGIN[provider]}; echo; echo '[로그인 명령이 끝났습니다]'; sleep 1800`;
+    const r = await this.docker([
+      "exec",
+      name,
+      "tmux",
+      "new-session",
+      "-d",
+      "-s",
+      "login",
+      "-x",
+      "80",
+      "-y",
+      "30",
+      "sh",
+      "-c",
+      script,
+    ]);
+    if (!r.ok) throw new Error(`로그인 터미널을 열지 못했습니다: ${r.err}`);
+    return this.screen(owner);
+  }
+  /** 로그인 터미널 화면 글자. 터미널이 없으면 null */
+  async screen(owner: string): Promise<string | null> {
+    const r = await this.docker([
+      "exec",
+      this.container(owner),
+      "tmux",
+      "capture-pane",
+      "-p",
+      "-J",
+      "-t",
+      "login",
+    ]);
+    return r.ok ? r.out.replace(/\s+$/, "") : null;
+  }
+  async type(owner: string, text: string, enter: boolean) {
+    const name = this.container(owner);
+    if (text) {
+      const r = await this.docker(["exec", name, "tmux", "send-keys", "-t", "login", "-l", text]);
+      if (!r.ok) throw new Error("로그인 터미널이 열려 있지 않습니다");
+    }
+    if (enter) await this.docker(["exec", name, "tmux", "send-keys", "-t", "login", "Enter"]);
+    return this.screen(owner);
+  }
+  /** CLI 가 말하는 로그인 상태 — 판정은 CLI 종료 코드만 본다 */
+  async status(owner: string, provider: SubscriptionProvider) {
+    const name = await this.ensure(owner);
+    const r = await this.docker(["exec", name, ...STATUS[provider]]);
+    return { loggedIn: r.ok, detail: (r.out.trim() || r.err).split("\n").slice(0, 3).join("\n") };
+  }
+
+  // ---- 본인 PC 러너 ----
+  async issueRunnerKey(owner: string) {
+    const key = `${Buffer.from(owner).toString("base64url")}.${randomBytes(24).toString("base64url")}`;
+    const prefs = await this.prefs(owner);
+    await this.db.put(owner, "settings", { ...prefs, runnerKeyHash: sha(key) });
+    // 새 열쇠를 내면 옛 열쇠로 붙어 있던 러너는 끊는다
+    this.runners.get(owner)?.socket.close(4001, "새 열쇠가 발급되었습니다");
+    return key;
+  }
+  private async verifyRunnerKey(key: string) {
+    const owner = Buffer.from(key.split(".")[0] ?? "", "base64url").toString();
+    if (!owner) return undefined;
+    const stored = (await this.prefs(owner)).runnerKeyHash;
+    if (!stored) return undefined;
+    const a = Buffer.from(stored);
+    const b = Buffer.from(sha(key));
+    return a.length === b.length && timingSafeEqual(a, b) ? owner : undefined;
+  }
+  /** HTTP 서버에 러너 웹소켓(/api/subscription/runner)을 붙인다. 첫 메시지 hello 의 열쇠로 소유자를 가린다 */
+  attach(server: Pick<Server, "on">) {
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
+    server.on("upgrade", (req: IncomingMessage, socket, head) => {
+      if (new URL(req.url ?? "/", "http://x").pathname !== "/api/subscription/runner") {
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const timer = setTimeout(() => ws.close(4000, "hello 가 없습니다"), 10_000);
+        ws.once("message", async (raw) => {
+          clearTimeout(timer);
+          let hello: { t?: string; key?: string; cwd?: string };
+          try {
+            hello = JSON.parse(String(raw));
+          } catch {
+            ws.close(4000, "hello 가 JSON 이 아닙니다");
+            return;
+          }
+          const owner =
+            hello.t === "hello" && hello.key ? await this.verifyRunnerKey(hello.key) : undefined;
+          if (!owner || typeof hello.cwd !== "string" || !hello.cwd) {
+            ws.close(4003, "열쇠가 맞지 않습니다 — 앱에서 새 명령을 받아 다시 실행하세요");
+            return;
+          }
+          this.runners.get(owner)?.socket.close(4002, "다른 러너가 접속했습니다");
+          const runner = new Runner(ws, hello.cwd);
+          this.runners.set(owner, runner);
+          ws.on("close", () => {
+            if (this.runners.get(owner) === runner) this.runners.delete(owner);
+          });
+          ws.send(JSON.stringify({ t: "ready" }));
+          console.log(`[osiri] 구독 PC 러너 접속 owner=${owner.slice(0, 8)}…`);
+        });
+      });
+    });
+  }
+
+  // ---- 중개: ACP 한 턴 ----
+  private async pipe(owner: string, prefs: SubscriptionPrefs): Promise<AcpPipe> {
+    if (prefs.place === "pc") {
+      const runner = this.runners.get(owner);
+      if (!runner)
+        throw new Error("내 PC 러너가 연결되어 있지 않습니다 — PC 에서 러너를 실행하세요");
+      return runner.open(prefs.provider);
+    }
+    const name = await this.ensure(owner);
+    const child: ChildProcess = spawn("docker", ["exec", "-i", name, ADAPTER[prefs.provider]], {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr?.on("data", (d) => {
+      stderr = (stderr + String(d)).slice(-2000);
+    });
+    child.on("exit", (code) => {
+      if (code)
+        console.error(`[osiri] 구독 어댑터 종료 code=${code}: ${stderr.trim().slice(-300)}`);
+    });
+    return {
+      cwd: "/home/agent",
+      input: Writable.toWeb(child.stdin as Writable) as WritableStream<Uint8Array>,
+      output: Readable.toWeb(child.stdout as Readable) as ReadableStream<Uint8Array>,
+      close: () => child.kill(),
+    };
+  }
+
+  /** 한 턴: 새 세션에 프롬프트를 보내고 답 글자를 흘려 준다 */
+  async ask(
+    owner: string,
+    prefs: SubscriptionPrefs,
+    prompt: string,
+    onText: (text: string) => void,
+    signal: AbortSignal,
+  ) {
+    const pipe = await this.pipe(owner, prefs);
+    try {
+      const conn = new acp.ClientSideConnection(
+        () => ({
+          // 승인 게이트는 컨테이너 밖이다 — 파일 쓰기·명령 실행 요청은 v1 에서 전부 거절한다(fail-closed)
+          requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+          sessionUpdate: async ({ update }) => {
+            if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text")
+              onText(update.content.text);
+          },
+        }),
+        acp.ndJsonStream(pipe.input, pipe.output),
+      );
+      await conn.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+      // ponytail: 턴마다 새 세션(대화 맥락은 프롬프트에 싣는다). 느리면 세션을 살려 두고 session/load
+      const { sessionId } = await conn.newSession({ cwd: pipe.cwd, mcpServers: [] });
+      const cancel = () => void conn.cancel({ sessionId }).catch(() => {});
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        return await conn.prompt({ sessionId, prompt: [{ type: "text", text: prompt }] });
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    } finally {
+      pipe.close();
+    }
+  }
+}
+
+export function subscriptionRoutes(subs: Subscriptions) {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  const provider = z.enum(SUBSCRIPTION_PROVIDERS);
+  app.get("/subscription", async (c) => c.json(await subs.view(c.get("owner"))));
+  app.put("/subscription", async (c) => {
+    const body = z
+      .object({
+        active: z.boolean().optional(),
+        provider: provider.optional(),
+        place: z.enum(SUBSCRIPTION_PLACES).optional(),
+      })
+      .parse(await c.req.json());
+    await subs.update(c.get("owner"), body);
+    return c.json(await subs.view(c.get("owner")));
+  });
+  app.post("/subscription/login", async (c) => {
+    const body = z.object({ provider }).parse(await c.req.json());
+    return c.json({ screen: await subs.login(c.get("owner"), body.provider) });
+  });
+  app.get("/subscription/terminal", async (c) =>
+    c.json({ screen: await subs.screen(c.get("owner")) }),
+  );
+  app.post("/subscription/terminal", async (c) => {
+    const body = z
+      .object({ text: z.string().max(2000), enter: z.boolean().default(true) })
+      .parse(await c.req.json());
+    return c.json({ screen: await subs.type(c.get("owner"), body.text, body.enter) });
+  });
+  app.get("/subscription/status", async (c) =>
+    c.json(await subs.status(c.get("owner"), provider.parse(c.req.query("provider")))),
+  );
+  app.post("/subscription/runner-key", async (c) =>
+    c.json({ key: await subs.issueRunnerKey(c.get("owner")) }),
+  );
+  return app;
+}

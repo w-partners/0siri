@@ -68,7 +68,7 @@ export interface UsageEntry {
   costKrw: number; // 실제 지출 (BYOK 면 0 — 본인 계정으로 나간다)
   baselineKrw: number; // 같은 토큰을 최고 모델로 돌렸을 때
   scriptSaved: boolean; // 스크립트가 LLM 호출을 대신했는가 (§12)
-  source: "platform" | "byok" | "device";
+  source: "platform" | "byok" | "device" | "subscription";
   reason: string; // 라우팅 근거 (fallback_reason 포함)
   roomId?: string;
   /** 단가표에 없는 모델이 끼어 비용·기준선을 잴 수 없었던 기록. 이런 기록이 있으면 그 달 절감액은 "측정 중" */
@@ -751,6 +751,7 @@ const SOURCE_OF: Record<UsageEntry["source"], AnswerSource> = {
   platform: "server",
   byok: "byok",
   device: "device",
+  subscription: "subscription",
 };
 export const answeredBy = (
   u: Pick<UsageEntry, "tier" | "model" | "source" | "reason">,

@@ -150,13 +150,36 @@ export const TIER_LABELS: Record<ModelTier, string> = {
 };
 export const ROUTE_KINDS = ["chat", "monitor", "draft", "review", "report", "strategy"] as const;
 export type RouteKind = (typeof ROUTE_KINDS)[number];
+/** 구독 사용 (마스터 2026-10-10): 본인 ChatGPT·Claude 구독으로 답한다. 서버 osiri/subscription.ts */
+export const SUBSCRIPTION_PROVIDERS = ["codex", "claude"] as const;
+export type SubscriptionProvider = (typeof SUBSCRIPTION_PROVIDERS)[number];
+export const SUBSCRIPTION_PROVIDER_LABELS = {
+  codex: "ChatGPT",
+  claude: "Claude",
+} as const satisfies Record<SubscriptionProvider, string>;
+export const SUBSCRIPTION_PLACES = ["server", "pc"] as const;
+export type SubscriptionPlace = (typeof SUBSCRIPTION_PLACES)[number];
+export const SUBSCRIPTION_PLACE_LABELS = {
+  server: "서버 컨테이너",
+  pc: "내 PC",
+} as const satisfies Record<SubscriptionPlace, string>;
+/** `GET /api/subscription` */
+export interface SubscriptionView {
+  active: boolean;
+  provider: SubscriptionProvider;
+  place: SubscriptionPlace;
+  serverAvailable: boolean;
+  runnerKeyIssued: boolean;
+  runner: { connected: true; cwd: string } | { connected: false };
+}
 /** 답변 출처 (§11.1 배지, 메시지 answered_by.source) */
-export const ANSWER_SOURCES = ["device", "server", "byok"] as const;
+export const ANSWER_SOURCES = ["device", "server", "byok", "subscription"] as const;
 export type AnswerSource = (typeof ANSWER_SOURCES)[number];
 export const ANSWER_SOURCE_LABELS = {
   device: "기기에서 답함",
   server: "서버에서 답함",
   byok: "내 모델 계정으로 답함",
+  subscription: "내 구독으로 답함",
 } as const satisfies Record<AnswerSource, string>;
 /** 답변 아래에 붙는 «누가 답했는지» (메시지 answeredBy · 타임라인 answers 의 값) */
 export interface AnsweredByView {
