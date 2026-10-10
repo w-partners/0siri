@@ -84,7 +84,6 @@ import {
   Chip,
   colors,
   dateLabel,
-  Empty,
   ErrorNotice,
   Field,
   fonts,
@@ -147,12 +146,16 @@ interface Timeline {
 const text = {
   search: "방 검색",
   emptyTitle: "아직 고용한 팀이 없어요",
-  emptyDetail: "스토어에서 팀을 고용하면 여기에 채팅방이 생겨요.",
-  goStore: "스토어에서 첫 팀 고용하기",
+  goStoreShort: "스토어 →",
   retry: "다시 시도",
   loadFailed: "불러오지 못했어요",
   cached: "마지막으로 받은 목록을 보여 드려요",
   personalRole: "개인 에이전트",
+  // Muse(openmuse) 의 «메인 대화 / 사이드 대화» 구분 — 영시리 홈 방이 메인, «새 대화방» 으로 연 주제방이 사이드
+  mainChat: "기본 대화",
+  mainChatDetail: "늘 이어지는 영시리와의 대화",
+  sideChats: "사이드 대화",
+  teamRooms: "팀 대화방",
   progress: (n: number) => `진척 ${n}%`,
   pendingLine: (n: number) => (n > 0 ? `승인 대기 ${n}건` : "대기 없음"),
   stalled: "멈춘 팀",
@@ -164,7 +167,7 @@ const text = {
   unmute: "알림 켜기",
   noMatch: "찾는 방이 없어요",
   back: "뒤로",
-  newRoom: "새 대화방",
+  newRoom: "새 사이드 대화",
   newRoomPlaceholder: "예: 이사 준비, 이번 달 블로그",
   createRoom: "만들기",
   roomSettings: "방 설정",
@@ -723,6 +726,11 @@ export function RoomList({
   const q = query.trim().toLowerCase();
   const shown = q ? rooms.filter((r) => roomTitle(r).toLowerCase().includes(q)) : rooms;
   const hired = rooms.some((r) => r.packageId !== null);
+  const groups: [string, Room[]][] = [
+    [text.mainChat, shown.filter(isHomeRoom)],
+    [text.sideChats, shown.filter((r) => r.topic)],
+    [text.teamRooms, shown.filter((r) => r.packageId !== null)],
+  ];
   return (
     <View style={{ gap: 6 }}>
       <View
@@ -755,93 +763,117 @@ export function RoomList({
         </View>
       )}
       <ErrorNotice error={actionError} />
-      {shown.map((room) => {
-        const active = room.id === activeId;
-        const personal = isHomeRoom(room);
-        const status =
-          room.lastReport ?? (isPresence(room.presence) ? PRESENCE_LABELS[room.presence] : "");
-        return (
-          <Pressable
-            key={room.id}
-            accessibilityRole="button"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={`${roomTitle(room)} · ${text.pendingLine(room.pendingApprovals)}`}
-            onPress={() => onOpen(room)}
-            onLongPress={() => setMenu(room)}
-            // 웹 우클릭 = 앱 길게 누르기 (react-native-web 이 넘겨준다)
-            {...({
-              onContextMenu: (e: { preventDefault(): void }) => {
-                e.preventDefault();
-                setMenu(room);
-              },
-            } as object)}
-            style={({ pressed }) => [
-              s.row,
-              {
-                gap: 12,
-                padding: 10,
-                borderRadius: 10,
-                borderWidth: 1,
-                borderColor: active ? colors.accent : "transparent",
-                backgroundColor: active ? colors.accentSoft : "transparent",
-                opacity: room.stalled ? 0.55 : pressed ? 0.8 : 1,
-              },
-            ]}
-          >
-            <View>
-              <CharacterAvatar character={room.character} size={34} />
-              {room.presence === "working" && !room.stalled && <WorkingDot />}
-            </View>
-            <View style={{ flex: 1, gap: 1 }}>
-              <View style={[s.row, { gap: 6 }]}>
-                <Text style={[s.heading, { fontSize: 15, flexShrink: 1 }]} numberOfLines={1}>
-                  {roomTitle(room)}
-                </Text>
-                {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
-                {room.pendingApprovals > 0 && (
-                  // 배지를 누르면 같은 방의 승인 카드 위치로 간다 (기획 화면 2)
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={text.goApproval(roomTitle(room), room.pendingApprovals)}
-                    hitSlop={8}
-                    onPress={() => onOpen(room, { approval: true })}
-                  >
-                    <Badge count={room.pendingApprovals} />
-                  </Pressable>
-                )}
-                {room.muted && (
-                  <BellOff size={13} color={colors.muted} accessibilityLabel={text.muted} />
-                )}
-              </View>
-              {personal ? (
-                !!room.tierLabel && <Text style={s.small}>{room.tierLabel}</Text>
-              ) : (
-                <>
-                  {!!status && (
-                    <Text style={s.small} numberOfLines={1}>
-                      {status}
-                    </Text>
-                  )}
-                  <Text style={[s.small, mono]} numberOfLines={1}>
-                    {room.stalled ? `${text.stalled} · ` : ""}
-                    {text.progress(room.progress)} · {text.pendingLine(room.pendingApprovals)}
-                  </Text>
-                </>
-              )}
-            </View>
-            <IconButton icon={MoreHorizontal} label={text.more} onPress={() => setMenu(room)} />
-          </Pressable>
-        );
-      })}
+      {groups.map(([label, list]) =>
+        list.length === 0 ? null : (
+          <View key={label} style={{ gap: 6 }}>
+            <Text style={[s.small, { marginTop: 8, paddingHorizontal: 4 }]}>{label}</Text>
+            {list.map((room) => {
+              const active = room.id === activeId;
+              const personal = isHomeRoom(room);
+              const status =
+                room.lastReport ??
+                (isPresence(room.presence) ? PRESENCE_LABELS[room.presence] : "");
+              return (
+                <Pressable
+                  key={room.id}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`${roomTitle(room)} · ${text.pendingLine(room.pendingApprovals)}`}
+                  onPress={() => onOpen(room)}
+                  onLongPress={() => setMenu(room)}
+                  // 웹 우클릭 = 앱 길게 누르기 (react-native-web 이 넘겨준다)
+                  {...({
+                    onContextMenu: (e: { preventDefault(): void }) => {
+                      e.preventDefault();
+                      setMenu(room);
+                    },
+                  } as object)}
+                  style={({ pressed }) => [
+                    s.row,
+                    {
+                      gap: 12,
+                      padding: 10,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: active ? colors.accent : "transparent",
+                      backgroundColor: active ? colors.accentSoft : "transparent",
+                      opacity: room.stalled ? 0.55 : pressed ? 0.8 : 1,
+                    },
+                  ]}
+                >
+                  <View>
+                    <CharacterAvatar character={room.character} size={34} />
+                    {room.presence === "working" && !room.stalled && <WorkingDot />}
+                  </View>
+                  <View style={{ flex: 1, gap: 1 }}>
+                    <View style={[s.row, { gap: 6 }]}>
+                      <Text style={[s.heading, { fontSize: 15, flexShrink: 1 }]} numberOfLines={1}>
+                        {roomTitle(room)}
+                      </Text>
+                      {room.thirdParty && <Text style={s.small}>{text.thirdParty}</Text>}
+                      {room.pendingApprovals > 0 && (
+                        // 배지를 누르면 같은 방의 승인 카드 위치로 간다 (기획 화면 2)
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={text.goApproval(
+                            roomTitle(room),
+                            room.pendingApprovals,
+                          )}
+                          hitSlop={8}
+                          onPress={() => onOpen(room, { approval: true })}
+                        >
+                          <Badge count={room.pendingApprovals} />
+                        </Pressable>
+                      )}
+                      {room.muted && (
+                        <BellOff size={13} color={colors.muted} accessibilityLabel={text.muted} />
+                      )}
+                    </View>
+                    {personal ? (
+                      <Text style={s.small} numberOfLines={1}>
+                        {text.mainChatDetail}
+                        {room.tierLabel ? ` · ${room.tierLabel}` : ""}
+                      </Text>
+                    ) : (
+                      <>
+                        {!!status && (
+                          <Text style={s.small} numberOfLines={1}>
+                            {status}
+                          </Text>
+                        )}
+                        <Text style={[s.small, mono]} numberOfLines={1}>
+                          {room.stalled ? `${text.stalled} · ` : ""}
+                          {text.progress(room.progress)} · {text.pendingLine(room.pendingApprovals)}
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                  <IconButton
+                    icon={MoreHorizontal}
+                    label={text.more}
+                    onPress={() => setMenu(room)}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
+        ),
+      )}
       {!!q && shown.length === 0 && <Text style={s.muted}>{text.noMatch}</Text>}
       {!hired && !q && (
-        <Card>
-          <Empty icon={Users} title={text.emptyTitle} detail={text.emptyDetail}>
-            <Button primary onPress={() => navigate("store")}>
-              {text.goStore}
-            </Button>
-          </Empty>
-        </Card>
+        // Muse 목록처럼 한 줄 — 큰 빈 카드는 서랍을 반이나 차지했다
+        <View style={{ gap: 6 }}>
+          <Text style={[s.small, { marginTop: 8, paddingHorizontal: 4 }]}>{text.teamRooms}</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => navigate("store")}
+            style={[s.row, { gap: 12, padding: 10 }]}
+          >
+            <Users size={20} color={colors.muted} />
+            <Text style={[s.muted, { flex: 1 }]}>{text.emptyTitle}</Text>
+            <Text style={[s.small, { color: colors.accent }]}>{text.goStoreShort}</Text>
+          </Pressable>
+        </View>
       )}
       {menu && (
         <Sheet title={roomTitle(menu)} onClose={() => setMenu(null)}>
