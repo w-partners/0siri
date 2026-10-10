@@ -259,6 +259,18 @@ export async function createApp(
       "content-disposition": 'attachment; filename="osiri-runner.mjs"',
     }),
   );
+  // 공개: OS 별 러너 설치 스크립트(비밀 없음 — 서버·열쇠는 실행할 때 인자로). curl|bash · irm 으로 받는다
+  for (const file of ["install-runner.sh", "install-runner.ps1"])
+    app.get(`/${file}`, async (c) =>
+      c.body(
+        await readFile(
+          new URL(`../../runner/${file.replace("install-runner", "install")}`, import.meta.url),
+          "utf8",
+        ),
+        200,
+        { "content-type": "text/plain; charset=utf-8", "cache-control": "no-cache" },
+      ),
+    );
   // 0Siri MCP 는 자기 열쇠로 인증한다(사용자 로그인 토큰이 아니다) — 인증 미들웨어보다 앞에
   app.route("/api", osiriMcpRoutes(osiriMcp));
   app.route("/api/worker", workerRoutes(osiri));

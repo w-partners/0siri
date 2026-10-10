@@ -128,18 +128,39 @@ const text = {
   send: "보내기",
   pcHint:
     "내 PC 에서 러너를 실행해 두면, 영시리가 그 PC 의 구독으로 답합니다. 로그인 정보는 PC 밖으로 나가지 않습니다.",
-  pcPrep: (cli: string) => `준비: Node 22 이상, 그리고 그 PC 에서 ${cli}`,
+  pcOs: "내 PC 의 운영체제",
+  pcOsNote: {
+    windows:
+      "PowerShell 을 열고 붙여 넣으세요. Node·CLI·로그인까지 설치하고 새 창에서 러너를 켭니다.",
+    mac: "터미널을 열고 붙여 넣으세요. Homebrew 로 Node 를 설치하고, CLI·로그인까지 마친 뒤 그 창에서 러너를 켭니다.",
+    ubuntu: "터미널을 열고 붙여 넣으세요. Node·CLI·로그인까지 설치하고 그 창에서 러너를 켭니다.",
+  } as Record<PcOs, string>,
   pcConnected: (cwd: string) => `PC 러너 연결됨 · ${cwd}`,
   pcDisconnected: "PC 러너 연결 안 됨",
-  pcDownload: "러너 내려받기 (osiri-runner.mjs)",
-  pcCommand: "PC 연결 명령 만들기",
-  pcCommandAgain: "새 명령 만들기 (옛 명령은 끊김)",
-  pcCommandHint: "이 줄을 PC 터미널에 붙여 넣으세요. 열쇠가 들어 있어 다시 보여 주지 않습니다.",
+  pcCommand: "설치 명령 만들기",
+  manualTitle: "직접 입력 (관리자)",
+  manualNote:
+    "설치 스크립트를 쓸 수 없을 때: 러너 파일을 받아 Node 22 이상에서 아래 줄을 직접 실행합니다(그 PC 에 codex·claude CLI 로그인 필요). 줄은 위 «설치 명령 만들기» 를 누르면 같은 열쇠로 함께 만들어집니다.",
+  pcDownload: "러너 파일 받기 (osiri-runner.mjs)",
+  pcCommandAgain: "새 설치 명령 만들기 (옛 명령은 끊김)",
+  pcCommandHint:
+    "이 줄을 그 PC 에 붙여 넣으세요. 열쇠가 들어 있어 다시 보여 주지 않습니다. 휴대폰에서 보고 있다면 PC 브라우저로 openagentx.org 에 로그인해 여기서 만드세요.",
 };
-const CLI_LOGIN: Record<SubscriptionProvider, string> = {
-  codex: "npm i -g @openai/codex && codex login",
-  claude: "npm i -g @anthropic-ai/claude-code && claude auth login",
+const PC_OS = ["windows", "mac", "ubuntu"] as const;
+type PcOs = (typeof PC_OS)[number];
+const PC_OS_LABELS: Record<PcOs, string> = { windows: "Windows", mac: "Mac", ubuntu: "Ubuntu" };
+/** 브라우저에서 열었으면 그 PC 의 OS 를 먼저 고른다(휴대폰이면 Windows) */
+const guessOs = (): PcOs => {
+  const agent = globalThis.navigator?.userAgent ?? "";
+  if (/Mac OS X|Macintosh/.test(agent) && !/iPhone|iPad/.test(agent)) return "mac";
+  if (/Linux/.test(agent) && !/Android/.test(agent)) return "ubuntu";
+  return "windows";
 };
+/** OS 별 설치 한 줄 — 서버 /install-runner.sh(맥·우분투) · /install-runner.ps1(윈도우), apps/runner/install.* */
+const installLine = (os: PcOs, base: string, key: string, provider: SubscriptionProvider) =>
+  os === "windows"
+    ? `& ([scriptblock]::Create((irm ${base}/install-runner.ps1))) ${base} ${key} ${provider}`
+    : `curl -fsSL ${base}/install-runner.sh | bash -s -- ${base} ${key} ${provider}`;
 type SubView = SubscriptionView;
 
 // ---- 화면 7·8·11 이 같이 쓰는 조각 (설정·기억 화면이 여기서 가져간다 — 사본 금지) ----
@@ -225,7 +246,8 @@ function RiskBadge({ risk, suffix }: { risk: McpRisk; suffix?: string }) {
   );
 }
 
-export function ConnectionsScreen() {
+/** 설정 › 연결. 내 PC(러너)·직접 입력은 관리자에게만 — 사용자는 스토어 «내 PC 연결» 로 설치한다(마스터 2026-10-11) */
+export function ConnectionsScreen({ admin }: { admin: boolean }) {
   return (
     <View style={columns}>
       <View style={column}>
@@ -233,7 +255,7 @@ export function ConnectionsScreen() {
       </View>
       <View style={column}>
         <ModelKeysPanel />
-        <SubscriptionPanel />
+        <SubscriptionPanel pc={admin} manual={admin} />
       </View>
     </View>
   );
@@ -729,7 +751,8 @@ function KeyCard({ item, onChanged }: { item: ModelKeyRow; onChanged: () => void
 }
 
 // ---- 모델 계정 (내 구독) — 서버 컨테이너 또는 내 PC 러너. 서버 osiri/subscription.ts ----
-function SubscriptionPanel() {
+/** pc: «내 PC» 실행 위치·설치 한 줄·PC 기억 열쇠를 보인다 · manual: 관리자 직접 입력(러너 파일·직접 실행 줄) */
+export function SubscriptionPanel({ pc, manual = false }: { pc: boolean; manual?: boolean }) {
   const { api, notify } = useWorkspace();
   const view = useLoad(() => api.request<SubView>("/api/subscription"));
   const save = useAction();
@@ -770,7 +793,7 @@ function SubscriptionPanel() {
                       key={p}
                       label={SUBSCRIPTION_PLACE_LABELS[p]}
                       selected={sub.place === p}
-                      disabled={p === "server" && !sub.serverAvailable}
+                      disabled={(p === "server" && !sub.serverAvailable) || (p === "pc" && !pc)}
                       onPress={() => void put({ place: p })}
                     />
                   ))}
@@ -783,7 +806,7 @@ function SubscriptionPanel() {
                   <Text style={s.small}>{text.serverOff}</Text>
                 )
               ) : (
-                <PcRunner sub={sub} refresh={refresh} />
+                pc && <PcRunner sub={sub} refresh={refresh} manual={manual} />
               )}
               <ErrorNotice error={save.error} />
               <Button
@@ -799,7 +822,7 @@ function SubscriptionPanel() {
                 {sub.active ? text.subTurnOff : text.subTurnOn}
               </Button>
               <Text style={s.small}>{text.subRule}</Text>
-              <MemoryKey />
+              {pc && <MemoryKey />}
             </>
           )}
         </Loaded>
@@ -964,12 +987,21 @@ function ServerLogin({ provider }: { provider: SubscriptionProvider }) {
   }
 }
 
-/** 내 PC 러너: 명령 한 줄(열쇠 포함)을 만들어 보여 주고, 연결 상태를 보인다 */
-function PcRunner({ sub, refresh }: { sub: SubView; refresh: () => Promise<void> }) {
+/** 내 PC 러너: OS 를 고르면 설치 한 줄(열쇠 포함)을 만들어 보여 주고, 연결 상태를 보인다 */
+function PcRunner({
+  sub,
+  refresh,
+  manual,
+}: {
+  sub: SubView;
+  refresh: () => Promise<void>;
+  manual: boolean;
+}) {
   const { api } = useWorkspace();
   const [command, setCommand] = useState<string>();
+  const [os, setOs] = useState<PcOs>(guessOs);
+  const [direct, setDirect] = useState<string>();
   const act = useAction();
-  const download = `${apiBase()}/osiri-runner.mjs`;
   // 사용자가 PC 에서 러너를 켜면 «연결됨» 으로 바뀌어야 한다 — 5초마다 상태만 다시 읽는다
   const latest = useRef(refresh);
   latest.current = refresh;
@@ -980,13 +1012,24 @@ function PcRunner({ sub, refresh }: { sub: SubView; refresh: () => Promise<void>
   return (
     <View style={{ gap: 8 }}>
       <Text style={s.small}>{text.pcHint}</Text>
-      <Text style={[s.small, mono]}>{text.pcPrep(CLI_LOGIN[sub.provider])}</Text>
       <Chip tint={sub.runner.connected ? colors.okBg : undefined}>
         {sub.runner.connected ? text.pcConnected(sub.runner.cwd) : text.pcDisconnected}
       </Chip>
-      <Button small onPress={() => void Linking.openURL(download)}>
-        {text.pcDownload}
-      </Button>
+      <Text style={s.small}>{text.pcOs}</Text>
+      <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+        {PC_OS.map((o) => (
+          <Choice
+            key={o}
+            label={PC_OS_LABELS[o]}
+            selected={os === o}
+            onPress={() => {
+              setOs(o);
+              setCommand(undefined); // 열쇠가 든 줄은 OS 를 바꾸면 새로 만든다
+            }}
+          />
+        ))}
+      </View>
+      <Text style={s.small}>{text.pcOsNote[os]}</Text>
       <Button
         small
         busy={act.busy}
@@ -997,7 +1040,8 @@ function PcRunner({ sub, refresh }: { sub: SubView; refresh: () => Promise<void>
               {},
               "POST",
             );
-            setCommand(`node osiri-runner.mjs ${apiBase()} ${key}`);
+            setCommand(installLine(os, apiBase(), key, sub.provider));
+            setDirect(`node osiri-runner.mjs ${apiBase()} ${key}`);
             await refresh();
           })
         }
@@ -1014,6 +1058,23 @@ function PcRunner({ sub, refresh }: { sub: SubView; refresh: () => Promise<void>
             {command}
           </Text>
           <Text style={s.small}>{text.pcCommandHint}</Text>
+        </View>
+      )}
+      {manual && (
+        <View style={{ gap: 6 }}>
+          <Text style={s.heading}>{text.manualTitle}</Text>
+          <Text style={s.small}>{text.manualNote}</Text>
+          <Button small onPress={() => void Linking.openURL(`${apiBase()}/osiri-runner.mjs`)}>
+            {text.pcDownload}
+          </Button>
+          {direct && (
+            <Text
+              selectable
+              style={[mono, s.small, { padding: 8, borderRadius: 8, backgroundColor: colors.sunk }]}
+            >
+              {direct}
+            </Text>
+          )}
         </View>
       )}
     </View>

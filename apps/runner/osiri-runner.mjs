@@ -3,13 +3,12 @@
 // 이 PC 가 0Siri 서버로 «바깥으로» 접속한다(열리는 포트 없음). 서버가 대화 한 턴을 보내면
 // 이 PC 에서 ACP 어댑터를 띄워 그대로 이어 준다(대화방·팀 역할마다 세션이 이어진다). 로그인 정보는 이 PC 밖으로 나가지 않는다.
 //
-// 준비: Node 22 이상, 그리고 쓸 CLI 에 이 PC 에서 로그인해 두기
-//   ChatGPT 구독 → npm i -g @openai/codex && codex login
-//   Claude 구독  → npm i -g @anthropic-ai/claude-code && claude auth login
-// 실행: node osiri-runner.mjs <서버주소> <열쇠>     (앱 설정 › 모델 사용 › 내 PC 에서 이 줄을 복사)
+// 설치는 보통 설치 스크립트가 다 한다(Node·CLI·로그인·실행 파일): 앱 설정 › 연결 › 모델 계정 › 내 PC 에서 OS 별 한 줄 복사
+//   macOS·Ubuntu → install-runner.sh   Windows → install-runner.ps1
+// 직접 실행: node osiri-runner.mjs <서버주소> <열쇠>   (Node 22 이상, codex·claude CLI 로그인 필요)
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 const [server, key] = process.argv.slice(2);
 if (!server || !key) {
@@ -64,8 +63,10 @@ function connect() {
       console.log(`[0Siri] 대화 한 턴 시작 (${msg.provider})`);
     } else if (msg.t === "mkdir") {
       // 팀 작업 폴더(teams/<팀>) — 이 폴더 밖은 만들지 않는다
-      const target = resolve(process.cwd(), String(msg.path));
-      if (!relative(process.cwd(), target).startsWith("..")) mkdirSync(target, { recursive: true });
+      const rel = relative(process.cwd(), resolve(process.cwd(), String(msg.path)));
+      // 윈도우는 다른 드라이브(D:\…)면 relative 가 절대 경로를 돌려준다 — 그것도 밖이다
+      if (rel && !rel.startsWith("..") && !isAbsolute(rel))
+        mkdirSync(resolve(process.cwd(), rel), { recursive: true });
     } else if (msg.t === "data") {
       children.get(msg.id)?.stdin.write(msg.d);
     } else if (msg.t === "close") {
@@ -83,8 +84,9 @@ function connect() {
   };
   ws.onclose = (event) => {
     if (event.code === 4003 || event.code === 4001) {
+      // 서버 사유에는 안내 문장까지 들어 있다 — 사유가 없을 때만 붙인다
       console.error(
-        `[0Siri] ${event.reason || "열쇠가 맞지 않습니다"} — 앱에서 새 명령을 받아 다시 실행하세요`,
+        `[0Siri] ${event.reason || "열쇠가 맞지 않습니다 — 앱에서 새 명령을 받아 다시 실행하세요"}`,
       );
       process.exit(1);
     }

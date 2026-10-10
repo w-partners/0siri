@@ -367,7 +367,7 @@ function SubScreen({
   if (!allowed(sub, me.user.role)) return <ErrorNotice error={text.forbidden} />;
   switch (sub) {
     case "connections":
-      return <ConnectionsScreen />;
+      return <ConnectionsScreen admin={me.user.role === "admin"} />;
     case "memory":
       return <MemoryScreen />;
     case "skills":

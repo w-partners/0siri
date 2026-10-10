@@ -35,6 +35,7 @@ import {
   useWide,
 } from "../ui";
 import { useWorkspace } from "../workspace";
+import { SubscriptionPanel } from "./connections";
 import { CharacterAvatar } from "./eve";
 import { GoalStep, ONBOARDING_TITLES, ProfileStep, profileComplete } from "./onboarding-steps";
 
@@ -87,6 +88,12 @@ const text = {
   close: "닫기",
   back: "돌아가기",
   pickTeam: "팀을 고르면 상세가 여기에 보입니다.",
+  // 스토어 «연결» — 팀이 아니라 영시리에 붙이는 것. 누르면 설치 화면(설정 › 연결 과 같은 화면)
+  connectCategory: "연결",
+  pcName: "내 PC 연결",
+  pcSummary:
+    "Windows · Mac · Ubuntu 에서 쓰는 ChatGPT·Claude 구독으로 영시리가 답하고, 그 PC 에서 하던 대화도 이어 씁니다.",
+  install: "설치",
   pickSub: "구독을 고르면 관리 패널이 여기에 보입니다.",
   emptyExplore: "검색 결과가 없습니다",
   emptyExploreHint: "다른 단어로 검색",
@@ -383,7 +390,9 @@ function TeamHead({ pkg, size }: { pkg: Pkg; size: number }) {
   );
 }
 
-function matches(pkg: Pkg, q: string, category: StoreCategory | "") {
+/** 스토어 분류 — 팀 분야(STORE_CATEGORIES) + «연결»(팀이 아닌 것) */
+type ShelfCategory = StoreCategory | "" | "connect";
+function matches(pkg: Pkg, q: string, category: ShelfCategory) {
   if (category && pkg.category !== category) return false;
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
@@ -408,17 +417,24 @@ function Explore({
   const wide = useWide();
   const [q, setQ] = useState("");
   const [serverQ, setServerQ] = useState("");
-  const [category, setCategory] = useState<StoreCategory | "">("");
+  const [category, setCategory] = useState<ShelfCategory>("");
+  const [pcOpen, setPcOpen] = useState(false);
   // 입력은 화면에서 즉시 거르고(matches), 서버 검색은 잠깐 멈췄을 때 병행한다
   useEffect(() => {
     const timer = setTimeout(() => setServerQ(q.trim()), 300);
     return () => clearTimeout(timer);
   }, [q]);
-  const path = `/api/store/packages?${new URLSearchParams({ q: serverQ, category })}`;
+  const teamCategory = category === "connect" ? "" : category;
+  const path = `/api/store/packages?${new URLSearchParams({ q: serverQ, category: teamCategory })}`;
   const list = useLoad(() => api.request<Pkg[]>(path), path);
   const [open, setOpen] = useState<{ id: string; confirm: boolean }>();
 
-  const shown = list.data?.filter((pkg) => matches(pkg, q, category));
+  const shown = category === "connect" ? [] : list.data?.filter((pkg) => matches(pkg, q, category));
+  const needle = q.trim().toLowerCase();
+  const pcShown =
+    (category === "" || category === "connect") &&
+    (!needle ||
+      `${text.pcName} ${text.pcSummary} ${text.connectCategory}`.toLowerCase().includes(needle));
   const detail = open && list.data?.find((pkg) => pkg.id === open.id);
   const showAll = () => {
     setQ("");
@@ -451,7 +467,37 @@ function Explore({
               onPress={() => setCategory(c)}
             />
           ))}
+          <Choice
+            label={text.connectCategory}
+            selected={category === "connect"}
+            onPress={() => setCategory("connect")}
+          />
         </View>
+        {pcShown && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={text.pcName}
+            onPress={() => {
+              setOpen(undefined);
+              setPcOpen(true);
+            }}
+          >
+            <Card style={{ gap: 10, ...(pcOpen ? { borderColor: colors.accent } : null) }}>
+              <Text style={s.heading}>{text.pcName}</Text>
+              <Text style={s.text}>{text.pcSummary}</Text>
+              <Button
+                small
+                primary
+                onPress={() => {
+                  setOpen(undefined);
+                  setPcOpen(true);
+                }}
+              >
+                {text.install}
+              </Button>
+            </Card>
+          </Pressable>
+        )}
         {/* 이미 받은 목록이 있으면 다시 읽는 동안에도 보여 준다 — 스켈레톤은 처음 읽을 때만 */}
         <LoadState
           loading={list.loading && !list.data}
@@ -459,7 +505,7 @@ function Explore({
           retry={list.retry}
           empty={false}
         >
-          {shown?.length === 0 ? (
+          {shown?.length === 0 && !pcShown ? (
             q.trim() || category ? (
               <Empty icon={Search} title={text.emptyExplore} detail={text.emptyExploreHint}>
                 <Button onPress={showAll}>{text.showAll}</Button>
@@ -526,6 +572,16 @@ function Explore({
             onSubscribed={afterSubscribe}
             onOpenRoom={onOpenRoom}
           />
+        </Panel>
+      ) : pcOpen ? (
+        // 팀을 고르면(open) 팀 상세가 우선 — 연결 카드를 누르면 open 을 비운다
+        <Panel
+          wide={wide}
+          title={text.pcName}
+          subtitle={text.pcSummary}
+          onClose={() => setPcOpen(false)}
+        >
+          <SubscriptionPanel pc />
         </Panel>
       ) : wide ? (
         <PanelHint>{text.pickTeam}</PanelHint>
