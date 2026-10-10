@@ -37,6 +37,7 @@ import { Approvals } from "./osiri/approvals.ts";
 import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
+import { UsageLimits } from "./osiri/limits.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
@@ -90,6 +91,14 @@ export async function createApp(
   const mcp = new Mcp(db, rooms, approvals);
   const memories = new Memories(db);
   const catalog = new Catalog(db, rooms);
+  const limits = new UsageLimits(
+    db,
+    rooms,
+    (key) => catalog.setting(key),
+    async (owner) => (await accounts.userById(owner))?.tier ?? "free",
+    async (packageId) => (await catalog.packageById(packageId)).slug,
+  );
+  approvals.limits = limits;
   const routing = new Routing(db, rooms);
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
@@ -156,6 +165,7 @@ export async function createApp(
         teamLlm,
         {
           ...(publishTool ? { publishTool } : {}),
+          beforeRole: (role) => limits.beforeRole(owner, roomId, packageId, role),
         },
       ),
   };

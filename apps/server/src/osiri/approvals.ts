@@ -14,6 +14,7 @@ import {
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { EventBus } from "./events.ts";
+import type { UsageLimits } from "./limits.ts";
 import type { Rooms } from "./rooms.ts";
 
 export type { ApprovalStatus };
@@ -84,6 +85,8 @@ export class Approvals {
     private readonly bus: EventBus,
     private readonly now: () => number = Date.now,
   ) {}
+  /** 등급별 사용 제한 — app 이 Catalog·Accounts 를 만든 뒤 끼운다. 없으면(테스트) 제한 없음 */
+  limits?: Pick<UsageLimits, "beforeRequest" | "beforeConsume">;
 
   async get(owner: string, id: string): Promise<Approval> {
     const approval = await this.db.get<Approval>(owner, "approvals", id);
@@ -199,6 +202,7 @@ export class Approvals {
       (a) => a.roomId === input.roomId && a.inputHash === hash,
     );
     if (duplicate) return duplicate;
+    await this.limits?.beforeRequest(owner, input.roomId, input.kind ?? "publish");
     const approval: Approval = {
       id: randomUUID(),
       roomId: input.roomId,
@@ -421,6 +425,7 @@ export class Approvals {
         403,
       );
     }
+    await this.limits?.beforeConsume(owner, approval.roomId);
     const consumed = await this.db.compareAndSwap<Approval>(
       owner,
       "approvals",

@@ -26,6 +26,7 @@ import {
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { type Accounts, type AuditWriter, KindError } from "./accounts.ts";
+import { LIMITS_PREFIX, limitsSchema } from "./limits.ts";
 import type { Rooms } from "./rooms.ts";
 import type { TeamSpec } from "./team-runtime.ts";
 
@@ -146,6 +147,11 @@ export class Catalog {
     if (value === undefined) throw new AppError("설정 값이 필요합니다", 422);
     if (key.startsWith(PRICE_PREFIX) && !validPrice(value))
       throw new AppError("가격은 0 이상의 숫자여야 합니다", 422);
+    if (key.startsWith(LIMITS_PREFIX) && !limitsSchema.safeParse(value).success)
+      throw new AppError(
+        "사용 제한은 { approvalsPerMonth, publishesPerMonth, blockedKinds, blockedRoles } 중 필요한 것만 넣은 객체여야 합니다",
+        422,
+      );
     await this.db.put<Setting>("system", "settings", {
       id: key,
       value,

@@ -134,7 +134,12 @@ export async function teamRuntime(
   roomId: string,
   packageId: string,
   llmFor: TeamLlmFor = () => gatewayLlm(),
-  options: { log?: (line: string) => void; publishTool?: { serverId: string; tool: string } } = {},
+  options: {
+    log?: (line: string) => void;
+    publishTool?: { serverId: string; tool: string };
+    /** 등급 제한: 막힌 역할이면 던진다 (UsageLimits.beforeRole) */
+    beforeRole?: (role: string) => Promise<void>;
+  } = {},
 ) {
   const origin = "http://osiri.internal";
   const pkg = await deps.catalog.packageById(packageId);
@@ -152,7 +157,10 @@ export async function teamRuntime(
     apiUrl: origin,
     workerToken: token,
     team,
-    llm: async (...args) => (await llmFor(owner, { roomId, slug }))(...args),
+    llm: async (...args) => {
+      await options.beforeRole?.(args[0]);
+      return (await llmFor(owner, { roomId, slug }))(...args);
+    },
     fetchFn: async (input, init) => worker.request(String(input).slice(origin.length), init),
     log: options.log ?? ((line) => console.log(`[team] room=${roomId}: ${line}`)),
     maxPolls: 1,
