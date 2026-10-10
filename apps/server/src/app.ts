@@ -1,5 +1,6 @@
 import "./config.ts";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { MessageSchema } from "@ag-ui/core";
 import { CopilotKitIntelligence } from "@copilotkit/runtime/v2";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -207,7 +208,15 @@ export async function createApp(
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
-  app.route("/api", storeRoutes(catalog, accounts));
+  app.route(
+    "/api",
+    storeRoutes(
+      catalog,
+      accounts,
+      (owner, input) => rooms.audit(owner, input),
+      join(config.dataDir, "teams"),
+    ),
+  );
   app.route("/api", routingRoutes(routing));
   app.route("/api", settingsRoutes(routing, catalog));
   app.route(

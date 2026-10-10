@@ -1,6 +1,6 @@
 // 0SIRI-SPEC §22-7: 탐색→상세→구독→방 생성. 구독 트랜잭션 실패 시 롤백. 가격은 설정값(기본 파일럿 무료).
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -18,9 +18,11 @@ import {
 } from "../apps/server/src/osiri/store.ts";
 
 let db: Store, directory: string, rooms: Rooms, adminId: string;
+let catalog: Catalog;
 let app: Hono<{ Variables: { owner: string } }>;
 const queue: Provisioning[] = [];
 let failNextEnqueue = false;
+const audits: string[] = [];
 const call = (path: string, owner: string, body?: unknown, method?: string) =>
   app.request(path, {
     method: method ?? (body === undefined ? "GET" : "POST"),
@@ -53,7 +55,7 @@ before(async () => {
   const accounts = new Accounts(db);
   adminId = (await accounts.ensureAdmin("01000000009", "1234"))?.id as string;
   rooms = new Rooms(db, new EventBus());
-  const catalog = new Catalog(db, rooms, async (job) => {
+  catalog = new Catalog(db, rooms, async (job) => {
     if (failNextEnqueue) {
       failNextEnqueue = false;
       throw new Error("provisioning queue down");
@@ -68,7 +70,17 @@ before(async () => {
     c.set("owner", (c.req.header("authorization") ?? "").slice(7));
     await next();
   });
-  app.route("/api", storeRoutes(catalog, accounts));
+  app.route(
+    "/api",
+    storeRoutes(
+      catalog,
+      accounts,
+      async (owner, input) => {
+        audits.push(`${owner} ${input.action}`);
+      },
+      join(directory, "teams"),
+    ),
+  );
 });
 after(async () => {
   await db.close();
@@ -154,6 +166,35 @@ test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·�
   };
   assert.equal(settings.marketFeeRate, MARKET_FEE_RATE);
 
+  // 사용 허용: 관리자가 허용하기 전에는 목록에 보이기만 하고 구독은 403 kind "grant"
+  const grants = "/api/admin/grants";
+  const ungranted = await call("/api/subscriptions", "user-1", { packageId: detail.id });
+  assert.equal(ungranted.status, 403);
+  assert.equal(((await ungranted.json()) as { kind: string }).kind, "grant");
+  const grant = { userId: adminId, packageId: detail.id, allowed: true };
+  assert.equal((await call(grants, "user-1", grant, "PUT")).status, 403, "허용은 관리자만");
+  assert.equal(
+    (await call(grants, adminId, { ...grant, userId: "no-such-user" }, "PUT")).status,
+    404,
+  );
+  // 테스트의 "user-1" 은 계정이 없는 이름표라, 허용 기록은 카탈로그로 직접 넣는다
+  await catalog.setGrant("user-1", detail.id, true);
+  assert.equal((await call(grants, adminId, grant, "PUT")).status, 200);
+  assert.ok(audits.some((line) => line.includes(`store.grant user=${adminId}`)));
+  assert.deepEqual(
+    ((await (await call(`${grants}/${adminId}`, adminId)).json()) as { packageIds: string[] })
+      .packageIds,
+    [detail.id],
+  );
+  const listed = (await (await call("/api/store/packages", "user-1")).json()) as {
+    allowed: boolean;
+  }[];
+  assert.equal(listed[0]?.allowed, true);
+  assert.equal(
+    ((await (await call("/api/store/packages", "user-2")).json()) as typeof listed)[0]?.allowed,
+    false,
+  );
+
   // 롤백: 큐 등록 실패 → 구독·방 모두 없어야 한다
   failNextEnqueue = true;
   const failed = await call("/api/subscriptions", "user-1", { packageId: detail.id });
@@ -202,4 +243,46 @@ test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·�
   // 해지 후 재구독 가능 — 새로 시작하면 옛 방은 그때 읽기 전용이 된다
   assert.equal((await call("/api/subscriptions", "user-1", { packageId: detail.id })).status, 200);
   assert.equal((await rooms.get("user-1", roomId)).archived, true);
+
+  // 허용을 거두면 쓰던 구독은 해지 예약이 되고, 해지 취소도 새 구독도 막힌다
+  await catalog.setGrant("user-1", detail.id, false);
+  const mine = (await (await call("/api/subscriptions/mine", "user-1")).json()) as {
+    id: string;
+    status: string;
+  }[];
+  const revoked = mine.find((sub) => sub.status === "cancelled");
+  assert.ok(revoked, "쓰던 구독이 해지 예약으로 바뀐다");
+  assert.ok(mine.every((sub) => sub.status !== "active"));
+  const resumed = await call(`/api/subscriptions/${revoked.id}/resume`, "user-1", {});
+  assert.equal(resumed.status, 403);
+  assert.equal(((await resumed.json()) as { kind: string }).kind, "grant");
+});
+
+test("스토어 등록(관리자 화면): 팀 YAML 이 이름·역할·승인 지점의 정본, 심사 중으로 올리면 구독 불가", async () => {
+  const yaml = await readFile("teams/legal-marketing.yaml", "utf8");
+  const form = { summary: "소개", image: "osiri/team:1", reviewing: true };
+  assert.equal((await call("/api/admin/packages/yaml", "user-1", { ...form, yaml })).status, 403);
+  const broken = await call("/api/admin/packages/yaml", adminId, { ...form, yaml: "package: [" });
+  assert.equal(broken.status, 422, "읽지 못한 YAML 은 이유와 함께 거절");
+  const noReviewer = yaml.replace(/\n {2}reviewer:/, "\n  checker:");
+  const rejected = await call("/api/admin/packages/yaml", adminId, { ...form, yaml: noReviewer });
+  assert.equal(rejected.status, 422);
+  const ok = await call("/api/admin/packages/yaml", adminId, { ...form, yaml });
+  assert.equal(ok.status, 200);
+  const pkg = (await ok.json()) as {
+    id: string;
+    name: string;
+    reviewing: boolean;
+    roleCount: number;
+  };
+  assert.equal(pkg.name, "법률 마케팅팀");
+  assert.equal(pkg.reviewing, true);
+  assert.equal(pkg.roleCount, 8, "YAML 의 agents 전부");
+  const saved = (
+    await db.list<{ slug: string; runtime: { teamYaml: string } }>("system", "packages")
+  ).find((p) => p.slug === "legal-marketing");
+  assert.equal(await readFile(saved?.runtime.teamYaml as string, "utf8"), yaml);
+  await catalog.setGrant("user-3", pkg.id, true);
+  assert.equal((await call("/api/subscriptions", "user-3", { packageId: pkg.id })).status, 409);
+  assert.ok(audits.some((line) => line.includes("store.register legal-marketing reviewing=true")));
 });

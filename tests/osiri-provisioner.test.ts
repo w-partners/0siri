@@ -10,6 +10,7 @@ import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Provisioner, type Worker } from "../apps/server/src/osiri/provisioner.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import { Catalog, type Provisioning } from "../apps/server/src/osiri/store.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 
 let db: Store, directory: string, rooms: Rooms, catalog: Catalog;
 const calls: { args: string[]; envFile?: string }[] = [];
@@ -33,6 +34,7 @@ before(async () => {
   db = await createStore({ dataDir: join(directory, "db") });
   rooms = new Rooms(db, new EventBus());
   catalog = new Catalog(db, rooms);
+  grantOnSubscribe(catalog);
   await catalog.upsertPackage({
     slug: "legal-marketing",
     name: "법률 마케팅팀",

@@ -143,6 +143,11 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string, audi
     );
   });
   // 회원 찾기(승인할 때 상위 회원 고르기) — `?q=` 로 이름·전화번호 검색
+  app.patch("/admin/users/:id/role", async (c) => {
+    await accounts.requireRole(c.get("owner"), "admin");
+    const body = z.object({ role: z.enum(USER_ROLES) }).parse(await c.req.json());
+    return c.json(await accounts.setRole(c.get("owner"), c.req.param("id"), body.role, audit));
+  });
   app.get("/admin/users", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
     return c.json(await accounts.listUsers(c.req.query("q")));

@@ -46,6 +46,7 @@ import {
   STORE_CATEGORIES,
   STORE_CATEGORY_IDS,
 } from "../packages/domain/src/osiri.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 import { browserFixture } from "./helpers/browser.ts";
 import { modelFixture } from "./helpers/model.ts";
 
@@ -459,6 +460,7 @@ test("#9 #15 가격은 쓸 때 검증·읽을 때 실패 · 구독 카드는 err
   const accounts = new Accounts(db);
   const adminId = (await accounts.ensureAdmin("01000000077", "1234"))?.id as string;
   const catalog = new Catalog(db, rooms, async () => undefined);
+  grantOnSubscribe(catalog);
   const store = new Hono<{ Variables: { owner: string } }>();
   store.onError((error, c) =>
     c.json(
@@ -470,7 +472,10 @@ test("#9 #15 가격은 쓸 때 검증·읽을 때 실패 · 구독 카드는 err
     c.set("owner", (c.req.header("authorization") ?? "").slice(7));
     await next();
   });
-  store.route("/api", storeRoutes(catalog, accounts));
+  store.route(
+    "/api",
+    storeRoutes(catalog, accounts, async () => undefined, join(directory, "teams")),
+  );
   const admin = (path: string, body?: unknown, method?: string) =>
     store.request(path, {
       method: method ?? (body === undefined ? "GET" : "POST"),

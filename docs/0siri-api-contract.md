@@ -54,7 +54,7 @@
 
 ## 스토어 (화면 6)
 
-- `GET /store/packages` 항목에 추가: `subscribed: boolean`, `roomId: string|null`, `reviewing: boolean`("입점 심사 중"), `reportCadence: string`, `dataHandling: string`, `conversionRate: number|null`(발행→인용 전환율).
+- `GET /store/packages` 항목에 추가: `subscribed: boolean`, `roomId: string|null`, `reviewing: boolean`("입점 심사 중"), `reportCadence: string`, `dataHandling: string`, `conversionRate: number|null`(발행→인용 전환율), `allowed: boolean`(관리자가 이 회원에게 사용을 허용했는가 — 없으면 `POST /subscriptions`·`/resume` 은 403 `kind: "grant"`).
   카테고리 id: `legal`(법률) · `content`(콘텐츠) · `office`(사무).
 - `POST /subscriptions` `{ packageId, restore?: boolean }` — 해지했던 팀을 다시 구독할 때 `restore` 로 기존 방·기억 복원/새로 시작을 고른다. 이미 구독 중이면 409.
 - `POST /subscriptions/:id/resume` — 해지 예약 취소.
@@ -143,6 +143,10 @@
   - `POST /admin/waitlist/:id/approve` `{ parentId }` → 갱신된 항목. `parentId` 는 실제 회원이어야 한다(없으면 404). 신청 때의 해시로 사용자를 만들고 `invitedBy = parentId`. 검토 중이 아니면 409. 비밀번호 없이 접수된 옛 항목은 409.
   - `POST /admin/waitlist/:id/reject` `{ reason }` → 갱신된 항목. 검토 중이 아니면 409.
   - `GET /admin/users?q=` → 회원 목록, 항목에 `id, phone, name: string|null, invitedBy: string|null` (+ `role`, `tier`, `createdAt`). `q` 는 이름 부분 일치 · 전화번호 숫자 부분 일치.
+  - `PATCH /admin/users/:id/role` `{ role: "user"|"operator"|"admin" }` → 갱신된 회원. 관리자만. 자기 역할은 409(`ROLE_SELF_MESSAGE`) — 바꾸는 사람이 늘 관리자로 남아 관리자 0명이 되지 않는다. 없는 회원 404. 감사 로그 `role.set`.
+  - `GET /admin/grants/:userId` → `{ packageIds: string[] }` — 그 회원에게 관리자가 사용을 허용한 팀.
+  - `PUT /admin/grants` `{ userId, packageId, allowed }` → `{ packageIds }`. 허용을 거두면 쓰고 있던 구독은 해지 예약된다. 감사 로그 `store.grant`.
+  - `POST /admin/packages/yaml` `{ yaml, summary, image, reviewing, requiredTier? }` → 등록된 패키지. 스토어 등록(관리자 화면). 팀 YAML 의 `package`(slug·name·character·category·approval_points)와 `agents` 가 정본이고, YAML 은 `<DATA_DIR>/teams/<slug>.yaml` 에 저장된다. 같은 slug 면 갱신. 읽지 못한 YAML·필수 역할 누락은 422. 감사 로그 `store.register`.
   - 승인·반려는 감사 로그에 남는다(`waitlist.approve …` · `waitlist.reject …`, 관리자 본인 것과 system 것).
   - 기존 `POST /admin/invites` · `GET /admin/invites` 는 그대로 동작한다.
 - **가입 네트워크**

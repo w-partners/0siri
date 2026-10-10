@@ -34,8 +34,10 @@ import {
   type ModelTier,
   NOT_READY_LABEL,
   RETENTION_DAYS,
+  ROLE_SELF_MESSAGE,
   TIER_LABELS,
   USER_ROLE_LABELS,
+  USER_ROLES,
   type UserRole,
   WAITLIST_STATUS_LABELS,
   type WaitlistStatus,
@@ -43,6 +45,7 @@ import {
 import type { MeResponse } from "../../../server/src/osiri/account-routes.ts";
 import type { Accounts, WaitlistView } from "../../../server/src/osiri/accounts.ts";
 import type { ModelKeyRow, Routing, SettingsView } from "../../../server/src/osiri/routing.ts";
+import type { publicPackage } from "../../../server/src/osiri/store.ts";
 import {
   Button,
   Card,
@@ -81,6 +84,7 @@ type BillingUsage = Awaited<ReturnType<Routing["billing"]>>;
 type MonthUsage = Awaited<ReturnType<Routing["month"]>>;
 /** `GET /admin/users[?q=]` 항목 — 서버 `Accounts.listUsers()` (이름은 프로필의 표시 이름, 없으면 null) */
 type AdminUser = Awaited<ReturnType<Accounts["listUsers"]>>[number];
+type StorePkg = ReturnType<typeof publicPackage>;
 
 // ---- 하위 화면 ----
 const SUBS = [
@@ -280,6 +284,24 @@ const text = {
   price: "월 가격 (원, 0 = 무료)",
   priceInvalid: "가격은 0 이상의 숫자여야 합니다",
   noPrices: "설정된 가격이 없습니다 (전부 파일럿 무료)",
+  role: "역할 (권한)",
+  roleChanged: (who: string, role: string) => `${who} — ${role} 권한으로 바꿨습니다`,
+  grants: (n: number) => `스토어 사용 허용 (${n})`,
+  grantsHide: "접기",
+  grantsHint:
+    "누른 팀만 이 회원이 구독해 쓸 수 있습니다. 허용을 거두면 쓰고 있던 구독은 해지 예약됩니다.",
+  noPackages: "등록된 팀이 없습니다 — 아래 «스토어 등록» 에서 올리세요",
+  register: "스토어 등록",
+  registerHint:
+    "팀 YAML 이 이름·캐릭터·분야·역할·승인 지점의 정본입니다. 같은 slug 로 다시 올리면 고쳐집니다.",
+  yaml: "팀 YAML",
+  summary: "스토어 소개 (목록·상세에 보이는 설명)",
+  image: "실행 이미지",
+  listing: "올린 뒤 상태",
+  listReviewing: "입점 심사 중 (구독 불가)",
+  listOpen: "바로 공개",
+  registerSubmit: "등록",
+  registered: (name: string) => `${name} 을(를) 스토어에 등록했습니다`,
 };
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
@@ -343,7 +365,7 @@ function SubScreen({
     case "operator":
       return <OperatorScreen />;
     case "admin":
-      return <Admin />;
+      return <Admin meId={me.user.id} />;
     case "profile":
       return <Profile me={me} onSaved={onProfile} />;
     case "usage":
@@ -1229,9 +1251,166 @@ function WaitlistReview({ onDecided }: { onDecided: () => void }) {
   );
 }
 
-function Admin() {
+/** 회원 한 명: 역할(권한) 부여 + 스토어 사용 허용. 자기 역할은 못 바꾼다(서버도 409). */
+function UserAdminRow({
+  user,
+  self,
+  packages,
+  onChanged,
+}: {
+  user: AdminUser;
+  self: boolean;
+  packages: ReturnType<typeof useLoad<StorePkg[]>>;
+  onChanged: () => void;
+}) {
+  const { api, notify } = useWorkspace();
+  const [open, setOpen] = useState(false);
+  const roleAct = useAction();
+  const grantAct = useAction();
+  const grants = useLoad(() =>
+    api.request<{ packageIds: string[] }>(`/api/admin/grants/${user.id}`),
+  );
+  const granted = grants.data?.packageIds ?? [];
+  return (
+    <View
+      style={{ gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.line }}
+    >
+      <Text style={[s.text, { fontWeight: "600" }]}>{userLabel(user)}</Text>
+      <Text style={s.small}>
+        {text.role} · {user.tier}
+      </Text>
+      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+        {USER_ROLES.map((role) => (
+          <Choice
+            key={role}
+            label={USER_ROLE_LABELS[role]}
+            selected={user.role === role}
+            disabled={self || roleAct.busy}
+            onPress={() =>
+              roleAct.run(async () => {
+                await api.request(`/api/admin/users/${user.id}/role`, { role }, "PATCH");
+                notify(text.roleChanged(userLabel(user), USER_ROLE_LABELS[role]));
+                onChanged();
+              })
+            }
+          />
+        ))}
+      </View>
+      {self && <Text style={s.small}>{ROLE_SELF_MESSAGE}</Text>}
+      <ErrorNotice error={roleAct.error} />
+      <Button small onPress={() => setOpen(!open)}>
+        {open ? text.grantsHide : text.grants(granted.length)}
+      </Button>
+      {open && (
+        <View style={{ gap: 8 }}>
+          <Text style={s.small}>{text.grantsHint}</Text>
+          <Loaded state={grants}>
+            {() => (
+              <Loaded state={packages}>
+                {(list) =>
+                  list.length === 0 ? (
+                    <Text style={s.small}>{text.noPackages}</Text>
+                  ) : (
+                    <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+                      {list.map((pkg) => {
+                        const allowed = granted.includes(pkg.id);
+                        return (
+                          <Choice
+                            key={pkg.id}
+                            label={pkg.name}
+                            selected={allowed}
+                            disabled={grantAct.busy}
+                            onPress={() =>
+                              grantAct.run(async () => {
+                                await api.request(
+                                  "/api/admin/grants",
+                                  { userId: user.id, packageId: pkg.id, allowed: !allowed },
+                                  "PUT",
+                                );
+                                grants.retry();
+                              })
+                            }
+                          />
+                        );
+                      })}
+                    </View>
+                  )
+                }
+              </Loaded>
+            )}
+          </Loaded>
+          <ErrorNotice error={grantAct.error} />
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** 스토어 등록: 팀 YAML 을 붙여 넣고, YAML 에 없는 것(소개·실행 이미지·공개 여부)만 적는다. */
+function StoreRegister({ onRegistered }: { onRegistered: () => void }) {
+  const { api, notify } = useWorkspace();
+  const [yaml, setYaml] = useState("");
+  const [summary, setSummary] = useState("");
+  const [image, setImage] = useState("");
+  const [reviewing, setReviewing] = useState(true);
+  const act = useAction();
+  return (
+    <Card style={{ gap: 12 }}>
+      <Block title={text.register}>
+        <Text style={s.small}>{text.registerHint}</Text>
+        <Field
+          label={text.yaml}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={yaml}
+          onChangeText={setYaml}
+          style={[mono, { minHeight: 180 }]}
+        />
+        <Field label={text.summary} multiline value={summary} onChangeText={setSummary} />
+        <Field label={text.image} autoCapitalize="none" value={image} onChangeText={setImage} />
+        <Text style={s.small}>{text.listing}</Text>
+        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Choice
+            label={text.listReviewing}
+            selected={reviewing}
+            onPress={() => setReviewing(true)}
+          />
+          <Choice label={text.listOpen} selected={!reviewing} onPress={() => setReviewing(false)} />
+        </View>
+        <ErrorNotice error={act.error} />
+        <Button
+          small
+          primary
+          busy={act.busy}
+          disabled={!yaml.trim() || !summary.trim() || !image.trim()}
+          onPress={() =>
+            act.run(async () => {
+              const pkg = await api.request<StorePkg>("/api/admin/packages/yaml", {
+                yaml,
+                summary: summary.trim(),
+                image: image.trim(),
+                reviewing,
+              });
+              notify(text.registered(pkg.name));
+              setYaml("");
+              setSummary("");
+              setImage("");
+              onRegistered();
+            })
+          }
+        >
+          {text.registerSubmit}
+        </Button>
+      </Block>
+    </Card>
+  );
+}
+
+function Admin({ meId }: { meId: string }) {
   const { api, notify } = useWorkspace();
   const users = useLoad(() => api.request<AdminUser[]>("/api/admin/users"));
+  const packages = useLoad(() => api.request<StorePkg[]>("/api/store/packages"));
   const settings = useLoad(() =>
     api.request<{ settings: { id: string; value: unknown }[] }>("/api/admin/settings"),
   );
@@ -1242,6 +1421,7 @@ function Admin() {
     <View style={columns}>
       <View style={column}>
         <WaitlistReview onDecided={users.retry} />
+        <StoreRegister onRegistered={packages.retry} />
       </View>
       <View style={column}>
         <Card style={{ gap: 12 }}>
@@ -1252,10 +1432,12 @@ function Admin() {
                   <Text style={s.small}>{text.noUsers}</Text>
                 ) : (
                   items.map((u) => (
-                    <Row
+                    <UserAdminRow
                       key={u.id}
-                      label={userLabel(u)}
-                      value={`${USER_ROLE_LABELS[u.role]} · ${u.tier}`}
+                      user={u}
+                      self={u.id === meId}
+                      packages={packages}
+                      onChanged={users.retry}
                     />
                   ))
                 )

@@ -6,7 +6,10 @@ import {
   STORE_CATEGORIES,
   STORE_CATEGORY_ALL_LABEL,
   STORE_CATEGORY_LABELS,
+  STORE_GRANT_REQUIRED_LABEL,
+  STORE_GRANT_REQUIRED_MESSAGE,
   type StoreCategory,
+  SUBSCRIBE_ERROR_KINDS,
   SUBSCRIPTION_STATUS_LABELS,
   type SubscribeErrorKind,
   THIRD_PARTY_LABEL,
@@ -367,6 +370,9 @@ function TeamHead({ pkg, size }: { pkg: Pkg; size: number }) {
           {pkg.thirdParty && <Text style={s.small}>({THIRD_PARTY_LABEL})</Text>}
           {pkg.verified && <Chip tint={colors.okBg}>{text.verified}</Chip>}
           {pkg.reviewing && <Chip tint={colors.warnBg}>{text.reviewing}</Chip>}
+          {!pkg.reviewing && !pkg.allowed && !pkg.subscribed && (
+            <Chip tint={colors.warnBg}>{STORE_GRANT_REQUIRED_LABEL}</Chip>
+          )}
         </View>
         <Text style={s.small}>
           {STORE_CATEGORY_LABELS[pkg.category]} · {text.agents} <Num>{pkg.roleCount}</Num>
@@ -484,6 +490,8 @@ function Explore({
                   <Conversion rate={pkg.conversionRate} />
                   {pkg.reviewing ? (
                     <Chip tint={colors.warnBg}>{text.reviewing}</Chip>
+                  ) : !pkg.allowed && !pkg.subscribed ? (
+                    <Text style={s.small}>{STORE_GRANT_REQUIRED_MESSAGE}</Text>
                   ) : pkg.subscribed && pkg.roomId ? (
                     <Button small onPress={() => onOpenRoom(pkg.roomId as string)}>
                       {`${SUBSCRIPTION_STATUS_LABELS.active} · ${text.openRoom}`}
@@ -563,12 +571,11 @@ function PackageDetail({
         });
       } catch (e) {
         setConfirming(false); // 실패하면 확인 전 단계로 되돌리고, 서버가 준 사유를 보인다
-        const kind: SubscribeErrorKind = "tier";
-        if (
-          e instanceof ApiError &&
-          e.status === 403 &&
-          (e.body as { kind?: unknown } | undefined)?.kind === kind
-        ) {
+        // 등급 미달·관리자 미허용(403 + kind) 은 오류가 아니라 안내로 보인다
+        const kinds: readonly SubscribeErrorKind[] = SUBSCRIBE_ERROR_KINDS;
+        const kind =
+          e instanceof ApiError ? (e.body as { kind?: unknown } | undefined)?.kind : null;
+        if (e instanceof ApiError && e.status === 403 && kinds.some((k) => k === kind)) {
           setTierNotice(e.message);
           return;
         }
@@ -676,6 +683,11 @@ function PackageDetail({
         </View>
       ) : pkg.reviewing ? (
         <Chip tint={colors.warnBg}>{text.reviewing}</Chip>
+      ) : !pkg.allowed ? (
+        <View style={{ gap: 6 }}>
+          <Chip tint={colors.warnBg}>{STORE_GRANT_REQUIRED_LABEL}</Chip>
+          <Text style={s.small}>{STORE_GRANT_REQUIRED_MESSAGE}</Text>
+        </View>
       ) : !confirming ? (
         <Button primary onPress={() => setConfirming(true)}>
           {text.subscribe}

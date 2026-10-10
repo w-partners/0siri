@@ -521,3 +521,21 @@ test("탈퇴 정리: 지워지는 회원의 아래 사람은 한 단계 위로 �
   );
   assert.equal((await call(`/api/auth/invite/${tokenOf(pending.link)}`)).status, 404);
 });
+
+test("권한 부여: 관리자만 역할을 바꾸고, 자기 역할은 못 바꾼다", async () => {
+  const member = await inviteAndJoin(admin.token, "010-1234-7001");
+  const role = (id: string, value: string, token: string) =>
+    call(`/api/admin/users/${id}/role`, { role: value }, token, "PATCH");
+  assert.equal((await role(member.user.id, "operator", member.token)).status, 403);
+  assert.equal((await role(admin.user.id, "user", admin.token)).status, 409, "자기 역할");
+  assert.equal((await role("no-such-user", "operator", admin.token)).status, 404);
+  assert.equal((await role(member.user.id, "owner", admin.token)).status, 422, "없는 역할");
+  const promoted = await read<{ role: string }>(role(member.user.id, "admin", admin.token));
+  assert.equal(promoted.role, "admin");
+  // 새 관리자는 관리자 화면을 쓸 수 있고, 다른 관리자의 역할도 바꿀 수 있다
+  assert.equal((await call("/api/admin/users", undefined, member.token)).status, 200);
+  assert.equal((await role(admin.user.id, "operator", member.token)).status, 200);
+  assert.equal((await call("/api/admin/users", undefined, admin.token)).status, 403);
+  // 되돌려 둔다 — 뒤 테스트가 admin 을 관리자로 쓴다
+  assert.equal((await role(admin.user.id, "admin", member.token)).status, 200);
+});

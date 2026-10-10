@@ -287,7 +287,7 @@ export const PLATFORM_DATA_HANDLING = `구독자별로 분리 보관하며, 해�
 export const SUBSCRIPTION_STATUSES = ["active", "cancelled", "ended"] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 /** 종류가 붙는 실패 본문 `{ error, kind }` 의 kind */
-export const SUBSCRIBE_ERROR_KINDS = ["tier"] as const;
+export const SUBSCRIBE_ERROR_KINDS = ["tier", "grant"] as const;
 export type SubscribeErrorKind = (typeof SUBSCRIBE_ERROR_KINDS)[number];
 export const MODEL_KEY_ERROR_KINDS = ["format", "auth", "network"] as const;
 export type ModelKeyErrorKind = (typeof MODEL_KEY_ERROR_KINDS)[number];
@@ -537,3 +537,9 @@ export const WAITLIST_PENDING_LOGIN_MESSAGE =
   "가입 신청을 검토 중입니다 — 승인되면 이 번호와 비밀번호로 로그인할 수 있어요";
 export const waitlistRejectedMessage = (reason: string): string =>
   `가입 신청이 반려되었습니다 — ${reason}`;
+
+/** 권한 부여 · 스토어 사용 허용 — 둘 다 관리자가 회원별로 직접 정한다 */
+export const ROLE_SELF_MESSAGE = "자기 역할은 바꿀 수 없습니다. 다른 관리자에게 요청하세요";
+export const STORE_GRANT_REQUIRED_MESSAGE =
+  "관리자가 사용을 허용한 팀만 쓸 수 있습니다. 관리자에게 요청하세요";
+export const STORE_GRANT_REQUIRED_LABEL = "관리자 허용 필요";

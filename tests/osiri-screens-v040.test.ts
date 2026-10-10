@@ -41,6 +41,7 @@ import {
   REVIEW_ESCALATION_THRESHOLD,
   SKILL_MEASURE_NOTE,
 } from "../packages/domain/src/osiri.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 
 type TestApp = Hono<{ Variables: { owner: string } }>;
 let db: Store, directory: string, rooms: Rooms, bus: EventBus, approvals: Approvals;
@@ -85,6 +86,7 @@ before(async () => {
   rooms = new Rooms(db, bus);
   approvals = new Approvals(db, rooms, bus);
   catalog = new Catalog(db, rooms, async () => undefined);
+  grantOnSubscribe(catalog);
   skills = new Skills(db, rooms);
   platformPkg = await team("screens-own");
   partnerPkg = await team("screens-partner", {

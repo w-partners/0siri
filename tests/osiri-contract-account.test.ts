@@ -46,6 +46,7 @@ import {
   RETENTION_DAYS,
   TEAM_TIER_LABEL,
 } from "../packages/domain/src/osiri.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const env = {
@@ -141,6 +142,7 @@ before(async () => {
   rooms = new Rooms(db, bus);
   routing = new Routing(db, rooms, env);
   catalog = new Catalog(db, rooms, async () => undefined);
+  grantOnSubscribe(catalog);
   memories = new Memories(db);
   const mcp = new Mcp(db, rooms, new Approvals(db, rooms, bus), testMcp, env);
   const auth = await createAuth(db, {
@@ -177,7 +179,10 @@ before(async () => {
   );
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
-  app.route("/api", storeRoutes(catalog, accounts));
+  app.route(
+    "/api",
+    storeRoutes(catalog, accounts, async () => undefined, join(directory, "teams")),
+  );
   app.route("/api", routingRoutes(routing, env));
   app.route("/api", settingsRoutes(routing, catalog, fakeFetch));
   app.route(

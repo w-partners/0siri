@@ -25,6 +25,7 @@ import {
   REVIEW_MANUAL_REASON,
   type ReviewItem,
 } from "../packages/domain/src/osiri.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 
 let db: Store, directory: string, rooms: Rooms, catalog: Catalog, accounts: Accounts;
 let skills: Skills, strict: Operator;
@@ -98,6 +99,7 @@ before(async () => {
   accounts = new Accounts(db);
   rooms = new Rooms(db, new EventBus());
   catalog = new Catalog(db, rooms, async () => undefined);
+  grantOnSubscribe(catalog);
   skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills, { checks: injected });
   // 운영과 같은 기본 심사 — MCP 확인만 테스트용으로 바꾼다

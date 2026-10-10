@@ -3,7 +3,10 @@
 //  - 가격은 코드 상수가 아니라 관리자 설정값(settings `price:<slug>`). 설정이 없으면 파일럿 무료(0).
 //  - 수수료율만 상수 한 곳: MARKET_FEE_RATE.
 import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Hono } from "hono";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
   ACCOUNT_TIERS,
@@ -15,14 +18,16 @@ import {
   RETENTION_DAYS,
   type ReportCadence,
   STORE_CATEGORY_IDS,
+  STORE_GRANT_REQUIRED_MESSAGE,
   type StoreCategory,
   type SubscribeErrorKind,
   type SubscriptionStatus,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import { type Accounts, KindError } from "./accounts.ts";
+import { type Accounts, type AuditWriter, KindError } from "./accounts.ts";
 import type { Rooms } from "./rooms.ts";
+import type { TeamSpec } from "./team-runtime.ts";
 
 export const MARKET_FEE_RATE = 0.3; // 앱스토어 벤치마크 30% (§18 결정). 변경은 여기 한 곳.
 export type Category = StoreCategory;
@@ -57,6 +62,13 @@ export interface TeamPackage {
   /** 비공개: 팀 YAML 경로·실행 이미지. 응답에 내보내지 않는다. */
   runtime: { teamYaml: string; image: string };
   createdAt: string;
+}
+/** 관리자가 한 회원에게 한 패키지 사용을 허용한 기록 (id = `<userId>:<packageId>`) */
+interface Grant {
+  id: string;
+  userId: string;
+  packageId: string;
+  grantedAt: string;
 }
 export interface Subscription {
   id: string;
@@ -99,7 +111,11 @@ const conversionRate = ({ published, ai_citations }: TeamPackage["metrics"]): nu
 export const publicPackage = (
   { runtime: _runtime, ...pkg }: TeamPackage,
   priceMonthly: number,
-  mine: { subscribed: boolean; roomId: string | null } = { subscribed: false, roomId: null },
+  mine: { subscribed: boolean; roomId: string | null; allowed: boolean } = {
+    subscribed: false,
+    roomId: null,
+    allowed: false,
+  },
 ) => ({
   ...pkg,
   priceMonthly,
@@ -168,6 +184,36 @@ export class Catalog {
     await this.db.put("system", "packages", pkg);
     return pkg;
   }
+  // --- 사용 허용: 관리자가 회원별로 정한다. 허용이 없으면 구독도 해지 취소도 할 수 없다 ---
+  /** 이 회원에게 허용된 패키지 id 들 */
+  async grants(userId: string): Promise<string[]> {
+    return (await this.db.list<Grant>("system", "store-grants"))
+      .filter((g) => g.userId === userId)
+      .map((g) => g.packageId);
+  }
+  /** 허용을 거두면 쓰고 있던 구독도 해지 예약한다 — 허용 없는 구독이 남지 않게. */
+  async setGrant(userId: string, packageId: string, allowed: boolean): Promise<string[]> {
+    await this.packageById(packageId);
+    const id = `${userId}:${packageId}`;
+    if (allowed)
+      await this.db.put<Grant>("system", "store-grants", {
+        id,
+        userId,
+        packageId,
+        grantedAt: new Date().toISOString(),
+      });
+    else {
+      await this.db.remove("system", "store-grants", id);
+      for (const sub of await this.mine(userId))
+        if (sub.packageId === packageId && sub.status === "active")
+          await this.cancel(userId, sub.id);
+    }
+    return this.grants(userId);
+  }
+  private async requireGrant(userId: string, packageId: string) {
+    if (!(await this.grants(userId)).includes(packageId))
+      throw new KindError<SubscribeErrorKind>(STORE_GRANT_REQUIRED_MESSAGE, 403, "grant");
+  }
   /** 이 사용자가 지금 구독 중인(active) 패키지 → 그 방. 해지 예약·종료된 구독은 «구독 중» 이 아니다. */
   private async subscribedRooms(owner: string): Promise<Map<string, string>> {
     return new Map(
@@ -182,6 +228,7 @@ export class Catalog {
     return publicPackage(pkg, await this.price(pkg), {
       subscribed: roomId !== undefined,
       roomId: roomId ?? null,
+      allowed: owner ? (await this.grants(owner)).includes(pkg.id) : false,
     });
   }
   async packages(
@@ -200,11 +247,13 @@ export class Catalog {
       );
     }
     const rooms = owner ? await this.subscribedRooms(owner) : new Map<string, string>();
+    const granted = owner ? await this.grants(owner) : [];
     const priced = await Promise.all(
       list.map(async (p) =>
         publicPackage(p, await this.price(p), {
           subscribed: rooms.has(p.id),
           roomId: rooms.get(p.id) ?? null,
+          allowed: granted.includes(p.id),
         }),
       ),
     );
@@ -245,6 +294,7 @@ export class Catalog {
   ): Promise<{ subscription: ReturnType<typeof subscriptionView>; roomId: string }> {
     const pkg = await this.packageById(packageId);
     if (pkg.reviewing) throw new AppError("입점 심사 중인 팀은 아직 구독할 수 없습니다", 409);
+    await this.requireGrant(owner, packageId);
     if (
       pkg.requiredTier &&
       ACCOUNT_TIERS.indexOf(options.tier ?? "free") < ACCOUNT_TIERS.indexOf(pkg.requiredTier)
@@ -411,6 +461,7 @@ export class Catalog {
       (s) => s.id !== id && s.packageId === subscription.packageId && s.status === "active",
     );
     if (others.length) throw new AppError("이미 구독 중인 팀입니다", 409);
+    await this.requireGrant(owner, subscription.packageId);
     const {
       cancelledAt: _cancelledAt,
       dataRetainedUntil: _retained,
@@ -474,7 +525,13 @@ export class Catalog {
 }
 
 /** S6 스토어·구독 라우트 + 관리자 설정. /api 아래, 인증 뒤. */
-export function storeRoutes(catalog: Catalog, accounts: Accounts) {
+export function storeRoutes(
+  catalog: Catalog,
+  accounts: Accounts,
+  audit: AuditWriter,
+  /** 관리자가 등록한 팀 YAML 을 두는 곳 (`<DATA_DIR>/teams`) */
+  teamsDir: string,
+) {
   const app = new Hono<{ Variables: { owner: string } }>();
   app.get("/store/packages", async (c) =>
     c.json(
@@ -520,9 +577,15 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
   app.post("/subscriptions/:id/cancel", async (c) =>
     c.json(await catalog.cancel(c.get("owner"), c.req.param("id"))),
   );
-  app.post("/subscriptions/:id/resume", async (c) =>
-    c.json(await catalog.resume(c.get("owner"), c.req.param("id"))),
-  );
+  app.post("/subscriptions/:id/resume", async (c) => {
+    try {
+      return c.json(await catalog.resume(c.get("owner"), c.req.param("id")));
+    } catch (error) {
+      if (error instanceof KindError)
+        return c.json({ error: error.message, kind: error.kind }, error.status);
+      throw error;
+    }
+  });
 
   const admin = async (owner: string) => accounts.requireRole(owner, "admin");
   app.get("/admin/settings", async (c) => {
@@ -536,6 +599,101 @@ export function storeRoutes(catalog: Catalog, accounts: Accounts) {
       .parse(await c.req.json());
     await catalog.setSetting(body.key, body.value);
     return c.json({ ok: true });
+  });
+  // 스토어 사용 허용 — 관리자가 회원별로 직접 정한다
+  app.get("/admin/grants/:userId", async (c) => {
+    await admin(c.get("owner"));
+    return c.json({ packageIds: await catalog.grants(c.req.param("userId")) });
+  });
+  app.put("/admin/grants", async (c) => {
+    const owner = c.get("owner");
+    await admin(owner);
+    const body = z
+      .object({ userId: z.string().min(1), packageId: z.string().min(1), allowed: z.boolean() })
+      .parse(await c.req.json());
+    if (!(await accounts.userById(body.userId)))
+      throw new AppError("사용자를 찾을 수 없습니다", 404);
+    const packageIds = await catalog.setGrant(body.userId, body.packageId, body.allowed);
+    const entry = {
+      packageId: null,
+      actor: `user:${owner}`,
+      action: `store.grant user=${body.userId} package=${body.packageId} allowed=${body.allowed}`,
+      result: "ok",
+    } as const;
+    await audit(owner, entry);
+    await audit("system", entry);
+    return c.json({ packageIds });
+  });
+  /**
+   * 스토어 등록(관리자 화면): 팀 YAML 이 이름·캐릭터·분야·승인 지점·역할의 정본이다.
+   * 화면은 YAML 에 없는 것(소개·실행 이미지·심사 중 여부·필요 등급)만 따로 받는다.
+   */
+  app.post("/admin/packages/yaml", async (c) => {
+    const owner = c.get("owner");
+    await admin(owner);
+    const body = z
+      .object({
+        yaml: z.string().min(1).max(200_000),
+        summary: z.string().trim().min(1).max(500),
+        image: z.string().trim().min(1).max(200),
+        reviewing: z.boolean(),
+        requiredTier: z.enum(ACCOUNT_TIERS).optional(),
+      })
+      .parse(await c.req.json());
+    let spec: TeamSpec & { package: { category?: string } };
+    try {
+      spec = parseYaml(body.yaml);
+    } catch (error) {
+      throw new AppError(`팀 YAML 을 읽지 못했습니다: ${(error as Error).message}`, 422);
+    }
+    const head = z
+      .object({
+        slug: z.string().regex(/^[a-z0-9-]+$/),
+        name: z.string().min(1).max(60),
+        character: z.string().min(1).max(40),
+        category: z.enum(STORE_CATEGORY_IDS),
+        approval_points: z.array(z.string()),
+      })
+      .safeParse(spec?.package);
+    if (!head.success)
+      throw new AppError(
+        "팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다",
+        422,
+      );
+    const roles = Object.entries(spec.agents ?? {}).map(([name, agent]) => ({
+      name,
+      title: String(agent?.title ?? name),
+      summary: String(agent?.description ?? "").slice(0, 200),
+    }));
+    const existing = (await catalog.packages()).find((p) => p.slug === head.data.slug);
+    const teamYaml = join(teamsDir, `${head.data.slug}.yaml`);
+    // 검증(upsertPackage)을 먼저 통과시키고 파일을 쓴다 — 거절된 YAML 이 디스크에 남지 않게
+    const pkg = await catalog.upsertPackage({
+      slug: head.data.slug,
+      name: head.data.name,
+      character: head.data.character,
+      category: head.data.category,
+      summary: body.summary,
+      roles,
+      approvalPoints: head.data.approval_points,
+      reportCadence: "weekly",
+      verified: existing?.verified ?? false,
+      metrics: existing?.metrics ?? { published: 0, indexed: 0, ai_citations: 0 },
+      reviewing: body.reviewing,
+      requiredTier: body.requiredTier,
+      runtime: { teamYaml, image: body.image },
+    });
+    await mkdir(teamsDir, { recursive: true });
+    await writeFile(teamYaml, body.yaml);
+    const entry = {
+      packageId: null,
+      actor: `user:${owner}`,
+      action: `store.register ${pkg.slug} reviewing=${body.reviewing}`,
+      result: "ok",
+    } as const;
+    await audit(owner, entry);
+    await audit("system", entry);
+    return c.json(publicPackage(pkg, await catalog.price(pkg)));
   });
   app.post("/admin/packages", async (c) => {
     await admin(c.get("owner"));

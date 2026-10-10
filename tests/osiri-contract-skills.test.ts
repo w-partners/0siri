@@ -20,6 +20,7 @@ import {
   skillWorkerRoutes,
 } from "../apps/server/src/osiri/skills.ts";
 import { Catalog } from "../apps/server/src/osiri/store.ts";
+import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 
 let db: Store, directory: string, rooms: Rooms, skills: Skills;
 let app: Hono<{ Variables: { owner: string } }>;
@@ -57,6 +58,7 @@ before(async () => {
   rooms = new Rooms(db, bus);
   const approvals = new Approvals(db, rooms, bus);
   const catalog = new Catalog(db, rooms, async () => undefined);
+  grantOnSubscribe(catalog);
   skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
 

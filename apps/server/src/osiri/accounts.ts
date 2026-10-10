@@ -11,6 +11,7 @@ import {
   type NetworkNodeStatus,
   PASSWORD_MIN,
   RETENTION_DAYS,
+  ROLE_SELF_MESSAGE,
   type UserRole,
   WAITLIST_ALREADY_PENDING_MESSAGE,
   WAITLIST_PENDING_LOGIN_MESSAGE,
@@ -598,6 +599,21 @@ export class Accounts {
     await this.db.put<WaitlistEntry>("system", "waitlist", decided);
     await this.auditDecision(adminId, `waitlist.reject ${waitlistRef(entry)}`, audit);
     return waitlistView(decided);
+  }
+
+  // --- 권한 부여 ---
+  /**
+   * 관리자가 회원의 역할을 정한다. 자기 역할은 못 바꾼다 —
+   * 바꾸는 사람이 늘 관리자로 남으므로 관리자가 0명이 되는 일이 없다.
+   */
+  async setRole(adminId: string, userId: string, role: Role, audit: AuditWriter) {
+    if (adminId === userId) throw new AppError(ROLE_SELF_MESSAGE, 409);
+    const user = await this.userById(userId);
+    if (!user) throw new AppError("사용자를 찾을 수 없습니다", 404);
+    if (user.role === role) return publicUser(user);
+    const updated = await this.db.put<User>("system", "users", { ...user, role });
+    await this.auditDecision(adminId, `role.set user=${userId} ${user.role}->${role}`, audit);
+    return publicUser(updated);
   }
 
   // --- 탈퇴 ---
