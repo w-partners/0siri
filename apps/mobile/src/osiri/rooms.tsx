@@ -518,38 +518,50 @@ const hex = (a: number) =>
     .padStart(2, "0");
 const gradient = (color: (a: number) => string) =>
   `linear-gradient(to bottom, ${STEPS.map((p) => `${color(fadeAt(p))} ${p}%`).join(", ")}, transparent 100%)`;
-const fadeBehind = (bg: string): object =>
-  Platform.OS === "web"
-    ? {
-        backdropFilter: "blur(12px)",
-        backgroundImage: gradient((a) => `${bg}${hex(a * TINT)}`),
-        maskImage: gradient((a) => `rgba(0,0,0,${a.toFixed(3)})`),
-      }
-    : { experimental_backgroundImage: gradient((a) => `${bg}${hex(a * TINT)}`) };
-// ponytail: 앱은 블러에 마스크를 씌울 수 없어 같은 곡선으로 세기를 낮춘 띠 18개를 쌓는다. 띠가 보이면 masked-view 로.
+const tintBehind = (bg: string): object => {
+  const image = gradient((a) => `${bg}${hex(a * TINT)}`);
+  return Platform.OS === "web"
+    ? { backgroundImage: image }
+    : { experimental_backgroundImage: image };
+};
+// ponytail: 블러는 마스크로 못 깎는다(앱은 불가, 웹 크롬은 mask 가 backdrop-filter 를 거의 꺼 버림 — 실측).
+// 얇은 띠는 제 상자 안만 흐려 글자가 남고 이음매가 보인다(실측) → 전부 맨 위에서 시작해 끝만 다른 층을
+// 긴 것부터 쌓는다. 웹은 층끼리 겹쳐 흐려지므로(σ² 합) 합이 곡선이 되게 나눠 주고,
+// 앱은 위에 그린 층이 덮으므로 그 지점의 세기를 그대로 준다.
 // 효과는 머리 뒤에 깔린 층에만 — 머리 자체에 마스크를 걸면 캐릭터·이름 알약까지 같이 투명해진다
+const ENDS = STEPS.slice(1).reverse(); // 90,85,…,5
+const BLUR_PX = 14;
 function BlurBehind() {
   const layer = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } as const;
-  if (Platform.OS === "web")
-    return <View pointerEvents="none" style={[layer, fadeBehind(colors.bg)]} />;
   const tint = isDark ? "dark" : "light";
   return (
     <>
-      {STEPS.slice(0, -1).map((p) => {
-        const a = fadeAt(p + 2.5);
+      {ENDS.map((end) => {
+        const a = fadeAt(end - 2.5);
+        const box = { position: "absolute", left: 0, right: 0, top: 0, height: `${end}%` } as const;
+        if (Platform.OS === "web") {
+          const px = BLUR_PX * Math.sqrt(Math.max(0, a ** 2 - fadeAt(end + 2.5) ** 2));
+          return px < 0.2 ? null : (
+            <View
+              key={end}
+              pointerEvents="none"
+              style={[box, { backdropFilter: `blur(${px.toFixed(1)}px)` } as object]}
+            />
+          );
+        }
         return a < 0.03 ? null : (
           <BlurView
-            key={p}
+            key={end}
             pointerEvents="none"
             intensity={Math.round(45 * a)}
             tint={tint}
             experimentalBlurMethod="dimezisBlurView"
-            style={{ position: "absolute", left: 0, right: 0, top: `${p}%`, height: "5%" }}
+            style={box}
           />
         );
       })}
       {/* 배경색 그라데이션은 블러 위에 */}
-      <View pointerEvents="none" style={[layer, fadeBehind(colors.bg)]} />
+      <View pointerEvents="none" style={[layer, tintBehind(colors.bg)]} />
     </>
   );
 }
