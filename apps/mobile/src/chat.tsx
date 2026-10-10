@@ -321,14 +321,24 @@ export function ChatScreen({
   // Set while a queued message is being sent, so a lock refusal holds it instead of failing.
   const queuedTurn = useRef(false);
   const [keyboardPadding, setKeyboardPadding] = useState(0);
+  const padding = useRef(0);
+  const composer = useRef<View>(null);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
-    const onShow = (e: { endCoordinates: { height: number } }) => {
-      const bottomNavHeight = 74;
-      setKeyboardPadding(Math.max(0, e.endCoordinates.height - bottomNavHeight));
+    // Lift the composer exactly to the keyboard top: edge-to-edge (RN 0.81) means adjustResize no longer
+    // shrinks the window, and what sits below the composer (tab bar, system nav) differs per device.
+    const onShow = (e: { endCoordinates: { screenY: number } }) => {
+      composer.current?.measureInWindow((_x, y, _w, h) => {
+        const bottom = y + h - padding.current;
+        padding.current = Math.max(0, Math.ceil(bottom - e.endCoordinates.screenY));
+        setKeyboardPadding(padding.current);
+      });
     };
-    const onHide = () => setKeyboardPadding(0);
+    const onHide = () => {
+      padding.current = 0;
+      setKeyboardPadding(0);
+    };
     const showSub = Keyboard.addListener("keyboardDidShow", onShow);
     const hideSub = Keyboard.addListener("keyboardDidHide", onHide);
     return () => {
@@ -770,258 +780,262 @@ export function ChatScreen({
           {t.chat.scroll.latest}
         </Button>
       )}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={keyboardPadding > 0 ? { paddingBottom: keyboardPadding } : undefined}
-      >
-        <ErrorNotice error={saveError} />
-        {!!saveError && (
-          <Button
-            small
-            disabled={busy}
-            onPress={() => {
-              void saveHistory().catch((e) => setSaveError(String(e)));
-            }}
-          >
-            {t.chat.history.retrySave}
-          </Button>
-        )}
-        <ErrorNotice error={restoreError} />
-        <ErrorNotice error={outboxError} />
-        {!!outbox.pending.length && (
-          <View style={{ padding: 12, gap: 6 }}>
-            <Text style={s.small}>
-              {!online
-                ? `${queueText.waiting} · ${queueText.waitingDetail}`
-                : `${outbox.paused ? t.chat.queue.onHold : t.chat.queue.upNext} · ${t.chat.queue.keepOpen}`}
-            </Text>
-            {outbox.pending.map((message) => (
-              <View key={message.id} style={[s.row, { gap: 8 }]}>
-                <Text numberOfLines={2} style={[s.muted, { flex: 1 }]}>
-                  {message.text}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t.chat.queue.remove(message.text)}
-                  hitSlop={10}
-                  onPress={() => queue.remove(message.id)}
-                  style={{ padding: 8 }}
-                >
-                  <X size={16} color={colors.muted} />
-                </Pressable>
-              </View>
-            ))}
-            {outbox.paused && (
-              <Button
-                small
-                disabled={busy || !!saveError}
-                onPress={() => {
-                  queue.resume();
-                  flush();
-                }}
-              >
-                {t.chat.queue.sendAll}
-              </Button>
-            )}
-          </View>
-        )}
-        {picking && (
-          <Card style={{ marginBottom: 12, padding: 15 }}>
-            <Text style={s.heading}>{t.chat.attach.title}</Text>
-            <ScrollView style={{ maxHeight: 230 }} keyboardShouldPersistTaps="handled">
-              {w.files.length ? (
-                w.files.map((f) => (
-                  <CheckRow
-                    key={f.id}
-                    checked={attachments.includes(f.id)}
-                    label={f.name}
-                    onPress={() =>
-                      setAttachments(
-                        attachments.includes(f.id)
-                          ? attachments.filter((id) => id !== f.id)
-                          : [...attachments, f.id],
-                      )
-                    }
-                  />
-                ))
-              ) : (
-                <Text style={s.muted}>{t.chat.attach.empty}</Text>
-              )}
-            </ScrollView>
+      <View ref={composer}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={keyboardPadding > 0 ? { paddingBottom: keyboardPadding } : undefined}
+        >
+          <ErrorNotice error={saveError} />
+          {!!saveError && (
             <Button
               small
-              onPress={() => setPicking(false)}
-              style={{ alignSelf: "flex-end", marginTop: 8 }}
+              disabled={busy}
+              onPress={() => {
+                void saveHistory().catch((e) => setSaveError(String(e)));
+              }}
             >
-              {t.common.done}
+              {t.chat.history.retrySave}
             </Button>
-          </Card>
-        )}
-        {readOnly ? (
-          // 읽기 전용 방: 입력창을 그리지 않는다 — 서버도 글을 받지 않는다(409)
-          <View
-            accessibilityRole="text"
-            style={{
-              alignSelf: "center",
-              marginVertical: 10,
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 20,
-              borderWidth: 1,
-              borderColor: colors.line,
-              backgroundColor: colors.sunk,
-            }}
-          >
-            <Text style={s.muted}>{readOnly}</Text>
-          </View>
-        ) : (
-          <View
-            style={{
-              backgroundColor: colors.card,
-              borderRadius: 32,
-              borderWidth: 1,
-              borderColor: focused ? colors.accent : colors.line,
-              padding: 8,
-              shadowColor: colors.text,
-              shadowOpacity: focused ? 0.1 : 0.06,
-              shadowRadius: 20,
-              shadowOffset: { width: 0, height: 4 },
-              elevation: 4,
-            }}
-          >
-            {attachments.length > 0 && (
-              <View style={[s.row, { gap: 6, flexWrap: "wrap", padding: 9 }]}>
-                {w.files
-                  .filter((f) => attachments.includes(f.id))
-                  .map((f) => (
-                    <Pressable
-                      key={f.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={t.chat.attach.remove(f.name)}
-                      onPress={() => setAttachments((ids) => ids.filter((id) => id !== f.id))}
-                      style={[
-                        s.row,
-                        {
-                          gap: 7,
-                          maxWidth: "100%",
-                          backgroundColor: colors.sky,
-                          borderRadius: 16,
-                          paddingHorizontal: 11,
-                          paddingVertical: 8,
-                        },
-                      ]}
-                    >
-                      <FileText size={14} color={colors.blueDark} />
-                      <Text
-                        numberOfLines={1}
-                        style={{ flexShrink: 1, fontSize: 12, color: colors.text }}
-                      >
-                        {f.name}
-                      </Text>
-                      <X size={13} color={colors.muted} />
-                    </Pressable>
-                  ))}
-              </View>
-            )}
-            <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t.chat.attach.button}
-                accessibilityState={{ expanded: picking }}
-                onPress={() => setPicking(!picking)}
-                style={({ pressed }) => ({
-                  width: 44,
-                  height: 44,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  borderRadius: 24,
-                  backgroundColor: picking || pressed ? colors.sky : "transparent",
-                })}
-              >
-                <Text
-                  style={{ color: colors.text, fontSize: 29, fontWeight: "300", lineHeight: 32 }}
+          )}
+          <ErrorNotice error={restoreError} />
+          <ErrorNotice error={outboxError} />
+          {!!outbox.pending.length && (
+            <View style={{ padding: 12, gap: 6 }}>
+              <Text style={s.small}>
+                {!online
+                  ? `${queueText.waiting} · ${queueText.waitingDetail}`
+                  : `${outbox.paused ? t.chat.queue.onHold : t.chat.queue.upNext} · ${t.chat.queue.keepOpen}`}
+              </Text>
+              {outbox.pending.map((message) => (
+                <View key={message.id} style={[s.row, { gap: 8 }]}>
+                  <Text numberOfLines={2} style={[s.muted, { flex: 1 }]}>
+                    {message.text}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t.chat.queue.remove(message.text)}
+                    hitSlop={10}
+                    onPress={() => queue.remove(message.id)}
+                    style={{ padding: 8 }}
+                  >
+                    <X size={16} color={colors.muted} />
+                  </Pressable>
+                </View>
+              ))}
+              {outbox.paused && (
+                <Button
+                  small
+                  disabled={busy || !!saveError}
+                  onPress={() => {
+                    queue.resume();
+                    flush();
+                  }}
                 >
-                  +
-                </Text>
-              </Pressable>
-              <TextInput
-                accessibilityLabel={t.chat.composer.inputLabel}
-                value={draft}
-                onChangeText={setDraft}
-                onContentSizeChange={(event) =>
-                  setInputHeight(Math.max(44, Math.min(140, event.nativeEvent.contentSize.height)))
-                }
-                placeholder={
-                  !isReady
-                    ? t.chat.composer.connecting
-                    : !loaded
-                      ? historyError
-                        ? t.chat.composer.unavailable
-                        : t.chat.composer.loading
-                      : (placeholder ?? t.chat.composer.placeholder)
-                }
-                placeholderTextColor={colors.muted}
-                selectionColor={colors.blueDark}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setFocused(false)}
-                style={{
-                  flex: 1,
-                  color: colors.text,
-                  height: inputHeight,
-                  minHeight: 44,
-                  maxHeight: 140,
-                  fontSize: 17,
-                  lineHeight: 24,
-                  paddingHorizontal: 2,
-                  paddingTop: 10,
-                  paddingBottom: 10,
-                  ...noFocusRing,
-                }}
-                multiline
-                editable
-                onKeyPress={
-                  Platform.OS === "web"
-                    ? (event) => {
-                        if (
-                          event.nativeEvent.key === "Enter" &&
-                          !("shiftKey" in event.nativeEvent && event.nativeEvent.shiftKey)
-                        ) {
-                          event.preventDefault();
-                          send();
-                        }
-                      }
-                    : undefined
-                }
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
-                disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
-                onPress={replying ? () => void stop() : send}
-                style={({ pressed }) => ({
-                  width: 44,
-                  height: 44,
-                  borderRadius: 24,
-                  backgroundColor: replying || draft.trim() ? colors.accent : colors.sunk,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transform: [{ scale: pressed ? 0.94 : 1 }],
-                })}
-              >
-                {replying ? (
-                  <Square size={18} fill={colors.onAccent} strokeWidth={0} />
-                ) : (
-                  <ArrowUp
-                    size={25}
-                    strokeWidth={1.8}
-                    color={draft.trim() ? colors.onAccent : colors.muted}
-                  />
-                )}
-              </Pressable>
+                  {t.chat.queue.sendAll}
+                </Button>
+              )}
             </View>
-          </View>
-        )}
-      </KeyboardAvoidingView>
+          )}
+          {picking && (
+            <Card style={{ marginBottom: 12, padding: 15 }}>
+              <Text style={s.heading}>{t.chat.attach.title}</Text>
+              <ScrollView style={{ maxHeight: 230 }} keyboardShouldPersistTaps="handled">
+                {w.files.length ? (
+                  w.files.map((f) => (
+                    <CheckRow
+                      key={f.id}
+                      checked={attachments.includes(f.id)}
+                      label={f.name}
+                      onPress={() =>
+                        setAttachments(
+                          attachments.includes(f.id)
+                            ? attachments.filter((id) => id !== f.id)
+                            : [...attachments, f.id],
+                        )
+                      }
+                    />
+                  ))
+                ) : (
+                  <Text style={s.muted}>{t.chat.attach.empty}</Text>
+                )}
+              </ScrollView>
+              <Button
+                small
+                onPress={() => setPicking(false)}
+                style={{ alignSelf: "flex-end", marginTop: 8 }}
+              >
+                {t.common.done}
+              </Button>
+            </Card>
+          )}
+          {readOnly ? (
+            // 읽기 전용 방: 입력창을 그리지 않는다 — 서버도 글을 받지 않는다(409)
+            <View
+              accessibilityRole="text"
+              style={{
+                alignSelf: "center",
+                marginVertical: 10,
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+                borderRadius: 20,
+                borderWidth: 1,
+                borderColor: colors.line,
+                backgroundColor: colors.sunk,
+              }}
+            >
+              <Text style={s.muted}>{readOnly}</Text>
+            </View>
+          ) : (
+            <View
+              style={{
+                backgroundColor: colors.card,
+                borderRadius: 32,
+                borderWidth: 1,
+                borderColor: focused ? colors.accent : colors.line,
+                padding: 8,
+                shadowColor: colors.text,
+                shadowOpacity: focused ? 0.1 : 0.06,
+                shadowRadius: 20,
+                shadowOffset: { width: 0, height: 4 },
+                elevation: 4,
+              }}
+            >
+              {attachments.length > 0 && (
+                <View style={[s.row, { gap: 6, flexWrap: "wrap", padding: 9 }]}>
+                  {w.files
+                    .filter((f) => attachments.includes(f.id))
+                    .map((f) => (
+                      <Pressable
+                        key={f.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={t.chat.attach.remove(f.name)}
+                        onPress={() => setAttachments((ids) => ids.filter((id) => id !== f.id))}
+                        style={[
+                          s.row,
+                          {
+                            gap: 7,
+                            maxWidth: "100%",
+                            backgroundColor: colors.sky,
+                            borderRadius: 16,
+                            paddingHorizontal: 11,
+                            paddingVertical: 8,
+                          },
+                        ]}
+                      >
+                        <FileText size={14} color={colors.blueDark} />
+                        <Text
+                          numberOfLines={1}
+                          style={{ flexShrink: 1, fontSize: 12, color: colors.text }}
+                        >
+                          {f.name}
+                        </Text>
+                        <X size={13} color={colors.muted} />
+                      </Pressable>
+                    ))}
+                </View>
+              )}
+              <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t.chat.attach.button}
+                  accessibilityState={{ expanded: picking }}
+                  onPress={() => setPicking(!picking)}
+                  style={({ pressed }) => ({
+                    width: 44,
+                    height: 44,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: 24,
+                    backgroundColor: picking || pressed ? colors.sky : "transparent",
+                  })}
+                >
+                  <Text
+                    style={{ color: colors.text, fontSize: 29, fontWeight: "300", lineHeight: 32 }}
+                  >
+                    +
+                  </Text>
+                </Pressable>
+                <TextInput
+                  accessibilityLabel={t.chat.composer.inputLabel}
+                  value={draft}
+                  onChangeText={setDraft}
+                  onContentSizeChange={(event) =>
+                    setInputHeight(
+                      Math.max(44, Math.min(140, event.nativeEvent.contentSize.height)),
+                    )
+                  }
+                  placeholder={
+                    !isReady
+                      ? t.chat.composer.connecting
+                      : !loaded
+                        ? historyError
+                          ? t.chat.composer.unavailable
+                          : t.chat.composer.loading
+                        : (placeholder ?? t.chat.composer.placeholder)
+                  }
+                  placeholderTextColor={colors.muted}
+                  selectionColor={colors.blueDark}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  style={{
+                    flex: 1,
+                    color: colors.text,
+                    height: inputHeight,
+                    minHeight: 44,
+                    maxHeight: 140,
+                    fontSize: 17,
+                    lineHeight: 24,
+                    paddingHorizontal: 2,
+                    paddingTop: 10,
+                    paddingBottom: 10,
+                    ...noFocusRing,
+                  }}
+                  multiline
+                  editable
+                  onKeyPress={
+                    Platform.OS === "web"
+                      ? (event) => {
+                          if (
+                            event.nativeEvent.key === "Enter" &&
+                            !("shiftKey" in event.nativeEvent && event.nativeEvent.shiftKey)
+                          ) {
+                            event.preventDefault();
+                            send();
+                          }
+                        }
+                      : undefined
+                  }
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
+                  disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
+                  onPress={replying ? () => void stop() : send}
+                  style={({ pressed }) => ({
+                    width: 44,
+                    height: 44,
+                    borderRadius: 24,
+                    backgroundColor: replying || draft.trim() ? colors.accent : colors.sunk,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transform: [{ scale: pressed ? 0.94 : 1 }],
+                  })}
+                >
+                  {replying ? (
+                    <Square size={18} fill={colors.onAccent} strokeWidth={0} />
+                  ) : (
+                    <ArrowUp
+                      size={25}
+                      strokeWidth={1.8}
+                      color={draft.trim() ? colors.onAccent : colors.muted}
+                    />
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </KeyboardAvoidingView>
+      </View>
     </View>
   );
 }
