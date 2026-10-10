@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  BackHandler,
   Platform,
   Pressable,
   ScrollView,
@@ -324,6 +325,16 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
     setRoom(undefined);
     setTab(target);
   }, []);
+  // 안드로이드 뒤로 제스처: 방·다른 탭 → 홈(기본 대화), 홈에서만 앱을 닫는다. 서랍·시트는 Modal 이 스스로 닫힌다
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!room && tab === "rooms") return false;
+      setRoom(undefined);
+      setTab("rooms");
+      return true;
+    });
+    return () => sub.remove();
+  }, [room, tab]);
   const openRoom = useCallback((next: Room, nextFocus?: RoomFocus) => {
     setTab("rooms");
     setRoom(next);

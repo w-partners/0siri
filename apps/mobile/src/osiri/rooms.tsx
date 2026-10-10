@@ -1,7 +1,6 @@
 // 0Siri 방 목록(화면 2)·팀 채팅방(화면 3)·SSE 스트림 — «0Siri 종합 기획» §03, 계약은 docs/0siri-api-contract.md.
 // 타입은 서버 정의를 type-import, 라벨·목록은 packages/domain/src/osiri.ts 에서만 가져온다(여기서 다시 적지 않는다).
 import { fetch as streamFetch } from "expo/fetch";
-import { BlurView } from "expo-blur";
 import {
   ArrowLeft,
   BellOff,
@@ -88,7 +87,6 @@ import {
   Field,
   fonts,
   IconButton,
-  isDark,
   relativeDate,
   Sheet,
   Skeleton,
@@ -494,76 +492,31 @@ function WorkingDot() {
   );
 }
 
-// 대화가 캐릭터 양옆으로 올라가며 흐려진다(Muse) — 머리는 덮개가 아니라 반투명 블러 유리다.
-// 효과(블러+배경색)의 세기는 위에서 아래로 급하게 줄어드는 알파 곡선 하나를 웹·앱이 같이 쓴다
-// (마스터 2026-10-10 «대화가 들어오는 아래 40% 는 완전 투명, 그 위로 기하급수로 불투명» — 위%: 세기)
+// 대화가 머리 뒤로 올라가다 화면 맨 위 끝에서만 배경색으로 스르르 사라진다 — 블러·반투명 판 없음
+// (마스터 2026-10-10 «불투명 그냥 없애. 끝에서만 자연스럽게 사라지는 것처럼»). 위%: 배경색 진하기
 const FADE: [number, number][] = [
   [0, 1],
-  [6, 1],
-  [15, 0.7],
-  [30, 0.3],
-  [60, 0],
+  [12, 0.9],
+  [24, 0.55],
+  [34, 0.2],
+  [44, 0],
 ];
-const fadeAt = (pct: number) => {
-  const i = FADE.findIndex(([p]) => p >= pct);
-  if (i <= 0) return i === 0 ? FADE[0][1] : 0;
-  const [p0, a0] = FADE[i - 1];
-  const [p1, a1] = FADE[i];
-  return a0 + ((a1 - a0) * (pct - p0)) / (p1 - p0);
-};
-const STEPS = Array.from({ length: 19 }, (_, i) => i * 5); // 0,5,…,90
-const TINT = 0.45; // 맨 위 배경색 진하기 — 글자가 읽힐 만큼만
 const hex = (a: number) =>
   Math.round(a * 255)
     .toString(16)
     .padStart(2, "0");
-const gradient = (color: (a: number) => string) =>
-  `linear-gradient(to bottom, ${STEPS.map((p) => `${color(fadeAt(p))} ${p}%`).join(", ")}, transparent 100%)`;
-const tintBehind = (bg: string): object => {
-  const image = gradient((a) => `${bg}${hex(a * TINT)}`);
-  return Platform.OS === "web"
-    ? { backgroundImage: image }
-    : { experimental_backgroundImage: image };
-};
-// ponytail: 블러는 마스크로 못 깎는다(앱은 불가, 웹 크롬은 mask 가 backdrop-filter 를 거의 꺼 버림 — 실측).
-// 얇은 띠는 제 상자 안만 흐려 글자가 남고 이음매가 보인다(실측) → 전부 맨 위에서 시작해 끝만 다른 층을
-// 긴 것부터 쌓는다. 웹은 층끼리 겹쳐 흐려지므로(σ² 합) 합이 곡선이 되게 나눠 주고,
-// 앱은 위에 그린 층이 덮으므로 그 지점의 세기를 그대로 준다.
-// 효과는 머리 뒤에 깔린 층에만 — 머리 자체에 마스크를 걸면 캐릭터·이름 알약까지 같이 투명해진다
-const ENDS = STEPS.slice(1).reverse(); // 90,85,…,5
-const BLUR_PX = 14;
-function BlurBehind() {
-  const layer = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } as const;
-  const tint = isDark ? "dark" : "light";
+function EdgeFade() {
+  const image = `linear-gradient(to bottom, ${FADE.map(([p, a]) => `${colors.bg}${hex(a)} ${p}%`).join(", ")})`;
   return (
-    <>
-      {ENDS.map((end) => {
-        const a = fadeAt(end - 2.5);
-        const box = { position: "absolute", left: 0, right: 0, top: 0, height: `${end}%` } as const;
-        if (Platform.OS === "web") {
-          const px = BLUR_PX * Math.sqrt(Math.max(0, a ** 2 - fadeAt(end + 2.5) ** 2));
-          return px < 0.2 ? null : (
-            <View
-              key={end}
-              pointerEvents="none"
-              style={[box, { backdropFilter: `blur(${px.toFixed(1)}px)` } as object]}
-            />
-          );
-        }
-        return a < 0.03 ? null : (
-          <BlurView
-            key={end}
-            pointerEvents="none"
-            intensity={Math.round(45 * a)}
-            tint={tint}
-            experimentalBlurMethod="dimezisBlurView"
-            style={box}
-          />
-        );
-      })}
-      {/* 배경색 그라데이션은 블러 위에 */}
-      <View pointerEvents="none" style={[layer, tintBehind(colors.bg)]} />
-    </>
+    <View
+      pointerEvents="none"
+      style={[
+        { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
+        (Platform.OS === "web"
+          ? { backgroundImage: image }
+          : { experimental_backgroundImage: image }) as object,
+      ]}
+    />
   );
 }
 
@@ -1935,7 +1888,7 @@ export function RoomScreen({
           },
         ]}
       >
-        {float && <BlurBehind />}
+        {float && <EdgeFade />}
         {!home && !desktop && (
           <View style={{ position: "absolute", left: 8, top: 4 }}>
             <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
