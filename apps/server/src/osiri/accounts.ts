@@ -276,6 +276,22 @@ export class Accounts {
     return this.createUser({ phone, password, role: "admin" });
   }
 
+  /** 이 번호의 회원이 있나 — 문자 인증 발송 전에 가입/비밀번호 찾기를 가른다 */
+  async isMember(phoneRaw: string) {
+    return Boolean(await this.userByPhone(normalizePhone(phoneRaw)));
+  }
+
+  /** 비밀번호 찾기: 문자 인증을 통과한 뒤에만 부른다(라우트가 확인). 다른 기기의 세션은 모두 끊는다 */
+  async resetPassword(phoneRaw: string, password: string) {
+    assertPassword(password);
+    const user = await this.userByPhone(normalizePhone(phoneRaw));
+    if (!user) throw new AppError("가입된 번호가 아닙니다", 404);
+    await this.db.put("system", "users", { ...user, passwordHash: hashPassword(password) });
+    for (const s of await this.db.listByField<Session>("system", "sessions", "owner", user.id))
+      await this.db.remove("system", "sessions", s.id);
+    return this.login(user.phone, password);
+  }
+
   // --- 세션 ---
   private async issueSession(userId: string) {
     const token = randomBytes(32).toString("base64url");

@@ -38,6 +38,7 @@ import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
+import { otpGateway } from "./osiri/otp.ts";
 import { roomPersona } from "./osiri/persona.ts";
 import { roomRoutes, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
@@ -183,7 +184,10 @@ export async function createApp(
     );
   });
   // 공개: 전화번호 로그인·초대 수락 (S1). 워커: 워커 토큰으로 인증 — 사용자 인증 미들웨어 앞에 둔다.
-  app.route("/api/auth", publicAccountRoutes(accounts));
+  app.route(
+    "/api/auth",
+    publicAccountRoutes(accounts, otpGateway(config.otpBase, config.otpKeyFile)),
+  );
   app.route("/api/worker", workerRoutes(osiri));
   // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
   app.route("/api/worker", skillWorkerRoutes(skills));

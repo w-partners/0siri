@@ -134,11 +134,15 @@
     409 «이미 가입한 번호입니다» · 409 «이미 다른 분이 초대한 번호입니다»(다른 회원의 살아 있는 초대가 있을 때). 내가 초대 중인 번호를 다시 초대하면 새 링크가 나오고 옛 링크는 무효.
   - `GET /invites` → 내가 보낸 초대 `{ id, phone, status: "pending"|"joined"|"expired", createdAt, expiresAt, joinedUserId? }[]`(최신순).
   - `DELETE /invites/:id` → `{ ok: true }`. 내 것만(남의 것·없는 것 404), 이미 가입한 초대는 409.
+- **문자 인증(공개)** — 공용 OTP 서비스(`OTP_BASE`, 키 파일 `OTP_KEY_FILE`)를 부른다. 미설정이면 아래 셋이 503(조용히 통과하지 않음).
+  - `POST /auth/otp` `{ phone, purpose: "signup"|"reset" }` → `{ expiresIn, resendAfter }`. signup 은 회원 번호면 409, reset 은 회원 아닌 번호면 404. 재발송 간격·시간당 한도는 429.
+  - 초대 수락·가입 신청은 `code`(문자로 받은 6자리, purpose signup)가 맞아야 한다 — 틀리면 400 «인증번호가 맞지 않습니다 (남은 기회 N번)».
+  - `POST /auth/password/reset` `{ phone, code, password }` (purpose reset) → 로그인과 같은 `{ token, user }`. 그 회원의 다른 세션은 모두 끊는다.
 - **초대 링크(공개)**
   - `GET /auth/invite/:token` → `{ phoneHint: string|null, inviterName: string|null }`. `phoneHint` 는 가린 번호(관리자의 번호 없는 초대는 `null`), `inviterName` 은 초대한 사람의 표시 이름(안 정했으면 `null`). 모르는 링크 404 · 이미 쓰였거나 만료 410.
-  - `POST /auth/invite/accept` `{ token, phone, password }` → 로그인과 같은 `{ token, user }`. 입력한 번호가 초대받은 번호와 다르면 400 «초대받은 전화번호와 다릅니다». 가입한 사용자의 `invitedBy` = 초대한 사람.
+  - `POST /auth/invite/accept` `{ token, phone, password, code }` → 로그인과 같은 `{ token, user }`. 입력한 번호가 초대받은 번호와 다르면 400 «초대받은 전화번호와 다릅니다». 가입한 사용자의 `invitedBy` = 초대한 사람.
 - **가입 신청(공개)**
-  - `POST /auth/waitlist` `{ phone, password, purpose }` → 201 `{ status: "pending" }`. `purpose`(무엇을 어떻게 쓰고 싶은지)는 앞뒤 공백을 뺀 길이가 `WAITLIST_PURPOSE_MIN` 이상이어야 한다 — 아니면 400 `WAITLIST_PURPOSE_MESSAGE`. 비밀번호는 가입과 같은 규칙(422), 해시로만 보관.
+  - `POST /auth/waitlist` `{ phone, password, purpose, code }` → 201 `{ status: "pending" }`. `purpose`(무엇을 어떻게 쓰고 싶은지)는 앞뒤 공백을 뺀 길이가 `WAITLIST_PURPOSE_MIN` 이상이어야 한다 — 아니면 400 `WAITLIST_PURPOSE_MESSAGE`. 비밀번호는 가입과 같은 규칙(422), 해시로만 보관.
     409 «이미 가입한 번호입니다» · 409 `WAITLIST_ALREADY_PENDING_MESSAGE`. 반려된 번호는 다시 신청할 수 있다.
   - 신청자가 그 번호·비밀번호로 로그인하면: 검토 중 403 `WAITLIST_PENDING_LOGIN_MESSAGE` · 반려 403 `waitlistRejectedMessage(사유)`. (비밀번호가 틀리면 여느 실패와 같은 401.) 승인되면 그대로 로그인된다.
 - **관리자**

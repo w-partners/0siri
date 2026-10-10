@@ -46,6 +46,9 @@ export interface Config {
   webDist?: string;
   /** 0Siri 앱 자동 업데이트: latest.json·APK 를 두는 폴더(RELEASES_DIR) → /releases/ */
   releasesDir?: string;
+  /** 문자 인증: 공용 OTP 서비스 주소(OTP_BASE)와 서비스 키 파일(OTP_KEY_FILE, 600). 키 원문은 env 에 두지 않는다 */
+  otpBase?: string;
+  otpKeyFile?: string;
   model?: string;
   jevMode?: "off" | "sample" | "live";
   typesafeApiKey?: string;
@@ -158,6 +161,8 @@ export function readConfig(): Config {
     registryUrl: process.env.REGISTRY_URL?.trim() || undefined,
     webDist: process.env.WEB_DIST?.trim() || undefined,
     releasesDir: process.env.RELEASES_DIR?.trim() || undefined,
+    otpBase: process.env.OTP_BASE?.trim().replace(/\/$/, "") || undefined,
+    otpKeyFile: process.env.OTP_KEY_FILE?.trim() || undefined,
     model: process.env.MODEL,
     jevMode,
     typesafeApiKey,

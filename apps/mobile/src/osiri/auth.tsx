@@ -20,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   isHomeRoom,
   LOGIN_FAILS_BEFORE_RESET_HINT,
+  type OtpPurpose,
   PASSWORD_MIN,
   PASSWORD_RESET_HINT,
   PERSONAL_TIER_LABEL,
@@ -62,6 +63,16 @@ const text = {
   login: "로그인",
   required: "전화번호와 비밀번호를 입력해 주세요",
   phoneRequired: "전화번호를 입력해 주세요",
+  code: "인증번호",
+  codeSend: "인증번호 받기",
+  codeResend: "인증번호 다시 받기",
+  codeResendIn: (n: number) => `${n}초 뒤 다시 받기`,
+  codeSent: "문자로 보낸 6자리를 적어 주세요 (3분 안에)",
+  codeRequired: "문자로 받은 인증번호를 적어 주세요",
+  forgot: "비밀번호 찾기",
+  resetTitle: "비밀번호 찾기",
+  resetIntro: "가입한 번호로 인증번호를 받아 새 비밀번호를 정해요. 다른 기기의 로그인은 끊겨요.",
+  resetSubmit: "새 비밀번호로 로그인",
   retry: "다시 시도",
   toLogin: "로그인 화면으로",
   // 초대 대기 신청
@@ -298,6 +309,68 @@ function PhoneField({ value, onChange }: { value: string; onChange: (value: stri
   );
 }
 
+/**
+ * 문자 인증번호: [인증번호 받기] → 그 번호로 온 6자리를 적는다. 발송·유효시간·재발송 간격은 서버(공용 OTP 서비스)가 정한다.
+ * 다시 받기는 서버가 알려 준 resendAfter 초가 지나야 눌린다.
+ */
+function CodeField({
+  phone,
+  purpose,
+  value,
+  onChange,
+}: {
+  phone: string;
+  purpose: OtpPurpose;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  const [wait, setWait] = useState(0);
+  useEffect(() => {
+    if (wait <= 0) return;
+    const id = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(id);
+  }, [wait]);
+  const send = async () => {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return setError(text.phoneRequired);
+    setBusy(true);
+    setError("");
+    try {
+      const r = await publicRequest<{ resendAfter: number }>("/api/auth/otp", {
+        phone: normalized,
+        purpose,
+      });
+      setSent(true);
+      setWait(r.resendAfter);
+    } catch (e) {
+      setError(message(e)); // 이미 가입된 번호·발송 실패·너무 잦은 요청 — 서버 문장 그대로
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View style={{ gap: 6, marginBottom: 12 }}>
+      <Button busy={busy} disabled={wait > 0} onPress={() => void send()}>
+        {wait > 0 ? text.codeResendIn(wait) : sent ? text.codeResend : text.codeSend}
+      </Button>
+      {sent && <Text style={s.small}>{text.codeSent}</Text>}
+      <ErrorNotice error={error} />
+      <Field
+        label={text.code}
+        value={value}
+        onChangeText={(v) => onChange(v.replace(/\D/g, "").slice(0, 8))}
+        keyboardType="number-pad"
+        autoComplete="sms-otp"
+        textContentType="oneTimeCode"
+        placeholder="123456"
+      />
+    </View>
+  );
+}
+
 /** 새 비밀번호 + 확인 (초대 수락 · 초대 대기 신청). */
 function NewPasswordFields({
   password,
@@ -335,8 +408,9 @@ function NewPasswordFields({
   );
 }
 /** 새 계정 입력의 화면 쪽 검사 — 틀리면 사유 문장, 맞으면 "". 전화번호 형식·중복은 서버가 말한다. */
-function newAccountProblem(phone: string, password: string, confirm: string) {
+function newAccountProblem(phone: string, password: string, confirm: string, code: string) {
   if (!normalizePhone(phone)) return text.phoneRequired;
+  if (!code) return text.codeRequired;
   if (password.length < PASSWORD_MIN) return text.passwordShort;
   if (password !== confirm) return text.passwordMismatch;
   return "";
@@ -412,6 +486,7 @@ function useSignIn(onToken: (token: string) => void) {
 export function AuthScreens({ onToken }: { onToken: (token: string) => void }) {
   const [invite, setInvite] = useState(inviteFromLocation);
   const [waitlist, setWaitlist] = useState(false);
+  const [reset, setReset] = useState(false);
   const [linkError, setLinkError] = useState("");
 
   // 네이티브 앱: 초대 링크로 앱이 열렸거나, 켜져 있는 동안 초대 링크를 눌렀을 때 (웹은 위에서 주소창을 읽었다)
@@ -429,12 +504,13 @@ export function AuthScreens({ onToken }: { onToken: (token: string) => void }) {
   const toLogin = useCallback(() => {
     setInvite("");
     setWaitlist(false);
+    setReset(false);
     // 웹: 주소에 초대 토큰이 남아 있으면 새로 고칠 때 초대 화면이 다시 뜬다
     if (Platform.OS === "web" && typeof history !== "undefined" && location.pathname !== "/")
       history.replaceState(null, "", "/");
   }, []);
   // 안드로이드 뒤로 버튼: 초대·신청 화면에서는 앱을 닫지 않고 로그인 화면으로 돌아간다
-  const away = !!invite || waitlist;
+  const away = !!invite || waitlist || reset;
   useEffect(() => {
     if (!away) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -447,18 +523,26 @@ export function AuthScreens({ onToken }: { onToken: (token: string) => void }) {
   if (invite)
     return <InviteAcceptScreen key={invite} token={invite} onToken={onToken} onBack={toLogin} />;
   if (waitlist) return <WaitlistScreen onBack={toLogin} />;
+  if (reset) return <ResetScreen onToken={onToken} onBack={toLogin} />;
   return (
-    <LoginScreen onToken={onToken} onWaitlist={() => setWaitlist(true)} linkError={linkError} />
+    <LoginScreen
+      onToken={onToken}
+      onWaitlist={() => setWaitlist(true)}
+      onReset={() => setReset(true)}
+      linkError={linkError}
+    />
   );
 }
 
 function LoginScreen({
   onToken,
   onWaitlist,
+  onReset,
   linkError,
 }: {
   onToken: (token: string) => void;
   onWaitlist: () => void;
+  onReset: () => void;
   linkError: string;
 }) {
   const wide = useWide();
@@ -521,6 +605,13 @@ function LoginScreen({
         </Button>
         <Pressable
           accessibilityRole="link"
+          onPress={onReset}
+          style={{ alignSelf: "center", paddingTop: 14 }}
+        >
+          <Text style={[s.small, { textDecorationLine: "underline" }]}>{text.forgot}</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="link"
           onPress={onWaitlist}
           style={{ alignSelf: "center", paddingVertical: 14 }}
         >
@@ -568,6 +659,7 @@ function InviteAcceptScreen({
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { signIn, pending } = useSignIn(onToken);
@@ -587,7 +679,7 @@ function InviteAcceptScreen({
   }, [token, attempt]);
 
   const submit = async () => {
-    const problem = newAccountProblem(phone, password, confirm);
+    const problem = newAccountProblem(phone, password, confirm, code);
     if (problem) return setError(problem);
     setBusy(true);
     setError("");
@@ -596,6 +688,7 @@ function InviteAcceptScreen({
         token,
         phone: normalizePhone(phone),
         password,
+        code,
       });
       await signIn(result.token);
     } catch (e) {
@@ -642,6 +735,7 @@ function InviteAcceptScreen({
               <ErrorNotice error={error} />
               {pending}
               <PhoneField value={phone} onChange={setPhone} />
+              <CodeField phone={phone} purpose="signup" value={code} onChange={setCode} />
               <NewPasswordFields
                 password={password}
                 confirm={confirm}
@@ -661,12 +755,73 @@ function InviteAcceptScreen({
   );
 }
 
+// --- 비밀번호 찾기: 문자 인증 → 새 비밀번호 → 바로 로그인 (다른 기기의 로그인은 끊긴다) ---
+function ResetScreen({
+  onToken,
+  onBack,
+}: {
+  onToken: (token: string) => void;
+  onBack: () => void;
+}) {
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const { signIn, pending } = useSignIn(onToken);
+  const submit = async () => {
+    const problem = newAccountProblem(phone, password, confirm, code);
+    if (problem) return setError(problem);
+    setBusy(true);
+    setError("");
+    try {
+      const result = await publicRequest<AuthResult>("/api/auth/password/reset", {
+        phone: normalizePhone(phone),
+        code,
+        password,
+      });
+      await signIn(result.token);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <KeyboardPage>
+      <View style={{ width: "100%", maxWidth: 420, gap: 16 }}>
+        <Text style={[s.title, { fontSize: 32 }]}>{text.resetTitle}</Text>
+        <Card style={{ width: "100%" }}>
+          <Text style={[s.muted, { marginBottom: 16 }]}>{text.resetIntro}</Text>
+          <ErrorNotice error={error} />
+          {pending}
+          <PhoneField value={phone} onChange={setPhone} />
+          <CodeField phone={phone} purpose="reset" value={code} onChange={setCode} />
+          <NewPasswordFields
+            password={password}
+            confirm={confirm}
+            onPassword={setPassword}
+            onConfirm={setConfirm}
+            onSubmit={() => void submit()}
+          />
+          <Button primary busy={busy} onPress={() => void submit()}>
+            {text.resetSubmit}
+          </Button>
+          <BackToLogin onPress={onBack} />
+        </Card>
+      </View>
+    </KeyboardPage>
+  );
+}
+
 // --- 초대 대기 신청 ---
 function WaitlistScreen({ onBack }: { onBack: () => void }) {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [purpose, setPurpose] = useState("");
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -675,7 +830,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
   const short = WAITLIST_PURPOSE_MIN - length;
 
   const submit = async () => {
-    const problem = newAccountProblem(phone, password, confirm);
+    const problem = newAccountProblem(phone, password, confirm, code);
     if (problem) return setError(problem);
     setBusy(true);
     setError("");
@@ -684,6 +839,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
         phone: normalizePhone(phone),
         password,
         purpose: purpose.trim(),
+        code,
       });
       setDone(true);
     } catch (e) {
@@ -716,6 +872,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
             <Text style={[s.muted, { marginBottom: 16 }]}>{text.waitlistIntro}</Text>
             <ErrorNotice error={error} />
             <PhoneField value={phone} onChange={setPhone} />
+            <CodeField phone={phone} purpose="signup" value={code} onChange={setCode} />
             <NewPasswordFields
               password={password}
               confirm={confirm}

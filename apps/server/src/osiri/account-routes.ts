@@ -1,21 +1,27 @@
 // 0Siri 계정 라우트 (0SIRI-SPEC §21 S1). openmuse 패턴대로 /api 아래에 둔다.
-//  공개:  POST /api/auth/login · GET /api/auth/invite/:token · POST /api/auth/invite/accept · POST /api/auth/logout · POST /api/auth/waitlist
+//  공개:  POST /api/auth/login · POST /api/auth/otp · GET /api/auth/invite/:token · POST /api/auth/invite/accept · POST /api/auth/password/reset · POST /api/auth/logout · POST /api/auth/waitlist
 //  인증:  GET /api/me · PATCH /api/me/profile · /api/invites · GET /api/network · POST /api/account/delete · 관리자 /api/admin/*
 import { Hono } from "hono";
 import { z } from "zod";
-import { USER_ROLES, type WaitlistStatus } from "../../../../packages/domain/src/osiri.ts";
+import {
+  OTP_PURPOSES,
+  USER_ROLES,
+  type WaitlistStatus,
+} from "../../../../packages/domain/src/osiri.ts";
 import { AppError } from "../errors.ts";
 import {
   type Accounts,
   type AuditWriter,
+  normalizePhone,
   type Profile,
   type PublicUser,
   publicUser,
 } from "./accounts.ts";
+import type { Otp } from "./otp.ts";
 
 type Env = { Variables: { owner: string } };
 
-export function publicAccountRoutes(accounts: Accounts) {
+export function publicAccountRoutes(accounts: Accounts, otp: Otp) {
   const app = new Hono<Env>();
   app.post("/login", async (c) => {
     const body = z
@@ -23,11 +29,38 @@ export function publicAccountRoutes(accounts: Accounts) {
       .parse(await c.req.json());
     return c.json(await accounts.login(body.phone, body.password));
   });
+  // 문자 인증번호 받기 — 가입(signup)은 아직 회원이 아닌 번호만, 비밀번호 찾기(reset)는 회원 번호만 보낸다(헛문자 방지)
+  app.post("/otp", async (c) => {
+    const body = z
+      .object({ phone: z.string().min(1).max(40), purpose: z.enum(OTP_PURPOSES) })
+      .parse(await c.req.json());
+    const phone = normalizePhone(body.phone);
+    const member = await accounts.isMember(phone);
+    if (body.purpose === "signup" && member)
+      throw new AppError("이미 가입된 번호입니다 — 로그인하거나 비밀번호 찾기를 쓰세요", 409);
+    if (body.purpose === "reset" && !member) throw new AppError("가입된 번호가 아닙니다", 404);
+    return c.json(await otp.request(phone, body.purpose));
+  });
+  // 가입은 그 번호로 온 인증번호를 맞혀야 한다 (본인 번호 확인)
+  const signupCode = z.string().max(12).default("");
   app.post("/invite/accept", async (c) => {
     const body = z
-      .object({ token: z.string().min(1), phone: z.string().min(1), password: z.string().min(1) })
+      .object({
+        token: z.string().min(1),
+        phone: z.string().min(1),
+        password: z.string().min(1),
+        code: signupCode,
+      })
       .parse(await c.req.json());
+    await otp.verify(normalizePhone(body.phone), body.code, "signup");
     return c.json(await accounts.acceptInvite(body));
+  });
+  app.post("/password/reset", async (c) => {
+    const body = z
+      .object({ phone: z.string().min(1), password: z.string().min(1), code: signupCode })
+      .parse(await c.req.json());
+    await otp.verify(normalizePhone(body.phone), body.code, "reset");
+    return c.json(await accounts.resetPassword(body.phone, body.password));
   });
   app.post("/logout", async (c) => {
     await accounts.logout(c.req.header("authorization"));
@@ -45,8 +78,10 @@ export function publicAccountRoutes(accounts: Accounts) {
         password: z.string().min(1).max(200),
         // 빠졌거나 짧으면 applyWaitlist 가 «구체적으로 적어 달라»는 400 을 낸다
         purpose: z.string().max(5000).default(""),
+        code: signupCode,
       })
       .parse(await c.req.json());
+    await otp.verify(normalizePhone(body.phone), body.code, "signup");
     await accounts.applyWaitlist(body);
     return c.json({ status: "pending" satisfies WaitlistStatus }, 201);
   });

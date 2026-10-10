@@ -1,5 +1,6 @@
 // 가입: 전화번호 초대 · 가입 신청(관리자가 상위 회원을 붙여 승인) · 아래로만 보이는 가입 네트워크
 // 전화번호는 전부 자리표시자다 (010-1234-5678 꼴) — 실제 번호를 쓰지 않는다.
+
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,6 +37,7 @@ import {
   WAITLIST_PURPOSE_MIN,
   waitlistRejectedMessage,
 } from "../packages/domain/src/osiri.ts";
+import { fakeOtp } from "./helpers/otp.ts";
 
 type Session = { token: string; user: { id: string; phone: string; invitedBy: string | null } };
 type Network = { root: NetworkNode; counts: { direct: number; total: number } };
@@ -91,7 +93,7 @@ before(async () => {
       ? c.json({ error: error.issues.map((i) => i.message).join("; ") }, 422)
       : c.json({ error: error.message }, error instanceof AppError ? error.status : 500),
   );
-  app.route("/api/auth", publicAccountRoutes(accounts));
+  app.route("/api/auth", publicAccountRoutes(accounts, fakeOtp));
   app.use("/api/*", async (c, next) => {
     c.set("owner", await auth.owner(c.req.header("authorization")));
     await next();

@@ -13,6 +13,7 @@ import {
   publicAccountRoutes,
 } from "../apps/server/src/osiri/account-routes.ts";
 import { Accounts, normalizePhone } from "../apps/server/src/osiri/accounts.ts";
+import { fakeOtp } from "./helpers/otp.ts";
 
 let db: Store, directory: string, accounts: Accounts;
 let app: Hono<{ Variables: { owner: string } }>;
@@ -36,7 +37,7 @@ before(async () => {
   app.onError((error, c) =>
     c.json({ error: error.message }, error instanceof AppError ? error.status : 500),
   );
-  app.route("/api/auth", publicAccountRoutes(accounts));
+  app.route("/api/auth", publicAccountRoutes(accounts, fakeOtp));
   app.use("/api/*", async (c, next) => {
     c.set("owner", await auth.owner(c.req.header("authorization")));
     await next();

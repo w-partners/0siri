@@ -1,5 +1,6 @@
 // docs/0siri-api-contract.md «스토어 · 연결 · 기억 · 설정 · 로그인·온보딩» 계약 시험.
 // 기억 시험은 임베딩 모델(q8)을 실제로 쓴다 — osiri-memories.test.ts 와 같은 캐시를 읽는다.
+
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,6 +48,7 @@ import {
   TEAM_TIER_LABEL,
 } from "../packages/domain/src/osiri.ts";
 import { grantOnSubscribe } from "./grant-on-subscribe.ts";
+import { fakeOtp } from "./helpers/otp.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const env = {
@@ -163,7 +165,7 @@ before(async () => {
       ? c.json({ error: error.issues.map((i) => i.message).join("; ") }, 422)
       : c.json({ error: error.message }, error instanceof AppError ? error.status : 500),
   );
-  app.route("/api/auth", publicAccountRoutes(accounts));
+  app.route("/api/auth", publicAccountRoutes(accounts, fakeOtp));
   app.use("/api/*", async (c, next) => {
     const header = c.req.header("authorization") ?? "";
     // "owner:<id>" 는 시험용 직접 지정, 그 밖에는 실제 세션 토큰

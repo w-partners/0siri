@@ -477,7 +477,8 @@ export const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" } as const;
 export const EMBED_TOKENIZER_MB = 31;
 /** 로그인 실패가 이만큼 쌓이면 비밀번호 재설정 경로를 안내한다 (기획 화면 1 «3회 실패 시 우회») */
 export const LOGIN_FAILS_BEFORE_RESET_HINT = 3;
-export const PASSWORD_RESET_HINT = "비밀번호를 잊었으면 초대해 준 사람에게 재설정을 요청하세요";
+export const PASSWORD_RESET_HINT =
+  "비밀번호를 잊었으면 아래 «비밀번호 찾기» 에서 문자 인증 후 새로 정하세요";
 
 // ---- 방·결재함·목표 화면 라벨 (화면 3·4·5) — 화면이 따로 들고 있던 표를 여기로 올렸다 ----
 /** 장기 목표 카드의 상태 흐름 (일시정지·막힘은 흐름 밖 — 칩으로 따로 붙는다) */
@@ -563,6 +564,9 @@ export const isHomeRoom = (room: { packageId: string | null; topic?: boolean }) 
   room.packageId === null && !room.topic;
 /** 대화방 이름 길이 상한 */
 export const ROOM_TITLE_MAX = 40;
+/** 문자 인증 용도 — 같은 번호라도 용도가 다르면 서로의 인증번호로 통과하지 않는다(공용 OTP 서비스 purpose) */
+export const OTP_PURPOSES = ["signup", "reset"] as const;
+export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 /** 피드: 관심 프롬프트 기본 주기(시간) · 사람당 개수 · 한 번에 싣는 새 글 수 */
 export const FEED_EVERY_HOURS = 12;
 export const FEED_PROMPT_MAX = 10;
