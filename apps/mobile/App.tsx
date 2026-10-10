@@ -594,7 +594,8 @@ function Shell({
             {main}
             {/* 대화 화면 왼쪽 위 ≡ (Muse 처럼) — 다른 탭은 제목 옆에 같은 버튼이 있다 */}
             {tab === "rooms" && !room && (
-              <View style={{ position: "absolute", left: 8, top: 4 }}>
+              // 방 머리가 대화 위에 떠 있으므로(zIndex 2) ≡ 는 그보다 위에 둔다 — 안 그러면 Android 에서 머리 배경에 가려진다
+              <View style={{ position: "absolute", left: 8, top: 4, zIndex: 3, elevation: 3 }}>
                 <IconButton icon={Menu} label={text.menu} onPress={() => setMenuOpen(true)} />
               </View>
             )}
