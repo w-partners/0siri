@@ -18,6 +18,7 @@ import {
   type DownloadProgress,
 } from "./device-embed.types";
 import { measureWith, normalize, unavailableReport, type Vec } from "./device-measure";
+import { loadTokenizer } from "./device-tokenizer";
 
 /** 네이티브는 [받기] 를 눌러야만 받는다 — 지우면 그대로 «미다운로드» 가 되고, 따로 꺼 둘 것이 없다 */
 export const DOWNLOADS_ON_FIRST_USE = false;
@@ -167,13 +168,11 @@ async function load(): Promise<Embedder> {
   if (model.state !== "ready") throw new Error(model.reason ?? NOT_DOWNLOADED);
   await FileSystem.writeAsStringAsync(loadingUri(), new Date().toISOString());
   try {
-    const [ort, { Tokenizer }] = await Promise.all([
-      import("onnxruntime-react-native"),
-      import("@huggingface/tokenizers"),
-    ]);
-    const tokenizer = new Tokenizer(
-      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer.json"))),
-      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer_config.json"))),
+    const ort = await import("onnxruntime-react-native");
+    // 어휘가 커서 Hermes 에서는 라이브러리 기본 적재가 토큰을 잃는다 — device-tokenizer.ts 참조
+    const { tokenizer } = loadTokenizer(
+      await FileSystem.readAsStringAsync(local("tokenizer.json")),
+      await FileSystem.readAsStringAsync(local("tokenizer_config.json")),
     );
     const session = await ort.InferenceSession.create(
       local(hubPaths().onnx).replace(/^file:\/\//, ""),
@@ -244,41 +243,6 @@ export async function prepareDevice(
   const started = performance.now();
   await embedOnDevice(["상태 확인"], "query");
   prepared = { loadMs, embedMs: Math.round(performance.now() - started) };
-  // TEMP-PROBE-BEGIN (서버 벡터와 코사인 대조용 — 최종 빌드에서 뺀다)
-  const PROBE: { kind: "query" | "document"; text: string }[] = [
-    { kind: "query", text: "커피 취향" },
-    { kind: "document", text: "아메리카노는 얼음 없이, 설탕은 넣지 않는다" },
-    { kind: "query", text: "회의 자료 어디" },
-    { kind: "document", text: "주간 회의 슬라이드는 드라이브 '팀/주간' 폴더에 둔다" },
-    {
-      kind: "document",
-      text: "The quick brown fox jumps over the lazy dog. 12345 😀 mixed 한글 English.",
-    },
-    { kind: "query", text: "11월 제주도 휴가 계획이 어떻게 되지?" },
-  ];
-  console.log(`[embed-probe-ms] load ${loadMs} first ${Math.round(performance.now() - started)}`);
-  {
-    const { Tokenizer } = await import("@huggingface/tokenizers");
-    const tk = new Tokenizer(
-      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer.json"))),
-      JSON.parse(await FileSystem.readAsStringAsync(local("tokenizer_config.json"))),
-    );
-    for (const [i, t] of PROBE.entries()) {
-      const s = t.kind === "query" ? embedQueryText(t.text) : embedDocumentText(t.text);
-      console.log(`[embed-probe-ids] ${i} ${tk.encode(s).ids.join(",")}`);
-    }
-    const big = BigInt64Array.from([2, 105, 262143], BigInt);
-    console.log(`[embed-probe-ids] bigint ${Array.from(big, String).join(",")}`);
-  }
-  for (const [i, t] of PROBE.entries()) {
-    const t0 = performance.now();
-    const [v] = await embedOnDevice([t.text], t.kind);
-    console.log(`[embed-probe-ms] ${i} ${Math.round(performance.now() - t0)}`);
-    const line = (v as number[]).map((x) => x.toFixed(6)).join(",");
-    for (let o = 0, k = 0; o < line.length; o += 3000, k++)
-      console.log(`[embed-probe] ${i} ${k} ${line.slice(o, o + 3000)}`);
-  }
-  // TEMP-PROBE-END
   return prepared;
 }
 
