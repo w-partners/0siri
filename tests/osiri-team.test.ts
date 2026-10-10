@@ -24,6 +24,7 @@ const OWNER = "lawyer";
 const published: string[] = [];
 const llmCalls: string[] = [];
 let reviewPass = true;
+const REVISED = "유류분 반환청구 기한 (짧게)";
 const user = (path: string, body?: unknown, method?: string) =>
   app.request(path, {
     method: method ?? (body === undefined ? "GET" : "POST"),
@@ -32,8 +33,14 @@ const user = (path: string, body?: unknown, method?: string) =>
   });
 
 /** 가짜 LLM — 역할별 정해진 JSON. 실제 모델 없이 흐름·게이트만 검증한다. */
-const fakeLlm = async (role: string, tier: number) => {
+const fakeLlm = async (role: string, tier: number, _system?: string, prompt = "") => {
   llmCalls.push(`${role}:${tier}`);
+  if (role === "drafter" && prompt.startsWith("수정 요청:"))
+    return JSON.stringify({
+      title: REVISED,
+      body: "핵심 답변: 1년/10년.",
+      sources: ["민법 제1117조"],
+    });
   switch (role) {
     case "root":
       return JSON.stringify({
@@ -201,16 +208,44 @@ test("목표 분해 → 파이프라인 → 승인 전 정지 → 승인 후 1�
   assert.equal(stageNow?.stage, "approval");
   assert.equal(stageNow?.progress, 90);
 
+  // 수정 요청 — 무엇을 고칠지 없으면 400, 있으면 팀이 같은 원고를 고쳐 새 승인을 올린다 (처음부터 다시 쓰지 않음)
+  const first = inbox.pending[0] as { id: string; inputHash: string };
+  const blank = await user(`/api/approvals/${first.id}/decide`, {
+    decision: "revise",
+    frozenHash: first.inputHash,
+  });
+  assert.equal(blank.status, 400);
+  const revised = await user(`/api/approvals/${first.id}/decide`, {
+    decision: "revise",
+    reason: "더 짧게",
+    frozenHash: first.inputHash,
+  });
+  assert.equal(((await revised.json()) as { status: string }).status, "revise");
+  const callsBefore = llmCalls.length;
+  assert.equal(await runtime.tick(publishTool), "pending");
+  assert.deepEqual(
+    llmCalls.slice(callsBefore),
+    ["drafter:3", "reviewer:4"],
+    "감지부터 다시 하지 않는다",
+  );
+  assert.deepEqual(published, [], "수정 요청은 발행이 아니다");
+  const again = (await (await user("/api/inbox")).json()) as {
+    pending: { id: string; title: string; inputHash: string }[];
+  };
+  assert.equal(again.pending.length, 1);
+  assert.equal(again.pending[0]?.title, `발행 승인: ${REVISED}`);
+  assert.notEqual(again.pending[0]?.inputHash, first.inputHash, "고친 원고는 해시가 다르다");
+
   // 변호사 승인 → 다음 사이클에서 토큰 받아 1회 발행
-  const approvalId = inbox.pending[0]?.id as string;
+  const approvalId = again.pending[0]?.id as string;
   const decided = await user(`/api/approvals/${approvalId}/decide`, {
     decision: "approve",
-    frozenHash: inbox.pending[0]?.inputHash,
+    frozenHash: again.pending[0]?.inputHash,
   });
   assert.equal(decided.status, 200);
   // tick: 승인 단계에 멈춘 목표의 승인 상태를 확인해 이어 간다 → 토큰을 받아 1회 발행
   assert.equal(await runtime.tick(publishTool), "published");
-  assert.deepEqual(published, ["유류분 반환청구 기한은 언제까지인가요?"]);
+  assert.deepEqual(published, [REVISED]);
   const doneGoal = (
     (await (await user(`/api/goals?room_id=${roomId}`)).json()) as {
       level: string;

@@ -7,6 +7,7 @@ import {
   ACTIVITY_LABELS,
   ANSWER_SOURCES,
   type AnsweredByView,
+  APPROVAL_DECISIONS,
   APPROVAL_KINDS,
   answerLabel,
   BOARD_STAGES,
@@ -398,7 +399,7 @@ export function roomRoutes(deps: RoomDeps) {
   app.post("/approvals/:id/decide", async (c) => {
     const body = z
       .object({
-        decision: z.enum(["approve", "reject"]),
+        decision: z.enum(APPROVAL_DECISIONS),
         reasonKind: z.enum(REJECT_REASON_KINDS).optional(),
         reason: z.string().max(1000).optional(),
         frozenHash: z.string().optional(),

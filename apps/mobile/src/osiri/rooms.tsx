@@ -38,6 +38,7 @@ import type { PcSession, SubscriptionView } from "../../../../packages/domain/sr
 import {
   type AnsweredByView,
   APPROVAL_STATUS_LABELS,
+  type ApprovalDecision,
   type ApprovalKind,
   ARCHIVED_ROOM_NOTICE,
   CHARACTER_STATE_OF,
@@ -230,6 +231,9 @@ const text = {
   rejectWhy: "반려 사유를 골라 주세요",
   rejectNote: "덧붙일 말 (선택)",
   rejectSend: "반려 보내기",
+  revise: "수정 요청",
+  reviseNote: "어떻게 고칠지 적어 주세요 (예: 둘째 문단을 더 짧게)",
+  reviseSend: "수정 요청 보내기",
   cancel: "취소",
   evidence: "근거",
   viewInRoom: "방에서 보기",
@@ -1188,8 +1192,8 @@ export function BoardWidget({ board }: { board: Board }) {
 }
 
 // --- 승인 카드 (화면 3·4 공용) ---
-type Decision = "approve" | "reject";
-export type RejectReason = { kind: RejectKind; note?: string };
+type Decision = ApprovalDecision;
+export type RejectReason = { kind?: RejectKind; note?: string };
 /**
  * 승인 결정. frozenHash = 그 카드가 화면에 그려질 때 받은 inputHash — 사용자가 본 것을 승인한다.
  * 누르는 순간 다시 읽어 맞추지 않는다(그러면 그 사이 내용이 바뀌어도 통과한다). 해시가 없으면 보내지 않고 사유를 보인다.
@@ -1224,7 +1228,8 @@ export async function decidePending(
   if (!item.skillId) throw new Error(text.skillIdMissing);
   // 스킬 반려 사유는 한 문장이다 — 고른 종류(톤·사실·주제)와 덧붙인 말을 이어 보낸다
   const why =
-    reason && [REJECT_REASON_LABELS[reason.kind], reason.note].filter(Boolean).join(" — ");
+    reason &&
+    [reason.kind && REJECT_REASON_LABELS[reason.kind], reason.note].filter(Boolean).join(" — ");
   const skill = await api.request<Skill>(`/api/skills/${item.skillId}/decide`, {
     decision,
     reason: why,
@@ -1243,6 +1248,7 @@ export function ApprovalCard({
   character,
   onDecide,
   onOpenRoom,
+  canRevise = true,
 }: {
   title: string;
   summary: string;
@@ -1254,9 +1260,13 @@ export function ApprovalCard({
   character?: string;
   onDecide: (decision: Decision, reason?: RejectReason) => Promise<void>;
   onOpenRoom?: () => void;
+  /** 수정 요청은 팀 승인 요청에만 — 스킬 초안은 승인·반려뿐 */
+  canRevise?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const [fix, setFix] = useState("");
   const [kind, setKind] = useState<RejectKind | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<Decision | null>(null);
@@ -1267,6 +1277,7 @@ export function ApprovalCard({
     try {
       await onDecide(decision, why);
       setRejecting(false);
+      setRevising(false);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -1318,11 +1329,16 @@ export function ApprovalCard({
         </View>
       ) : null}
       <ErrorNotice error={error} />
-      {pending && !rejecting && (
+      {pending && !rejecting && !revising && (
         <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
           <Button small primary busy={busy === "approve"} onPress={() => void decide("approve")}>
             {text.approve}
           </Button>
+          {canRevise && (
+            <Button small disabled={busy !== null} onPress={() => setRevising(true)}>
+              {text.revise}
+            </Button>
+          )}
           <Button small disabled={busy !== null} onPress={() => setRejecting(true)}>
             {text.reject}
           </Button>
@@ -1331,6 +1347,33 @@ export function ApprovalCard({
               {text.viewInRoom}
             </Button>
           )}
+        </View>
+      )}
+      {pending && revising && (
+        <View style={{ gap: 8 }}>
+          <TextInput
+            style={s.input}
+            placeholder={text.reviseNote}
+            placeholderTextColor={colors.muted}
+            value={fix}
+            onChangeText={setFix}
+            multiline
+            accessibilityLabel={text.reviseNote}
+          />
+          <View style={[s.row, { gap: 8 }]}>
+            <Button
+              small
+              primary
+              disabled={!fix.trim()}
+              busy={busy === "revise"}
+              onPress={() => void decide("revise", { note: fix.trim() })}
+            >
+              {text.reviseSend}
+            </Button>
+            <Button small onPress={() => setRevising(false)}>
+              {text.cancel}
+            </Button>
+          </View>
         </View>
       )}
       {pending && rejecting && (
@@ -1529,6 +1572,7 @@ function FeedTab({
           summary={a.summary}
           evidence={a.evidence}
           status="pending"
+          canRevise={a.kind !== "skill"}
           onDecide={(decision, reason) => decide(a, decision, reason)}
           onOpenRoom={() => onFocus(a.messageId ? { messageId: a.messageId } : { approval: true })}
         />

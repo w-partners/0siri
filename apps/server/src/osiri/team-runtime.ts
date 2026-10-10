@@ -308,6 +308,7 @@ export class TeamRuntime {
         );
         return "rejected";
       }
+      if (state.status === "revise") return this.revise(goal, request, state.reason ?? "");
       if (state.status === "approved" && state.token) {
         if (!publishTool) {
           await this.say(
@@ -359,6 +360,40 @@ export class TeamRuntime {
       if (i < polls - 1) await this.sleep(this.options.pollIntervalMs ?? 30_000);
     }
     return "pending";
+  }
+
+  /**
+   * 수정 요청: 처음부터 다시 쓰지 않고 결재자가 본 그 원고를 그 말대로 고친다 → 검수 → 새 승인.
+   * 고친 원고는 입력이 달라 해시도 다르다 — 옛 승인으로는 발행되지 않는다.
+   */
+  private async revise(goal: Goal, request: ApprovalRequest, note: string) {
+    const fixed = json<Draft>(
+      await this.ask("drafter", `수정 요청: ${note}\n원고: ${JSON.stringify(request.input)}`),
+    );
+    const review = json<{ pass: boolean; reasons: string[] }>(
+      await this.ask("reviewer", JSON.stringify(fixed)),
+    );
+    if (!review.pass) {
+      await this.progressOf(goal)(40, "draft");
+      await this.say(
+        `수정본이 검수를 통과하지 못했습니다: ${review.reasons.join(", ")} — 초안 단계로 되돌립니다.`,
+        "reviewer",
+      );
+      return "review_failed" as const;
+    }
+    const input = { title: fixed.title, body: fixed.body, sources: fixed.sources };
+    await this.requestApproval(goal, {
+      ...request,
+      input,
+      title: `발행 승인: ${fixed.title}`,
+      summary: fixed.body.slice(0, 300),
+      evidence: `출처:\n${fixed.sources.join("\n")}`,
+    });
+    await this.say(
+      `수정 요청(${note})대로 고쳤습니다. 고친 원고로 다시 승인을 요청드립니다.`,
+      "drafter",
+    );
+    return "pending" as const;
   }
 
   /** 발행이 실패했거나 결과를 알 수 없다: 완료로 올리지 않고 목표를 막아(blocked) 사람에게 알린다. 자동 재발행은 하지 않는다 (§24-11 비멱등 재시도 금지). */

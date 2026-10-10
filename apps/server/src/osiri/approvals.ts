@@ -5,6 +5,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   APPROVAL_STATUS_LABELS,
+  type ApprovalDecision,
   type ApprovalKind,
   type ApprovalStatus,
   PRESENCE_LABELS,
@@ -66,6 +67,9 @@ export class AlreadyDecidedError extends AppError {
   }
 }
 const alreadyDecided = (status: ApprovalStatus) => new AlreadyDecidedError(status);
+
+const STATUS_OF = { approve: "approved", reject: "rejected", revise: "revise" } as const;
+const VERB_OF = { approve: "승인", reject: "반려", revise: "수정 요청" } as const;
 /**
  * 승인 종류. 요청자가 밝혔으면 그 값. 밝히지 않은 승인은 "publish" 다 —
  * 승인 게이트는 밖으로 나가는(external) 도구 실행만 막고, 그것이 곧 발행 승인이기 때문이다.
@@ -258,7 +262,7 @@ export class Approvals {
   async decide(
     owner: string,
     id: string,
-    decision: "approve" | "reject",
+    decision: ApprovalDecision,
     options: {
       reason?: string;
       reasonKind?: RejectReasonKind;
@@ -279,13 +283,16 @@ export class Approvals {
     // 반려는 사유 종류(톤·사실·주제)가 있어야 팀이 무엇을 고칠지 안다 — 없으면 받지 않는다
     if (decision === "reject" && !reasonKind)
       throw new AppError("반려에는 사유 종류(reasonKind: tone·fact·topic)가 필요합니다", 400);
+    // 수정 요청은 «어떻게 고칠지» 가 곧 지시다 — 빈 말로는 팀이 고칠 수 없다
+    if (decision === "revise" && !options.reason?.trim())
+      throw new AppError("수정 요청에는 무엇을 고칠지(reason)가 필요합니다", 400);
     if (Date.parse(approval.expiresAt) <= this.now()) {
       await this.expire(owner, approval);
       throw new AppError("승인 요청이 만료되었습니다", 409);
     }
     const token = decision === "approve" ? randomBytes(32).toString("base64url") : undefined;
     const patch: Partial<Approval> = {
-      status: decision === "approve" ? "approved" : "rejected",
+      status: STATUS_OF[decision],
       decidedBy: options.decidedBy,
       decidedAt: new Date(this.now()).toISOString(),
       reason: options.reason,
@@ -316,7 +323,7 @@ export class Approvals {
       ...(approval.messageId ? { messageId: approval.messageId } : {}),
       kind: "approval",
       actor: "user",
-      title: `${decision === "approve" ? "승인" : "반려"}: ${approval.title}`,
+      title: `${VERB_OF[decision]}: ${approval.title}`,
       detail: options.reason,
     });
     if (decision === "reject")
@@ -345,6 +352,8 @@ export class Approvals {
       this.bus.setPresence(owner, approval.roomId, "waiting", PRESENCE_LABELS.waiting);
     else if (decision === "reject")
       this.bus.setPresence(owner, approval.roomId, "working", "반려 사유를 반영해 다시 작업 중");
+    else if (decision === "revise")
+      this.bus.setPresence(owner, approval.roomId, "working", "수정 요청대로 고치는 중");
     else this.bus.setPresence(owner, approval.roomId, "done", "결재 완료");
     this.bus.publish(owner, {
       type: "approval",

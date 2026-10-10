@@ -6,6 +6,7 @@ import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import {
   APPROVAL_KIND_LABELS,
   APPROVAL_KINDS,
+  type ApprovalDecision,
   type ApprovalKind,
 } from "../../../../packages/domain/src/osiri";
 import type { Activity } from "../../../server/src/osiri/rooms.ts";
@@ -106,11 +107,7 @@ export function InboxScreen({
   // 다른 기기·다른 화면에서 승인이 생기거나 처리되면 서버가 `inbox` 이벤트를 보낸다
   useUserEvent("inbox", () => inbox.retry());
 
-  const decide = async (
-    a: InboxApproval,
-    decision: "approve" | "reject",
-    reason?: RejectReason,
-  ) => {
+  const decide = async (a: InboxApproval, decision: ApprovalDecision, reason?: RejectReason) => {
     if (decision === "reject" && !reason) throw new Error(text.reasonRequired);
     let status: string | null;
     let label: string | undefined;
@@ -242,6 +239,7 @@ export function InboxScreen({
                 evidence={a.evidence}
                 status={a.status}
                 character={a.roomCharacter}
+                canRevise={a.kind !== "skill"}
                 onDecide={(decision, reason) => decide(a, decision, reason)}
                 onOpenRoom={() => openAt(a)}
               />
@@ -270,6 +268,7 @@ export function InboxScreen({
                   status={status}
                   statusLabel={label}
                   character={item.roomCharacter}
+                  canRevise={item.kind !== "skill"}
                   onDecide={(decision, reason) => decide(item, decision, reason)}
                   onOpenRoom={() => openAt(item)}
                 />

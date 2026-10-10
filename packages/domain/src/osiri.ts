@@ -377,14 +377,20 @@ export const APPROVAL_STATUSES = [
   "pending",
   "approved",
   "rejected",
+  // 수정 요청 — 팀이 같은 원고를 사용자 말대로 고쳐 새 승인을 올린다 (반려는 처음부터 다시)
+  "revise",
   "expired",
   "consumed",
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+/** 결재자가 고르는 것 — 승인 · 반려(처음부터 다시) · 수정 요청(이 원고를 이렇게 고쳐서 다시) */
+export const APPROVAL_DECISIONS = ["approve", "reject", "revise"] as const;
+export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
   pending: "대기 중",
   approved: "승인됨",
   rejected: "반려됨",
+  revise: "수정 요청",
   expired: "만료됨",
   consumed: "집행됨",
 };
