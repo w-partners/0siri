@@ -8,7 +8,9 @@ import {
   ChevronUp,
   Images,
   Lightbulb,
+  List,
   MoreHorizontal,
+  Plus,
   Search,
   Users,
 } from "lucide-react-native";
@@ -157,7 +159,9 @@ const text = {
   unmute: "알림 켜기",
   noMatch: "찾는 방이 없어요",
   back: "뒤로",
-  teams: "팀 방",
+  teams: "대화방 목록",
+  allRooms: "전체",
+  addTeam: "팀 추가",
   digestTitle: "결재 요약",
   openInbox: "결재함 열기",
   goRoom: "방으로 이동",
@@ -467,6 +471,66 @@ function WorkingDot() {
         opacity: pulse,
       }}
     />
+  );
+}
+
+/**
+ * 홈(영시리 대화) 위 대화방 줄 — 팀을 붙일 때마다 방이 늘므로 목록이 늘 보이게 (마스터 2026-10-10).
+ * 영시리 방은 지금 보고 있으므로 빼고, 팀 방을 동그란 얼굴로 가로로 나열한다. 결재 대기는 배지.
+ * 전체 목록(검색·고정·알림)은 «전체» 로 여는 시트의 RoomList 가 맡는다 — 정렬은 서버가 한다.
+ */
+function RoomStrip({ onOpen, onAll }: { onOpen: (room: Room) => void; onAll: () => void }) {
+  const { navigate } = useWorkspace();
+  const { rooms } = useRooms();
+  const teams = (rooms ?? []).filter((r) => r.packageId !== null && !r.archived);
+  const cell = (key: string, label: string, onPress: () => void, face: ReactNode, badge = 0) => (
+    <Pressable
+      key={key}
+      accessibilityRole="button"
+      accessibilityLabel={badge ? `${label} · 승인 대기 ${badge}건` : label}
+      onPress={onPress}
+      style={{ width: 62, alignItems: "center", gap: 3 }}
+    >
+      <View
+        style={{
+          width: 46,
+          height: 46,
+          borderRadius: 23,
+          overflow: "hidden",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.line,
+        }}
+      >
+        {face}
+      </View>
+      {badge > 0 && <Badge count={badge} style={{ position: "absolute", top: -2, right: 4 }} />}
+      <Text numberOfLines={1} style={[s.small, { maxWidth: 60 }]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={{ flexGrow: 0, borderBottomWidth: 1, borderBottomColor: colors.line }}
+      contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 6, gap: 4 }}
+    >
+      {cell("all", text.allRooms, onAll, <List size={20} color={colors.text} />)}
+      {teams.map((r) =>
+        cell(
+          r.id,
+          r.title,
+          () => onOpen(r),
+          <CharacterAvatar character={r.character} size={40} />,
+          r.pendingApprovals,
+        ),
+      )}
+      {cell("add", text.addTeam, () => navigate("store"), <Plus size={20} color={colors.accent} />)}
+    </ScrollView>
   );
 }
 
@@ -1613,11 +1677,6 @@ export function RoomScreen({
             <IconButton icon={ArrowLeft} label={text.back} onPress={onBack} />
           </View>
         )}
-        {home && !desktop && (
-          <View style={{ position: "absolute", right: 8, top: 4 }}>
-            <IconButton icon={Users} label={text.teams} onPress={() => setTeams(true)} />
-          </View>
-        )}
         <Character
           assetId={character.assetId}
           state={character.state}
@@ -1649,6 +1708,9 @@ export function RoomScreen({
           </Text>
         </View>
       </View>
+      {home && !desktop && (
+        <RoomStrip onOpen={(next) => onOpenRoom?.(next)} onAll={() => setTeams(true)} />
+      )}
       {!home && (
         <View
           accessibilityRole="tablist"
