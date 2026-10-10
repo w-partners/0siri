@@ -23,6 +23,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  StatusBar,
   Text,
   TextInput,
   type TextStyle,
@@ -330,7 +331,8 @@ export function ChatScreen({
     // shrinks the window, and what sits below the composer (tab bar, system nav) differs per device.
     const onShow = (e: { endCoordinates: { screenY: number } }) => {
       composer.current?.measureInWindow((_x, y, _w, h) => {
-        const bottom = y + h - padding.current;
+        // measureInWindow counts from below the status bar; screenY counts from the screen top.
+        const bottom = y + h - padding.current + (StatusBar.currentHeight ?? 0);
         padding.current = Math.max(0, Math.ceil(bottom - e.endCoordinates.screenY));
         setKeyboardPadding(padding.current);
       });
