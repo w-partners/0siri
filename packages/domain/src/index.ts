@@ -10,6 +10,7 @@ export type Section =
   | "rooms"
   | "store"
   | "inbox"
+  | "skills"
   | "ideas"
   | "media"
   | "settings";

@@ -1,6 +1,6 @@
 // 0Siri 스킬(화면 9) — 팀이 배운 패턴의 초안을 승인·반려하고, 장착된 스킬의 버전·효과를 관리한다.
 // 개인 스킬은 사용자가, 패키지 공통 스킬은 운영자가 승인한다(운영자 경로는 operator.tsx).
-import { Sparkles } from "lucide-react-native";
+import { ScanSearch, Sparkles } from "lucide-react-native";
 import { useState } from "react";
 import { Text, useWindowDimensions, View } from "react-native";
 import {
@@ -11,11 +11,23 @@ import {
   type SkillStatus,
 } from "../../../../packages/domain/src/osiri";
 import type { Skill } from "../../../server/src/osiri/skills.ts";
-import { Button, Card, Chip, colors, Empty, ErrorNotice, Field, fonts, Skeleton, s } from "../ui";
+import {
+  Button,
+  Card,
+  Chip,
+  colors,
+  Empty,
+  ErrorNotice,
+  Field,
+  fonts,
+  Skeleton,
+  s,
+  useAction,
+} from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood } from "./eve";
 import { refreshRooms, useRooms } from "./rooms";
-import { useAction, useLoad } from "./store";
+import { useLoad } from "./store";
 import { LoadError } from "./team-goals";
 
 const text = {
@@ -24,10 +36,18 @@ const text = {
   retireHeading: "폐기 제안",
   count: (n: number) => `${n}건`,
   emptyDrafts: "승인 대기 중인 스킬 초안이 없습니다",
-  emptyDraftsDetail: "팀이 같은 패턴을 반복해서 배우면 초안이 여기에 올라와요.",
+  emptyDraftsDetail: "«스킬 후보 찾기»를 누르거나 팀이 같은 패턴을 반복해서 배우면 초안이 여기에 올라와요.",
   emptyActive: "장착된 스킬이 없습니다",
   emptyActiveDetail: "초안을 승인하면 버전이 붙어 여기에 장착돼요.",
   goChat: "대화하러 가기",
+  scanTitle: "스킬화할 수 있는 것 찾기",
+  scanDetail:
+    "영시리가 내 대화에서 여러 번 비슷하게 부탁한 일을 찾아 초안으로 올려요. 승인해야 장착됩니다.",
+  scan: "스킬 후보 찾기",
+  scanResult: (scanned: number, made: number) =>
+    made > 0
+      ? `요청 ${scanned}건을 살펴 새 초안 ${made}건을 올렸어요`
+      : `요청 ${scanned}건을 살펴봤어요 — 새로 반복된 일은 아직 없어요`,
   evidence: "근거",
   appliesTo: "적용",
   proposedBy: "제안",
@@ -153,6 +173,7 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
   const rooms = useRooms();
   // 이 화면에서 결정한 초안은 목록에서 사라지지 않고 잠긴 채 남는다
   const [decided, setDecided] = useState<string[]>([]);
+  const scan = useAction();
 
   /** 쓰기 한 번 → 목록을 다시 읽고, 서버가 돌려준 상태로만 결과를 알린다. */
   const write = async (skill: Skill, sub: string, body: Record<string, unknown>) => {
@@ -187,8 +208,35 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
     </View>
   );
 
+  // 좁은 화면에서 flex:1 은 세로로 쌓인 두 칸을 0 높이 기준으로 줄여 겹치게 한다 — 넓을 때만 나눠 갖는다
+  const column = { gap: 12, ...(width >= 900 ? { flex: 1 } : {}) };
   const draftColumn = (
-    <View style={{ flex: 1, gap: 12 }}>
+    <View style={column}>
+      {roomId ? null : (
+        <Card style={{ gap: 8, padding: 16 }}>
+          <Text style={s.heading}>{text.scanTitle}</Text>
+          <Text style={s.muted}>{text.scanDetail}</Text>
+          <Button
+            primary
+            small
+            icon={ScanSearch}
+            busy={scan.busy}
+            onPress={() =>
+              scan.run(async () => {
+                const r = await api.request<{ scanned: number; created: Skill[] }>(
+                  "/api/skills/scan",
+                  {},
+                );
+                skills.setData(await api.request<Skill[]>(path));
+                notify(text.scanResult(r.scanned, r.created.length));
+              })
+            }
+          >
+            {text.scan}
+          </Button>
+          <ErrorNotice error={scan.error} />
+        </Card>
+      )}
       {heading(text.draftsHeading, drafts.filter((x) => x.status === "draft").length)}
       {drafts.length === 0 ? (
         <Card>
@@ -213,7 +261,7 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
     </View>
   );
   const activeColumn = (
-    <View style={{ flex: 1, gap: 12 }}>
+    <View style={column}>
       {heading(text.activeHeading, active.length)}
       {active.length === 0 ? (
         <Card>

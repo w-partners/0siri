@@ -84,6 +84,7 @@
 
 - `Skill = { id, roomId: string|null, scope: "personal"|"package", name, version, status: "draft"|"active"|"retire_proposed"|"rejected"|"retired", evidence, appliesTo, proposedBy, measuring: boolean, effect: string|null, createdAt }`
 - `GET /skills?room_id=&status=&scope=` · `POST /skills/:id/decide` `{ decision: "approve"|"reject"|"retire"|"keep", reason? }` · `POST /skills/:id/rollback` · `PATCH /skills/:id` `{ enabled }`(개인 스킬 끄기).
+- `POST /skills/scan` → `{ scanned, created: Skill[] }` — 내 최근 요청(최대 `SKILL_SCAN_LIMIT`)을 EmbeddingGemma 로 묶어 유사도 ≥ `SKILL_SIMILARITY_MIN` 이 `SKILL_REPEAT_MIN` 번 이상이면 개인 스킬 초안(제안: 영시리)을 낸다. 같은 이름은 다시 내지 않는다. 임베딩 실패는 5xx 로 그대로 보인다.
 - 개인 스킬은 사용자가, 패키지 공통 스킬은 운영자가 승인한다(사용자 화면에서 패키지 초안은 보이지만 버튼이 없다 → 403).
 - 검수·컴플라이언스 기준을 완화하는 초안은 서버가 만들지 않는다(§17.3) — 워커 `POST /worker/skills` 가 `loosens: true` 면 422.
 - (v0.4.0) `Skill` 에 `measureNote?: string` 추가 — `measuring: true` 일 때만 실린다(측정이 어떻게 끝나는지 한 줄, 도메인 `SKILL_MEASURE_NOTE`).

@@ -12,6 +12,7 @@ import {
   Menu,
   MessageSquare,
   Settings,
+  Sparkles,
   Store,
   Target,
   X,
@@ -49,6 +50,7 @@ import {
   useRoomsLive,
 } from "./src/osiri/rooms";
 import { SettingsScreen } from "./src/osiri/settings";
+import { SkillsScreen } from "./src/osiri/skills";
 import { StoreScreen } from "./src/osiri/store";
 import { TeamGoalsScreen } from "./src/osiri/team-goals";
 import { UpdateBanner } from "./src/osiri/update";
@@ -56,26 +58,28 @@ import { ThreadsProvider } from "./src/threads";
 import { Badge, Button, colors, ErrorNotice, fonts, IconButton, isDark, Sheet, s } from "./src/ui";
 import { type Detail, useWorkspace, WorkspaceContext } from "./src/workspace";
 
-type Tab = "rooms" | "inbox" | "ideas" | "goals" | "media" | "store" | "settings";
+type Tab = "rooms" | "inbox" | "skills" | "ideas" | "goals" | "media" | "store" | "settings";
 type StoreTab = "explore" | "mine";
 const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: "rooms", label: "대화", icon: MessageSquare },
   { id: "inbox", label: "피드", icon: Inbox },
+  { id: "skills", label: "스킬", icon: Sparkles },
   { id: "ideas", label: "아이디어", icon: Lightbulb },
   { id: "goals", label: "목표", icon: Target },
   { id: "media", label: "미디어", icon: Images },
   { id: "store", label: "스토어", icon: Store },
   { id: "settings", label: "설정", icon: Settings },
 ];
-/** 하단 탭 5개 (Muse 하단) · 나머지는 ≡ 메뉴 */
+/** 하단 탭 6개 (Muse 하단 5 + 스킬 승인) · 나머지는 ≡ 메뉴 */
 const nav = tabs.filter((t) => !["store", "settings"].includes(t.id));
 const menu = tabs.filter((t) => ["store", "settings"].includes(t.id));
 // 웹 사이드바 아래 진입 3개 (기획 화면 2). 채팅은 방 목록이, 목표는 방 안 상단 탭이 맡는다
-const sideNav: Tab[] = ["inbox", "ideas", "goals", "media", "store", "settings"];
+const sideNav: Tab[] = ["inbox", "skills", "ideas", "goals", "media", "store", "settings"];
 const titles: Record<Tab, string> = {
   rooms: "내 팀",
   store: "스토어",
   inbox: "피드 · 결재함",
+  skills: "스킬 · 승인",
   ideas: "아이디어",
   goals: "목표",
   media: "미디어 · 파일",
@@ -436,6 +440,8 @@ function Shell({
       <StoreScreen tab={storeTab} onTab={setStoreTab} onOpenRoom={openRoomById} />
     ) : tab === "inbox" ? (
       <InboxScreen onOpenRoom={openRoomById} />
+    ) : tab === "skills" ? (
+      <SkillsScreen />
     ) : tab === "goals" ? (
       <TeamGoalsScreen onOpenRoom={openRoomById} />
     ) : tab === "ideas" || tab === "media" ? (

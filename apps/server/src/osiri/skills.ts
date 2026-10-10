@@ -188,7 +188,7 @@ export class Skills {
    */
   async findCandidates(
     owner: string,
-    embedTexts: (texts: string[]) => Promise<number[][]> = (texts) => embed(texts.map(asDocument)),
+    embedTexts: (texts: string[]) => Promise<number[][]> = (texts) => embed(texts.map((t) => asDocument(t))),
   ): Promise<{ scanned: number; created: Skill[] }> {
     const asks = (await this.db.list<RoomMessage>(owner, "messages"))
       .filter((m) => m.role === "user" && (m.text ?? "").trim().length >= 6)
