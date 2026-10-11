@@ -291,6 +291,9 @@ export function CharacterAvatar({
         style={{ width: size, height: size, borderRadius: size / 2 }}
       />
     );
+  // 방 설정에서 고른 카피바라 색 (ROOM_CHARACTER_PRESETS)
+  if (character === "mascot:sand" || character === "mascot:lilac")
+    return <Mascot size={size} variant={character.slice(7) as "sand" | "lilac"} />;
   // 자산을 등록하지 않은 팀: 플랫폼 기본 팀장 캐릭터(카피바라) + 이름 해시로 고정한 배경색
   let h = 0;
   for (const ch of character) h = (h * 31 + ch.charCodeAt(0)) >>> 0;

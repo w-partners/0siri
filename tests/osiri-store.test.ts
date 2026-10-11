@@ -389,8 +389,10 @@ test("팀 탭: 운영자가 YAML x-osiri-tabs 로 탭을 만들고(마크다운�
   );
   for (const bad of [
     withTabs('    - { id: a, title: 둘다, markdown: "x", html: "<p>x</p>" }'),
-    withTabs('    - { id: a, title: 없음 }'),
-    withTabs('    - { id: a, title: 하나, markdown: "x" }\n    - { id: a, title: 둘, markdown: "y" }'),
+    withTabs("    - { id: a, title: 없음 }"),
+    withTabs(
+      '    - { id: a, title: 하나, markdown: "x" }\n    - { id: a, title: 둘, markdown: "y" }',
+    ),
     withTabs('    - { id: "Bad Id", title: 이름, markdown: "x" }'),
   ])
     assert.equal((await call(path, "op-1", { yaml: bad }, "PUT")).status, 422);

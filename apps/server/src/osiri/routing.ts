@@ -16,7 +16,6 @@ import {
   CAP_WARN_REACHED_PERCENT,
   type CapWarnLevel,
   CHARACTER_INTENSITIES,
-  TEAM_ICON_MODES,
   type CharacterPrefs,
   DEFAULT_CHARACTER_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
@@ -34,6 +33,7 @@ import {
   PERSONAL_TIER_LABEL,
   ROUTE_KINDS,
   type RouteKind,
+  TEAM_ICON_MODES,
   TEAM_TIER_LABEL,
 } from "../../../../packages/domain/src/osiri.ts";
 import { decryptSecret, encryptSecret } from "../../../../packages/integrations/src/vault.ts";

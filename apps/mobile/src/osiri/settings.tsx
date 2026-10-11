@@ -37,6 +37,8 @@ import {
   NOT_READY_LABEL,
   RETENTION_DAYS,
   ROLE_SELF_MESSAGE,
+  TEAM_ICON_MODE_LABELS,
+  TEAM_ICON_MODES,
   TIER_LABELS,
   USER_ROLE_LABELS,
   USER_ROLES,
@@ -264,6 +266,7 @@ const text = {
   } satisfies Record<LocationState, string>,
   characterOn: "캐릭터 표시",
   intensity: "반응 강도",
+  teamIcons: "기본 채팅의 팀 아이콘",
   menuTitle: "더 보기",
   menu: {
     connections: "MCP 도구 · 모델 계정(내 API 키)",
@@ -1082,6 +1085,17 @@ function PreferencesCard({
               ))}
             </View>
           )}
+          <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+            <Text style={s.small}>{text.teamIcons}</Text>
+            {TEAM_ICON_MODES.map((teamIcons) => (
+              <Choice
+                key={teamIcons}
+                label={TEAM_ICON_MODE_LABELS[teamIcons]}
+                selected={(character.teamIcons ?? "row") === teamIcons}
+                onPress={() => patch({ character: { ...character, teamIcons } })}
+              />
+            ))}
+          </View>
         </Block>
         <ErrorNotice error={act.error} />
       </Card>

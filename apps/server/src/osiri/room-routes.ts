@@ -17,11 +17,11 @@ import {
   METRIC_PERIODS,
   MODEL_TIERS,
   type ModelTier,
+  PERSONAL_CHARACTER_ID,
   PRESENCE_LABELS,
   PROPOSAL_DECISIONS,
   REJECT_REASON_KINDS,
   REVIEW_ESCALATION_THRESHOLD,
-  PERSONAL_CHARACTER_ID,
   ROOM_CHARACTER_PHOTO_MAX,
   ROOM_CHARACTER_PRESETS,
   ROOM_TITLE_MAX,
@@ -267,7 +267,10 @@ export function roomRoutes(deps: RoomDeps) {
               .string()
               .max(ROOM_CHARACTER_PHOTO_MAX)
               .regex(/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/),
-            z.string().max(500).regex(/^https:\/\/\S+$/),
+            z
+              .string()
+              .max(500)
+              .regex(/^https:\/\/\S+$/),
           ])
           .nullable()
           .optional(),
@@ -371,10 +374,12 @@ export function roomRoutes(deps: RoomDeps) {
           answers[messageId] = answeredByView(entry.answered_by);
     // 운영자가 팀 YAML 로 만든 탭 — 패키지를 못 읽으면 탭 없이 내고 흔적을 남긴다
     const tabs = room.packageId
-      ? ((await catalog?.packageById(room.packageId).catch((error) => {
-          console.warn(`[osiri] 방 ${roomId} 팀 탭을 읽지 못함: ${errorText(error)}`);
-          return undefined;
-        }))?.tabs ?? [])
+      ? ((
+          await catalog?.packageById(room.packageId).catch((error) => {
+            console.warn(`[osiri] 방 ${roomId} 팀 탭을 읽지 못함: ${errorText(error)}`);
+            return undefined;
+          })
+        )?.tabs ?? [])
       : [];
     return c.json({
       room,

@@ -358,7 +358,15 @@ export interface TeamTab {
 }
 export const TEAM_TABS_MAX = 8;
 /** 팀 방 기본 탭 — 사용자가 순서를 바꾼다(방마다 tabOrder). 운영자 탭은 id 앞에 "x:" */
-export const BUILTIN_ROOM_TABS = ["chat", "board", "goals", "skills", "feed", "ideas", "files"] as const;
+export const BUILTIN_ROOM_TABS = [
+  "chat",
+  "board",
+  "goals",
+  "skills",
+  "feed",
+  "ideas",
+  "files",
+] as const;
 export type BuiltinRoomTab = (typeof BUILTIN_ROOM_TABS)[number];
 export const PERSONAL_ROOM_TITLE = "영시리";
 

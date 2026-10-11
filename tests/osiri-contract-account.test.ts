@@ -416,12 +416,12 @@ test("설정: GET /settings 가 라우팅이 읽는 바로 그 기록이다 — 
     ),
   );
   assert.deepEqual(prefs.notifications, { approvals: true, weeklyReport: false });
-  assert.deepEqual(prefs.character, { enabled: true, intensity: "text" });
+  assert.deepEqual(prefs.character, { enabled: true, intensity: "text", teamIcons: "row" });
   assert.equal(prefs.answerMode, "server", "화면 설정을 바꿔도 모델 설정은 그대로다");
   const off = await json<Settings>(
     call("/api/settings", owner, { character: { enabled: false } }, "PATCH"),
   );
-  assert.deepEqual(off.character, { enabled: false, intensity: "text" });
+  assert.deepEqual(off.character, { enabled: false, intensity: "text", teamIcons: "row" });
 
   // 잘못된 값은 저장되지 않는다
   for (const body of [{ fixedModel: "5" }, { fixedModel: 4 }, { answerMode: "cloud" }])
