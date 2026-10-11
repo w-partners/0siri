@@ -161,9 +161,10 @@ export type RouteKind = (typeof ROUTE_KINDS)[number];
 /** 구독 사용 (마스터 2026-10-10): 본인 ChatGPT·Claude 구독으로 답한다. 서버 osiri/subscription.ts */
 export const SUBSCRIPTION_PROVIDERS = ["codex", "claude"] as const;
 export type SubscriptionProvider = (typeof SUBSCRIPTION_PROVIDERS)[number];
+/** 사람이 아는 이름(CLI 이름)으로 — «Claude» 로 적어 «Claude Code 가 안 보인다» 가 됐다(마스터 2026-10-11) */
 export const SUBSCRIPTION_PROVIDER_LABELS = {
-  codex: "ChatGPT",
-  claude: "Claude",
+  codex: "Codex (ChatGPT)",
+  claude: "Claude Code",
 } as const satisfies Record<SubscriptionProvider, string>;
 export const SUBSCRIPTION_PLACES = ["server", "pc"] as const;
 export type SubscriptionPlace = (typeof SUBSCRIPTION_PLACES)[number];

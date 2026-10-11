@@ -90,7 +90,7 @@ const text = {
   diagnostics: "진단",
   deviceTitle: "기기 임베딩 실측",
   deviceHint: `이 기기에서 EmbeddingGemma 2(${EMBED_DTYPE})를 돌려 속도·품질을 잽니다. 모델(${EMBED_DOWNLOAD_MB}MB)과 토크나이저(${EMBED_TOKENIZER_MB}MB)는 처음 한 번 내려받습니다.`,
-  deviceOff: `${DEVICE_OFF_REASON} — 설정 › 기기 모델에서 다시 켜면 실측할 수 있습니다`,
+  deviceOff: `${DEVICE_OFF_REASON} — «설정 › 기기 모델» 에서 다시 켜면 실측할 수 있습니다`,
   more: (n: number) => `더 있음 — 검색으로 좁히세요 (처음 ${n}건만 보입니다)`,
   deviceMeasure: "실측 시작",
   deviceUnavailable: "이 기기에서는 기기 임베딩을 쓸 수 없습니다 — 검색은 서버에서 합니다",

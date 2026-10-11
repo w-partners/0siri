@@ -174,7 +174,7 @@ const text = {
   roomSettings: "방 설정",
   roomName: "방 이름",
   saveName: "이름 저장",
-  teamRoomNote: "팀 방 — 이름은 팀이 정합니다. 구독 해지는 스토어 › 내 팀에서.",
+  teamRoomNote: "팀 방 — 이름은 팀이 정합니다. 구독 해지는 «스토어 › 내 구독»에서.",
   homeRoomNote: "영시리 기본 방 — 지울 수 없어요.",
   pinRow: "맨 위에 고정",
   notify: "알림",
@@ -183,8 +183,9 @@ const text = {
   roomSkills: "이 방에 장착된 스킬",
   pcTitle: "내 PC 의 세션 잇기",
   pcNote:
-    "내 구독(설정 › 연결)에서 쓰던 claude·codex 대화(tmux 등)를 이 방에 붙입니다. 영시리가 그 대화를 이어 쓰고, 매번 PC 쪽에서 더한 내용까지 다시 읽습니다. 같은 세션을 PC 와 앱에서 동시에 쓰지 마세요.",
-  pcOff: "구독 사용을 켜야 PC 세션을 이을 수 있습니다 (설정 › 연결 › 모델 계정)",
+    "내 PC 에서 쓰던 Claude Code·Codex 대화(tmux 등)를 이 방에 붙입니다. 영시리가 그 대화를 이어 쓰고, 매번 PC 쪽에서 더한 내용까지 다시 읽습니다. 같은 세션을 PC 와 앱에서 동시에 쓰지 마세요.",
+  pcOff:
+    "먼저 «설정 › 연결 › 모델 계정 (내 구독)» 에서 Claude Code·Codex 와 «내 PC» 를 고르고 «내 구독으로 답하기» 를 누르세요",
   pcLoad: "세션 목록 불러오기",
   pcEmpty: "이을 세션이 없습니다",
   pcAttached: "이어 쓰는 중",

@@ -30,7 +30,8 @@ const ONNX_SUFFIX: Record<string, string> = { q8: "_quantized" };
 const OUTPUT = "sentence_embedding";
 const MB = 1048576;
 const NO_RUNTIME = "이 빌드에는 기기 임베딩 런타임(onnxruntime)이 들어 있지 않습니다";
-const NOT_DOWNLOADED = "기기 모델을 아직 받지 않았습니다 — 설정 › 기기 모델에서 받을 수 있습니다";
+const NOT_DOWNLOADED =
+  "기기 모델을 아직 받지 않았습니다 — «설정 › 기기 모델» 에서 받을 수 있습니다";
 const CRASHED =
   "지난번에 모델을 올리다 앱이 꺼졌습니다(메모리 부족으로 보입니다) — [받기] 를 누르면 다시 올려 봅니다";
 
