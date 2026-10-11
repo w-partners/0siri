@@ -21,6 +21,7 @@ import {
   Badge,
   Button,
   Card,
+  CheckRow,
   Chip,
   colors,
   dateLabel,
@@ -118,6 +119,20 @@ const text = {
   cancelDone: (name: string) => `${name} 구독을 해지했습니다`,
   resume: "재개",
   resumeDone: (name: string) => `${name} 구독을 재개했습니다`,
+  controls: "조정",
+  paused: "일시정지 — 팀이 일하지 않습니다(구독·기록은 그대로)",
+  disabledTools: "끈 도구",
+  disabledHint: "여기 적은 도구는 이 팀이 부를 수 없습니다. 형식: 서버:도구",
+  approvalTools: "«승인 받기» 로 올린 도구",
+  approvalHint: "조회·작성 도구라도 부르기 전에 내 승인을 받습니다. 형식: 서버:도구",
+  approvers: (n: number) => `결재자 ${n}명 — 이 방의 승인을 나 대신 결재할 수 있습니다`,
+  approverPhones: "결재자 전화번호 (쉼표로 구분, 회원만 · 비우면 없음)",
+  saveApprovers: "결재자 저장",
+  controlsSaved: "조정을 저장했습니다",
+  noTools: "없음",
+  toolField: "도구 (예: wgolf:lookup)",
+  add: "추가",
+  remove: "빼기",
 };
 const statusTint: Record<Sub["status"], string> = {
   active: colors.okBg,
@@ -937,6 +952,114 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** «서버:도구» 목록 편집 — 구독자 끈 도구·승인 도구, 관리자 차단 도구가 같이 쓴다 */
+export function ToolListEditor({
+  title,
+  hint,
+  list,
+  onSave,
+}: {
+  title: string;
+  hint: string;
+  list: string[];
+  onSave: (next: string[]) => Promise<void>;
+}) {
+  const [tool, setTool] = useState("");
+  const act = useAction();
+  const save = (next: string[]) =>
+    act.run(async () => {
+      await onSave(next);
+      setTool("");
+    });
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.label}>{title}</Text>
+      <Text style={s.small}>{hint}</Text>
+      {list.length === 0 ? (
+        <Text style={s.small}>{text.noTools}</Text>
+      ) : (
+        list.map((t) => (
+          <View key={t} style={[s.row, { gap: 8 }]}>
+            <Text style={[s.small, { flex: 1, fontFamily: fonts.mono }]}>{t}</Text>
+            <Button small busy={act.busy} onPress={() => void save(list.filter((x) => x !== t))}>
+              {text.remove}
+            </Button>
+          </View>
+        ))
+      )}
+      <Field label={text.toolField} autoCapitalize="none" value={tool} onChangeText={setTool} />
+      <ErrorNotice error={act.error} />
+      <Button
+        small
+        busy={act.busy}
+        disabled={!tool.trim() || list.includes(tool.trim())}
+        onPress={() => void save([...list, tool.trim()])}
+      >
+        {text.add}
+      </Button>
+    </View>
+  );
+}
+
+// 구독자 조정 (wgolf RPT-02 C) — PATCH /subscriptions/:id/controls. 서버가 subscription.controls 감사를 남긴다
+function Controls({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<void> }) {
+  const { api, notify } = useWorkspace();
+  const c = sub.controls ?? {};
+  const [phones, setPhones] = useState("");
+  const act = useAction();
+  const patch = async (body: Record<string, unknown>) => {
+    await api.request(`/api/subscriptions/${sub.id}/controls`, body, "PATCH");
+    notify(text.controlsSaved);
+    await refreshSubs();
+  };
+  return (
+    <View style={{ gap: 12 }}>
+      <Text style={s.label}>{text.controls}</Text>
+      <CheckRow
+        label={text.paused}
+        checked={c.paused === true}
+        onPress={() => void act.run(() => patch({ paused: !c.paused }))}
+      />
+      <ToolListEditor
+        title={text.disabledTools}
+        hint={text.disabledHint}
+        list={c.disabledTools ?? []}
+        onSave={(next) => patch({ disabledTools: next })}
+      />
+      <ToolListEditor
+        title={text.approvalTools}
+        hint={text.approvalHint}
+        list={c.approvalTools ?? []}
+        onSave={(next) => patch({ approvalTools: next })}
+      />
+      <Text style={s.small}>{text.approvers(c.approvers?.length ?? 0)}</Text>
+      <Field
+        label={text.approverPhones}
+        keyboardType="phone-pad"
+        value={phones}
+        onChangeText={setPhones}
+      />
+      <ErrorNotice error={act.error} />
+      <Button
+        small
+        busy={act.busy}
+        onPress={() =>
+          void act.run(async () => {
+            const list = phones
+              .split(",")
+              .map((p) => p.trim())
+              .filter(Boolean);
+            await patch({ approverPhones: list });
+            setPhones("");
+          })
+        }
+      >
+        {text.saveApprovers}
+      </Button>
+    </View>
+  );
+}
+
 function Manage({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<void> }) {
   const { api, notify } = useWorkspace();
   const [confirming, setConfirming] = useState(false);
@@ -960,6 +1083,7 @@ function Manage({ sub, refreshSubs }: { sub: Sub; refreshSubs: () => Promise<voi
         </Row>
       </View>
       <SubTerm sub={sub} />
+      {sub.status === "active" && <Controls sub={sub} refreshSubs={refreshSubs} />}
       <ErrorNotice error={act.error} />
       {sub.status === "cancelled" ? (
         <Button

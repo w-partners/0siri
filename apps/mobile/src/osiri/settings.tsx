@@ -95,7 +95,7 @@ import { MemoryScreen } from "./memory";
 import { NetworkScreen } from "./network";
 import { OperatorScreen } from "./operator";
 import { SkillsScreen } from "./skills";
-import { Block, Choice, useAction, useLoad, won } from "./store";
+import { Block, Choice, ToolListEditor, useAction, useLoad, won } from "./store";
 import { deviceSearchOff, setDeviceSearchOff } from "./tier0";
 
 /** `GET /billing/usage` — 서버 `Routing.billing()`. percent 는 상한 대비 0~100, null = 측정 중 */
@@ -373,10 +373,6 @@ const text = {
   restricted: (name: string) => `${name} 의 제한을 바꿨습니다`,
   blocked: "차단 도구",
   blockedHint: "여기 적은 도구는 어떤 팀도 부를 수 없습니다. 형식: 서버:도구",
-  noBlocked: "차단한 도구가 없습니다",
-  blockedField: "차단할 도구 (예: wgolf:send_message)",
-  block: "차단",
-  unblock: "풀기",
 };
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
@@ -1808,41 +1804,16 @@ function PackageRestrict({ pkg, onChanged }: { pkg: StorePkg; onChanged: () => v
 
 function BlockedTools({ value, onChanged }: { value: unknown; onChanged: () => void }) {
   const { api } = useWorkspace();
-  const [tool, setTool] = useState("");
-  const act = useAction();
-  const list = Array.isArray(value) ? (value as string[]) : [];
-  const save = (next: string[]) =>
-    act.run(async () => {
-      await api.request("/api/admin/settings", { key: "blockedTools", value: next }, "PATCH");
-      setTool("");
-      onChanged();
-    });
   return (
-    <Block title={text.blocked}>
-      <Text style={s.small}>{text.blockedHint}</Text>
-      {list.length === 0 ? (
-        <Text style={s.small}>{text.noBlocked}</Text>
-      ) : (
-        list.map((t) => (
-          <View key={t} style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-            <Text style={[s.small, { flex: 1 }]}>{t}</Text>
-            <Button small busy={act.busy} onPress={() => save(list.filter((x) => x !== t))}>
-              {text.unblock}
-            </Button>
-          </View>
-        ))
-      )}
-      <Field label={text.blockedField} autoCapitalize="none" value={tool} onChangeText={setTool} />
-      <ErrorNotice error={act.error} />
-      <Button
-        small
-        busy={act.busy}
-        disabled={!tool.trim() || list.includes(tool.trim())}
-        onPress={() => save([...list, tool.trim()])}
-      >
-        {text.block}
-      </Button>
-    </Block>
+    <ToolListEditor
+      title={text.blocked}
+      hint={text.blockedHint}
+      list={Array.isArray(value) ? (value as string[]) : []}
+      onSave={async (next) => {
+        await api.request("/api/admin/settings", { key: "blockedTools", value: next }, "PATCH");
+        onChanged();
+      }}
+    />
   );
 }
 
