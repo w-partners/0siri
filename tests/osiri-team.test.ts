@@ -483,3 +483,68 @@ test("감시(x-osiri-watch): read 도구를 주기마다 불러, 바뀌었을 �
   assert.equal(everyMs("1h"), 3_600_000);
   assert.throws(() => everyMs("5 minutes"));
 });
+
+test("역할 read 도구 루프(x-osiri-tools): CALL 한 줄이면 부르고 결과를 붙여 다시 묻는다, read 아닌 도구는 거부", async () => {
+  const toolCalls: unknown[] = [];
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    const path = url.replace("http://w/api/worker", "");
+    const reply = (data: unknown) => new Response(JSON.stringify(data));
+    if (path === "/tools")
+      return reply([
+        {
+          id: "srv-1",
+          name: "wgolf",
+          tools: [
+            { name: "search_teetimes", risk: "read" },
+            { name: "book", risk: "external" },
+          ],
+        },
+      ]);
+    if (path === "/tools/call") {
+      toolCalls.push(JSON.parse(String(init?.body)));
+      return reply({ status: "done", result: { content: ["07:40 4명"] } });
+    }
+    if (path === "/skills/active") return reply([]);
+    throw new Error(`예상 밖 호출 ${path}`);
+  }) as unknown as typeof fetch;
+  const agent = (tools: string[]) => ({
+    title: "p",
+    description: "d",
+    instruction: "i",
+    "x-osiri-tools": tools,
+  });
+  const team = (tools: string[]) =>
+    ({
+      version: 1,
+      package: { slug: "t", name: "t", character: "c", approval_points: [] },
+      agents: { lookup: agent(tools) },
+    }) as unknown as TeamSpec;
+  const users: string[] = [];
+  const llm = async (_r: string, _t: number, _s: string, user: string) => {
+    users.push(user);
+    if (!user.includes("결과]")) return 'CALL search_teetimes {"date":"2026-10-12"}';
+    if (!user.includes("[book 결과]")) return "CALL book {}";
+    return "내일 07:40 4명";
+  };
+  type Ask = { ask(role: string, user: string): Promise<string> };
+  const runtime = new TeamRuntime({
+    apiUrl: "http://w/api/worker",
+    workerToken: "t",
+    team: team(["search_teetimes"]),
+    fetchFn,
+    llm,
+  }) as unknown as Ask;
+  assert.equal(await runtime.ask("lookup", "내일 티타임"), "내일 07:40 4명");
+  assert.deepEqual(toolCalls, [
+    { serverId: "srv-1", tool: "search_teetimes", args: { date: "2026-10-12" }, actor: "lookup" },
+  ]);
+  assert.ok(users.at(-1)?.includes("[book 결과]\n이 역할이 쓸 수 없는 도구입니다"));
+  const external = new TeamRuntime({
+    apiUrl: "http://w/api/worker",
+    workerToken: "t",
+    team: team(["book"]),
+    fetchFn,
+    llm,
+  }) as unknown as Ask;
+  await assert.rejects(external.ask("lookup", "q"), /read 도구만/);
+});

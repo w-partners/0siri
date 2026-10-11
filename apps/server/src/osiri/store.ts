@@ -705,11 +705,12 @@ export function storeRoutes(
     const slots = z.object({
       "x-osiri-template": z.string().max(8000).optional(),
       "x-osiri-tool-guide": z.string().max(8000).optional(),
+      "x-osiri-tools": z.array(z.string().min(1).max(200)).max(20).optional(),
     });
     for (const [name, agent] of Object.entries(spec.agents ?? {}))
       if (!slots.safeParse(agent ?? {}).success)
         throw new AppError(
-          `역할 ${name}: x-osiri-template·x-osiri-tool-guide 는 8000자 이내 글이어야 합니다`,
+          `역할 ${name}: x-osiri-template·x-osiri-tool-guide 는 8000자 이내 글, x-osiri-tools 는 도구 이름 목록(20개 이내)이어야 합니다`,
           422,
         );
     const roles = Object.entries(spec.agents ?? {}).map(([name, agent]) => ({

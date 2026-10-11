@@ -21,8 +21,15 @@ export interface TeamAgent {
   "x-osiri-template"?: string;
   /** 도구 사용 지침 — 어떤 도구를 언제·어떻게 쓰는지. 역할 지시 뒤에 붙는다 */
   "x-osiri-tool-guide"?: string;
+  /** 이 역할이 답을 쓰는 중에 승인 없이 부를 수 있는 read 도구("<서버>:<도구>" 또는 도구 이름). read 가 아니면 부르지 않는다 */
+  "x-osiri-tools"?: string[];
   sub_agents?: string[];
 }
+type ToolServer = { id: string; name: string; tools: { name: string; risk: string }[] };
+/** 역할이 도구를 부르는 한 줄: `CALL <도구> {json 인자}` (답 전체가 이 한 줄이어야 한다) */
+const CALL_LINE = /^CALL\s+(\S+)\s*(\{[\s\S]*\})?\s*$/;
+/** 한 번 묻는 동안 도구를 부르는 최대 횟수 — 넘으면 도구 없이 답하게 한다 */
+export const MAX_TOOL_ROUNDS = 4;
 export interface WatchSpec {
   id: string;
   /** "<MCP 서버 이름>:<도구>" 또는 도구 이름(연결된 서버 중 그 이름의 read 도구) */
@@ -210,7 +217,52 @@ export class TeamRuntime {
     const equipped = skills.length
       ? `\n\n[장착된 스킬]\n${skills.map((s) => `- ${s.name}: ${s.appliesTo}`).join("\n")}`
       : "";
-    return this.options.llm(role, tier, rolePrompt(agent, equipped), user);
+    const allowed = agent["x-osiri-tools"] ?? [];
+    if (!allowed.length) return this.options.llm(role, tier, rolePrompt(agent, equipped), user);
+    // read 도구 루프 (wgolf RPT-03 가): 역할이 `CALL 도구 {인자}` 한 줄로 답하면 부르고 결과를 붙여 다시 묻는다
+    const servers = await this.api<ToolServer[]>("/tools");
+    for (const ref of allowed) this.readTool(servers, ref); // 연결 안 됨·read 아님은 여기서 실패
+    const system = `${rolePrompt(agent, equipped)}\n\n[조회 도구]\n${allowed.join(", ")}\n필요하면 답 대신 한 줄만 쓰세요: CALL <도구> {"인자":"값"}\n결과를 받은 뒤 이어서 답합니다. 도구 결과에 없는 사실은 쓰지 마세요.`;
+    let context = user;
+    for (let round = 0; ; round++) {
+      const reply = await this.options.llm(role, tier, system, context);
+      const call = CALL_LINE.exec(reply.trim());
+      if (!call) return reply;
+      const name = call[1] as string;
+      let result: string;
+      if (round >= MAX_TOOL_ROUNDS)
+        result = "도구 호출 횟수를 넘었습니다 — 지금까지 결과로 답하세요";
+      else if (!allowed.includes(name)) result = `이 역할이 쓸 수 없는 도구입니다: ${name}`;
+      else
+        result = await Promise.resolve()
+          .then(() => this.callRead(servers, name, call[2] ? JSON.parse(call[2]) : {}, role))
+          .then((content) => JSON.stringify(content).slice(0, 6000))
+          .catch((error: Error) => `실패: ${error.message}`);
+      context += `\n\n[${name} 결과]\n${result}`;
+    }
+  }
+  /** "<서버>:<도구>" 또는 도구 이름 → 연결된 read 도구. 없거나 read 가 아니면 실패(external 은 승인 뒤 발행에서만 — fail-closed) */
+  private readTool(servers: ToolServer[], ref: string) {
+    const [serverName, toolName] = ref.includes(":")
+      ? (ref.split(":", 2) as [string, string])
+      : [undefined, ref];
+    const server = servers.find(
+      (s) => (!serverName || s.name === serverName) && s.tools.some((t) => t.name === toolName),
+    );
+    const tool = server?.tools.find((t) => t.name === toolName);
+    if (!server || !tool) throw new Error(`도구 ${ref} 이(가) 연결되어 있지 않습니다`);
+    if (tool.risk !== "read")
+      throw new Error(`승인 없이는 read 도구만 — ${ref} 은(는) ${tool.risk} 입니다`);
+    return { serverId: server.id, tool: toolName };
+  }
+  private async callRead(servers: ToolServer[], ref: string, args: unknown, actor: string) {
+    const called = await this.api<{
+      status: string;
+      result?: { content?: unknown };
+      error?: string;
+    }>("/tools/call", { ...this.readTool(servers, ref), args, actor });
+    if (called.status !== "done") throw new Error(called.error ?? `도구 상태 ${called.status}`);
+    return called.result?.content ?? null;
   }
 
   /**
@@ -543,36 +595,13 @@ export class TeamRuntime {
       return !last || now - last.at >= everyMs(spec.every);
     });
     if (!due.length) return [];
-    const servers =
-      await this.api<{ id: string; name: string; tools: { name: string; risk: string }[] }[]>(
-        "/tools",
-      );
+    const servers = await this.api<ToolServer[]>("/tools");
     const notified: string[] = [];
     for (const spec of due) {
       try {
-        const [serverName, toolName] = spec.tool.includes(":")
-          ? (spec.tool.split(":", 2) as [string, string])
-          : [undefined, spec.tool];
-        const server = servers.find(
-          (s) => (!serverName || s.name === serverName) && s.tools.some((t) => t.name === toolName),
+        const snapshot = JSON.stringify(
+          await this.callRead(servers, spec.tool, resolveArgs(spec.args, now), spec.role),
         );
-        const tool = server?.tools.find((t) => t.name === toolName);
-        if (!server || !tool)
-          throw new Error(`감시 도구 ${spec.tool} 이(가) 연결되어 있지 않습니다`);
-        if (tool.risk !== "read")
-          throw new Error(`감시는 read 도구만 — ${spec.tool} 은(는) ${tool.risk} 입니다`);
-        const called = await this.api<{
-          status: string;
-          result?: { content?: unknown };
-          error?: string;
-        }>("/tools/call", {
-          serverId: server.id,
-          tool: toolName,
-          args: resolveArgs(spec.args, now),
-          actor: spec.role,
-        });
-        if (called.status !== "done") throw new Error(called.error ?? `도구 상태 ${called.status}`);
-        const snapshot = JSON.stringify(called.result?.content ?? null);
         const last = this.watched.get(spec.id);
         this.watched.set(spec.id, { at: now, snapshot });
         if (!last || last.snapshot === snapshot) continue; // 첫 회는 기준만, 같으면 조용히
