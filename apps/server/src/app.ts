@@ -461,13 +461,37 @@ export async function createApp(
   app.get("/api/conversation", async (c) =>
     c.json((await db.get(c.get("owner"), "conversations", conversationId(c))) ?? { messages: [] }),
   );
+  // times: 메시지 id → 처음 저장된 시각. 말풍선 아래 «언제 말했고 언제 답했는지» (마스터 2026-10-11).
+  // 화면은 메시지를 처음 본 시각(times)을 같이 보낸다 — 저장은 답이 끝난 뒤라 서버 시각만 쓰면 내 말이 답 시각으로 찍힌다.
+  // 새 id 에만 받아들이고, 미래 시각은 지금으로 깎는다. 분기도 이 길로 원래 시각을 옮긴다
   app.put("/api/conversation", async (c) => {
     const body = await c.req.json();
     const messages = z.array(z.unknown()).max(1000).parse(body.messages);
     for (const message of messages) MessageSchema.parse(message);
-    await db.put(c.get("owner"), "conversations", { id: conversationId(c), messages });
-    history.indexLater(c.get("owner"), conversationId(c), messages);
-    return c.json({ ok: true });
+    const given = z
+      .record(z.string(), z.iso.datetime())
+      .catch({})
+      .parse(body.times ?? {});
+    const owner = c.get("owner");
+    const previous = await db.get<{ messages?: { id: string }[]; times?: Record<string, string> }>(
+      owner,
+      "conversations",
+      conversationId(c),
+    );
+    // 시각을 찍기 전부터 있던 메시지는 비워 둔다 — 지금 시각을 찍으면 틀린 시각이 보인다
+    const before = new Set((previous?.messages ?? []).map((m) => m.id));
+    const now = new Date().toISOString();
+    const times: Record<string, string> = {};
+    for (const message of messages as { id: string }[]) {
+      const kept = previous?.times?.[message.id];
+      const seeded = given[message.id];
+      if (kept) times[message.id] = kept;
+      else if (before.has(message.id)) continue;
+      else times[message.id] = seeded && seeded < now ? seeded : now;
+    }
+    await db.put(owner, "conversations", { id: conversationId(c), messages, times });
+    history.indexLater(owner, conversationId(c), messages);
+    return c.json({ ok: true, times });
   });
   app.post("/api/files", async (c) => {
     const data = await c.req.parseBody();

@@ -1,5 +1,6 @@
 // 0Siri 방 목록(화면 2)·팀 채팅방(화면 3)·SSE 스트림 — «0Siri 종합 기획» §03, 계약은 docs/0siri-api-contract.md.
 // 타입은 서버 정의를 type-import, 라벨·목록은 packages/domain/src/osiri.ts 에서만 가져온다(여기서 다시 적지 않는다).
+
 import { fetch as streamFetch } from "expo/fetch";
 import {
   ArrowLeft,
@@ -103,6 +104,7 @@ import {
 } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood, selfAnimated, useStill } from "./eve";
+import { MESSAGE_ACTION_TEXT } from "./message-actions";
 import { SkillsScreen } from "./skills";
 import { Choice, LoadState, useAction, useLoad } from "./store";
 import { type GoalProposal, LoadError, TeamGoalsScreen } from "./team-goals";
@@ -2294,6 +2296,22 @@ export function RoomScreen({
               welcome={home}
               deviceChat={home}
               answerLabel={answerLabel}
+              onBranch={
+                plain && onOpenRoom
+                  ? async (messages, times) => {
+                      const made = await api.request<Room>("/api/rooms", {
+                        title: MESSAGE_ACTION_TEXT.branchTitle(room.title),
+                      });
+                      await api.request(
+                        `/api/conversation?threadId=${encodeURIComponent(made.id)}`,
+                        { messages, times },
+                        "PUT",
+                      );
+                      const list = await refreshRooms(api);
+                      onOpenRoom(list?.find((r) => r.id === made.id) ?? made);
+                    }
+                  : undefined
+              }
               anchor={anchor}
               online={!offline}
               readOnly={room.archived ? ARCHIVED_ROOM_NOTICE : undefined}

@@ -52,6 +52,7 @@ import {
 } from "./osiri/device-chat-logic";
 import type { Mood } from "./osiri/eve";
 import { shareBeforeSend, shareLocation } from "./osiri/location";
+import { MESSAGE_ACTION_TEXT, MessageMeta } from "./osiri/message-actions";
 import { PaneFileButton } from "./osiri/pane-send";
 import { PhotoAttachButton, showPhotoMarkers } from "./osiri/photo-attach";
 import { StopSpeakingButton, useSpokenReply } from "./osiri/speak";
@@ -247,6 +248,7 @@ export function ChatScreen({
   placeholder,
   welcome = true,
   answerLabel,
+  onBranch,
   anchor,
   online = true,
   readOnly,
@@ -276,6 +278,8 @@ export function ChatScreen({
   welcome?: boolean;
   /** 답변마다 «누가 답했는지» 한 줄 (기기에서 답함 · 서버 주력 · 기억에서 찾음). 모르면 undefined. */
   answerLabel?: (messageId: string) => string | undefined;
+  /** 이 메시지까지의 대화를 새 방으로 옮겨 이어 간다(ChatGPT «분기»). 없으면 분기 버튼을 내지 않는다 */
+  onBranch?: (messages: Message[], times: Record<string, string>) => Promise<void>;
 }) {
   const { api, workspace: w, refresh, navigate } = useWorkspace();
   const { data: agentWorkspace, refresh: refreshAgent } = useAgentWorkspace();
@@ -290,6 +294,10 @@ export function ChatScreen({
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
   const [voiceOn, setVoiceOn] = useState(false);
+  // 말풍선 아래 시각: 서버가 저장해 둔 시각(times), 아직 저장 전이면 이 화면에서 처음 본 시각(firstSeen)
+  const [times, setTimes] = useState<Record<string, string>>({});
+  const known = useRef(new Set<string>());
+  const firstSeen = useRef<Record<string, string>>({});
   const [voiceError, setVoiceError] = useState<string>();
   const [inputHeight, setInputHeight] = useState(44);
   const [showResults, setShowResults] = useState(false);
@@ -413,8 +421,17 @@ export function ChatScreen({
             }
           }
         } else {
-          const { messages } = await api.request<{ messages: Message[] }>(conversationPath);
-          if (active) agent.setMessages(messages);
+          const { messages, times } = await api.request<{
+            messages: Message[];
+            times?: Record<string, string>;
+          }>(conversationPath);
+          if (active) {
+            // 불러온 메시지는 «처음 본 시각» 을 찍지 않는다 — 시각이 없으면 비워 둔다
+            known.current = new Set(messages.map((m) => m.id));
+            firstSeen.current = {};
+            setTimes(times ?? {});
+            agent.setMessages(messages);
+          }
         }
         if (active) setLoaded(true);
       } catch (e) {
@@ -453,7 +470,14 @@ export function ChatScreen({
     if (online && historyError) setHistoryAttempt((attempt) => attempt + 1);
   }, [online]);
   const saveHistory = useCallback(async () => {
-    if (!richThreads) await api.request(conversationPath, { messages: agent.messages }, "PUT");
+    if (!richThreads) {
+      const saved = await api.request<{ times?: Record<string, string> }>(
+        conversationPath,
+        { messages: agent.messages, times: firstSeen.current },
+        "PUT",
+      );
+      if (saved.times) setTimes(saved.times);
+    }
     setSaveError("");
   }, [agent, api, conversationPath, richThreads]);
   /**
@@ -745,6 +769,9 @@ export function ChatScreen({
             const label = user
               ? undefined
               : (answerLabel?.(message.id) ?? deviceAnswerLabel(message));
+            if (!known.current.has(message.id) && !firstSeen.current[message.id])
+              firstSeen.current[message.id] = new Date().toISOString();
+            const time = times[message.id] ?? firstSeen.current[message.id];
             return (
               <View
                 key={message.id}
@@ -775,8 +802,34 @@ export function ChatScreen({
                     )}
                   </View>
                 )}
-                {!user && !!text && !!label && (
-                  <Text style={[s.small, { marginLeft: 6 }]}>{label}</Text>
+                {!!text && (
+                  <MessageMeta
+                    user={user}
+                    time={time}
+                    label={label}
+                    copyText={user ? showPhotoMarkers(text) : text}
+                    onError={setError}
+                    onBranch={
+                      onBranch && !replying
+                        ? () => {
+                            const upTo = messages.slice(0, messages.indexOf(message) + 1);
+                            const carried = Object.fromEntries(
+                              upTo.flatMap((m) => {
+                                const at = times[m.id] ?? firstSeen.current[m.id];
+                                return at ? [[m.id, at]] : [];
+                              }),
+                            );
+                            onBranch(upTo, carried).catch((e) =>
+                              setError(
+                                MESSAGE_ACTION_TEXT.branchFailed(
+                                  e instanceof Error ? e.message : String(e),
+                                ),
+                              ),
+                            );
+                          }
+                        : undefined
+                    }
+                  />
                 )}
                 {toolCalls.map((toolCall) => {
                   const toolMessage = messages.find(
