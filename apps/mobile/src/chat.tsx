@@ -51,7 +51,7 @@ import {
   withContent,
 } from "./osiri/device-chat-logic";
 import type { Mood } from "./osiri/eve";
-import { shareLocation } from "./osiri/location";
+import { shareBeforeSend, shareLocation } from "./osiri/location";
 import { PaneFileButton } from "./osiri/pane-send";
 import { VoiceButton } from "./osiri/voice";
 import { SearchToolCard } from "./search-tool-card";
@@ -509,6 +509,7 @@ export function ChatScreen({
             forwardedProps = { deviceFailed: true };
           }
         }
+        if (message) await shareBeforeSend(api);
         await runConversationTurn(
           agentId,
           () => copilotkit.runAgent({ agent, forwardedProps }),
@@ -551,6 +552,7 @@ export function ChatScreen({
       queue,
       deviceChat,
       answerOnDevice,
+      api,
     ],
   );
   const runQueued = useCallback(

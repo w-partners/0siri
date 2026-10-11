@@ -17,6 +17,8 @@ export interface UserLocation {
 }
 /** 이보다 오래된 위치는 답에 쓰지 않는다 — 사람이 움직였을 수 있다 */
 export const LOCATION_FRESH_MS = 6 * 3600 * 1000;
+/** 이 안이면 «지금 위치», 넘으면 «N분 전 마지막 위치» 로 넘긴다 — 앱은 보낼 때마다(2분 간격) 새로 올린다 */
+export const LOCATION_CURRENT_MS = 15 * 60 * 1000;
 const KIND = "location";
 
 export async function readLocation(db: Store, owner: string): Promise<UserLocation> {
@@ -34,7 +36,12 @@ export async function locationNote(
   const age = now - Date.parse(where.at);
   if (!(age >= 0 && age <= LOCATION_FRESH_MS)) return;
   const place = where.address ? `${where.address} ` : "";
-  return `User's current location (from their phone GPS, ${Math.round(age / 60000)} min ago, ±${Math.round(where.accuracy ?? 0)}m): ${place}(lat ${where.lat.toFixed(5)}, lng ${where.lng.toFixed(5)}). Use it for weather, nearby places, directions and local time questions without asking where they are; do not mention coordinates unless asked.`;
+  const minutes = Math.round(age / 60000);
+  const fix = `(from their phone GPS, ${minutes} min ago, ±${Math.round(where.accuracy ?? 0)}m): ${place}(lat ${where.lat.toFixed(5)}, lng ${where.lng.toFixed(5)})`;
+  // 오래된 위치를 «지금 위치» 로 단정하면 이동한 사람에게 엉뚱한 곳을 말한다(2026-10-11 부산→제주)
+  if (age > LOCATION_CURRENT_MS)
+    return `User's LAST KNOWN location ${fix}. They may have moved since. If they ask where they are now, say this is the last position the phone sent ${minutes} minutes ago and may be out of date — never state it as their current location. For weather or nearby questions, use it but mention it is from ${minutes} minutes ago.`;
+  return `User's current location ${fix}. Use it for weather, nearby places, directions and local time questions without asking where they are; do not mention coordinates unless asked.`;
 }
 
 /**

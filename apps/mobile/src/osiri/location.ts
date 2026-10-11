@@ -5,8 +5,10 @@ import { Platform } from "react-native";
 import type { UserLocation } from "../../../server/src/osiri/location.ts";
 import type { MuseApi } from "../api";
 
-/** ponytail: 화면 열 때마다 GPS 를 켜지 않게 10분에 한 번만 — 이동 중 정확도가 필요하면 watchPosition 으로 */
-const EVERY_MS = 10 * 60 * 1000;
+/** ponytail: 보낼 때마다 GPS 를 켜지 않게 2분에 한 번만 — 이동 중 계속 따라가야 하면 watchPosition 으로 */
+const EVERY_MS = 2 * 60 * 1000;
+/** 보내기 직전에 부른다 — 앱을 켠 채 이동하면 화면 열 때 올린 위치가 몇 시간째 남는다(2026-10-11 부산→제주 오답) */
+const BEFORE_SEND_WAIT_MS = 4000;
 let lastSent = 0;
 export type LocationState = "ok" | "denied" | "off" | "error";
 let state: LocationState | undefined;
@@ -53,6 +55,14 @@ export async function shareLocation(api: MuseApi, force = false): Promise<Locati
     console.warn(`[osiri/location] 위치를 올리지 못했습니다: ${(error as Error).message}`);
     return settle("error");
   }
+}
+
+/** GPS 를 최대 4초 기다리고 보낸다 — 늦으면 그대로 보내고 서버가 마지막 위치를 «N분 전» 으로 다룬다 */
+export function shareBeforeSend(api: MuseApi): Promise<LocationState | "slow"> {
+  return Promise.race([
+    shareLocation(api),
+    new Promise<"slow">((done) => setTimeout(() => done("slow"), BEFORE_SEND_WAIT_MS)),
+  ]);
 }
 
 export async function setLocationEnabled(api: MuseApi, enabled: boolean) {

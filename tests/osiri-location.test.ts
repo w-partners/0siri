@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { Hono } from "hono";
 import { createStore, type Store } from "../apps/server/src/db.ts";
 import {
+  LOCATION_CURRENT_MS,
   LOCATION_FRESH_MS,
   locationNote,
   locationRoutes,
@@ -51,6 +52,13 @@ test("올린 위치가 프롬프트 한 줄이 되고, 남에게는 없다", asy
 test("오래된 위치는 쓰지 않는다", async () => {
   const later = Date.now() + LOCATION_FRESH_MS + 60_000;
   assert.equal(await locationNote(db, "me", later), undefined);
+});
+
+test("15분 넘은 위치는 «지금 위치» 가 아니라 «N분 전 마지막 위치» 로 넘긴다", async () => {
+  assert.match((await locationNote(db, "me")) ?? "", /^User's current location/);
+  const stale = await locationNote(db, "me", Date.now() + LOCATION_CURRENT_MS + 60_000);
+  assert.match(stale ?? "", /^User's LAST KNOWN location/);
+  assert.match(stale ?? "", /never state it as their current location/);
 });
 
 test("끄면 좌표를 지우고, 꺼진 동안 올린 위치는 저장하지 않는다", async () => {
