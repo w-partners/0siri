@@ -15,13 +15,13 @@ import {
 } from "../apps/server/src/osiri/location.ts";
 
 let db: Store, directory: string;
-const appAs = (owner: string) => {
+const appAs = (owner: string, fetcher?: typeof fetch) => {
   const app = new Hono<{ Variables: { owner: string } }>();
   app.use("*", async (c, next) => {
     c.set("owner", owner);
     await next();
   });
-  return app.route("/api", locationRoutes(db));
+  return app.route("/api", locationRoutes(db, fetcher));
 };
 const send = (owner: string, method: string, body: unknown) =>
   appAs(owner).request("/api/location", {
@@ -84,4 +84,27 @@ test("날씨: Open-Meteo 에 좌표·지금/오늘·내일을 묻고, 실패는 
   assert.match(asked, /forecast_days=2/);
   const down = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
   await assert.rejects(weatherAt(0, 0, down), /503/);
+});
+
+test("좌표만 오면(웹) 서버가 주소로 바꿔 두고, 실패하면 좌표만 두고 동네를 짐작하지 말라고 한다", async () => {
+  await appAs("geo").request("/api/location", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  });
+  const put = (fetcher: typeof fetch) =>
+    appAs("geo", fetcher).request("/api/location", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: 33.3262, lng: 126.8312 }),
+    });
+  const ok = (async () =>
+    Response.json({
+      address: { province: "제주특별자치도", city: "서귀포시", town: "표선면", village: "표선리" },
+    })) as unknown as typeof fetch;
+  assert.equal((await (await put(ok)).json()).address, "제주특별자치도 서귀포시 표선면 표선리");
+  assert.match((await locationNote(db, "geo")) ?? "", /표선면/);
+  const down = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+  assert.equal((await (await put(down)).json()).address, undefined);
+  assert.match((await locationNote(db, "geo")) ?? "", /do not guess a town/);
 });

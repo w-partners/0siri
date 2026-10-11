@@ -37,11 +37,14 @@ export async function locationNote(
   if (!(age >= 0 && age <= LOCATION_FRESH_MS)) return;
   const place = where.address ? `${where.address} ` : "";
   const minutes = Math.round(age / 60000);
+  const unnamed = where.address
+    ? ""
+    : " Address lookup failed: do not guess a town or neighborhood name from the coordinates — say you only have the coordinates.";
   const fix = `(from their phone GPS, ${minutes} min ago, ±${Math.round(where.accuracy ?? 0)}m): ${place}(lat ${where.lat.toFixed(5)}, lng ${where.lng.toFixed(5)})`;
   // 오래된 위치를 «지금 위치» 로 단정하면 이동한 사람에게 엉뚱한 곳을 말한다(2026-10-11 부산→제주)
   if (age > LOCATION_CURRENT_MS)
-    return `User's LAST KNOWN location ${fix}. They may have moved since. If they ask where they are now, say this is the last position the phone sent ${minutes} minutes ago and may be out of date — never state it as their current location. For weather or nearby questions, use it but mention it is from ${minutes} minutes ago.`;
-  return `User's current location ${fix}. Use it for weather, nearby places, directions and local time questions without asking where they are; do not mention coordinates unless asked.`;
+    return `User's LAST KNOWN location ${fix}.${unnamed} They may have moved since. If they ask where they are now, say this is the last position the phone sent ${minutes} minutes ago and may be out of date — never state it as their current location. For weather or nearby questions, use it but mention it is from ${minutes} minutes ago.`;
+  return `User's current location ${fix}.${unnamed} Use it for weather, nearby places, directions and local time questions without asking where they are; do not mention coordinates unless asked.`;
 }
 
 /**
@@ -65,7 +68,37 @@ export async function weatherAt(lat: number, lng: number, fetcher: typeof fetch 
   return { source: "Open-Meteo", ...(await response.json()) };
 }
 
-export function locationRoutes(db: Store) {
+/**
+ * 좌표 → «제주특별자치도 서귀포시 표선면 표선리». 웹 브라우저는 주소를 못 얻어 좌표만 보낸다 —
+ * 주소 없이 넘기면 모델이 좌표로 동네를 짐작해 옆 동네(성산읍)를 말했다(2026-10-11 실측). OSM Nominatim, 키 없음.
+ * ponytail: 1초 1건 제한 — 앱이 2분 간격으로만 올려서 지인 규모엔 충분, 사용자가 늘면 카카오 로컬 API 로
+ */
+export async function addressAt(lat: number, lng: number, fetcher: typeof fetch = fetch) {
+  const url = new URL("https://nominatim.openstreetmap.org/reverse");
+  url.search = new URLSearchParams({
+    format: "jsonv2",
+    lat: String(lat),
+    lon: String(lng),
+    zoom: "16",
+    "accept-language": "ko",
+  }).toString();
+  const response = await fetcher(url, {
+    headers: { "User-Agent": "0siri (openagentx.org)" },
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!response.ok) throw new Error(`주소 변환 응답 ${response.status}`);
+  const a = ((await response.json()) as { address?: Record<string, string> }).address ?? {};
+  const parts = [
+    a.province ?? a.state,
+    a.city,
+    a.county ?? a.borough ?? a.city_district,
+    a.town ?? a.suburb,
+    a.village ?? a.quarter ?? a.neighbourhood,
+  ];
+  return [...new Set(parts.filter(Boolean))].join(" ") || undefined;
+}
+
+export function locationRoutes(db: Store, fetcher: typeof fetch = fetch) {
   const app = new Hono<{ Variables: { owner: string } }>();
   app.get("/location", async (c) => c.json(await readLocation(db, c.get("owner"))));
   // 앱이 위치를 올린다. 꺼 둔 사용자의 위치는 저장하지 않는다(앱이 아직 모르고 보내도)
@@ -81,7 +114,20 @@ export function locationRoutes(db: Store) {
     const owner = c.get("owner");
     const current = await readLocation(db, owner);
     if (!current.enabled) return c.json(current);
-    const next: UserLocation = { id: "me", enabled: true, ...body, at: new Date().toISOString() };
+    // 주소를 못 얻어도 좌표는 저장한다 — 실패는 로그에 남기고, 프롬프트는 좌표만으로 동네를 짐작하지 말라고 한다
+    const address =
+      body.address ??
+      (await addressAt(body.lat, body.lng, fetcher).catch((error: Error) => {
+        console.warn(`[osiri/location] 주소 변환 실패: ${error.message}`);
+        return undefined;
+      }));
+    const next: UserLocation = {
+      id: "me",
+      enabled: true,
+      ...body,
+      ...(address ? { address } : {}),
+      at: new Date().toISOString(),
+    };
     await db.put(owner, KIND, next);
     return c.json(next);
   });

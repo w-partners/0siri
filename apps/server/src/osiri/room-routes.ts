@@ -86,8 +86,17 @@ const answeredByView = (by: {
   label: answerLabel(by.source, by.tier),
   model: by.model,
   source: by.source,
-  ...(by.reason ? { reason: by.reason } : {}),
+  ...(userReason(by.reason) ? { reason: userReason(by.reason) } : {}),
 });
+/**
+ * 답변 아래 줄에는 사용자에게 뜻 있는 사유만 — «MODEL_TIER2 미설정 → 기본 모델»·«단가 미설정» 같은 설정 메모는
+ * 사용량·감사 기록(routing usage.reason)에만 남긴다. ponytail: 설정 메모는 «미설정» 이 든 조각으로 가린다 — 메모가 늘면 routing 에서 필드를 나눈다
+ */
+const userReason = (reason?: string) =>
+  reason
+    ?.split(" · ")
+    .filter((part) => !part.includes("미설정"))
+    .join(" · ") || undefined;
 
 /**
  * SSE 연결 수명 — 방 스트림과 사용자 스트림이 같은 종료 처리를 쓴다.
