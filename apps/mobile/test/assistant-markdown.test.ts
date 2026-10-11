@@ -25,3 +25,12 @@ test("only absolute HTTP(S) links can open", () => {
     assert.equal(isSafeAssistantUrl(url), false);
   }
 });
+
+test("한글: 닫는 ** 뒤에 한글이 붙어도 굵게가 풀린다", () => {
+  const html = assistantMarkdown.render(
+    "현재 **24.6°C(체감 26.3°C)**이며 비 올 확률은 **20%**입니다.",
+  );
+  assert.match(html, /<strong>24\.6°C\(체감 26\.3°C\)<\/strong>이며/);
+  assert.match(html, /<strong>20%<\/strong>입니다/);
+  assert.doesNotMatch(html, /\*\*/);
+});
