@@ -88,7 +88,7 @@ before(async () => {
     await next();
   });
   app.route("/api", roomRoutes({ db, rooms, approvals, bus }));
-  app.route("/api", mcpRoutes(mcp));
+  app.route("/api", mcpRoutes(mcp, "http://localhost:8787"));
 });
 after(async () => {
   await db.close();

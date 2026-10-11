@@ -17,6 +17,16 @@ import { decryptSecret, encryptSecret } from "../../../../packages/integrations/
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Approvals } from "./approvals.ts";
+import {
+  discover,
+  newState,
+  OAUTH_CALLBACK_PATH,
+  OAUTH_PENDING_TTL_MS,
+  type OAuthTokens,
+  oauthClientFor,
+  pkce,
+  tokenRequest,
+} from "./mcp-oauth.ts";
 import type { Rooms } from "./rooms.ts";
 import { BLOCKED_TOOLS_SETTING, settingValue } from "./store.ts";
 
@@ -41,6 +51,9 @@ export interface McpServer {
   headersCiphertext?: string;
   /** 헤더 키 이름 — 값을 풀지 않고도 목록에 보이게 따로 둔다 */
   headerNames?: string[];
+  /** OAuth 로그인으로 붙은 연결: 토큰(JSON)을 TOKEN_ENCRYPTION_KEY 로 암호화한 것. 키 없는 시험 서버만 `oauth` 평문 */
+  oauthCiphertext?: string;
+  oauth?: OAuthTokens;
   riskDefault: Risk; // 도구가 위험도를 선언하지 않았을 때. 기본 external (= 최고 등급)
   /** 마지막으로 도구 목록을 받았을 때의 도구 수·위험도별 수 (목록 화면이 서버에 다시 붙지 않고 보인다) */
   toolSummary?: { toolCount: number; risks: RiskCounts };
@@ -88,14 +101,11 @@ const summarize = (tools: Pick<McpTool, "risk">[]): NonNullable<McpServer["toolS
     external: tools.filter((t) => t.risk === "external").length,
   },
 });
-/** `auth` 를 연결 헤더로. OAuth 는 아직 구현이 없다 — 인증 없이 붙여 놓고 된 척하지 않는다. */
+/** `auth` 를 연결 헤더로. OAuth 는 헤더가 아니라 로그인(/connections/mcp/oauth/start)으로 붙는다. */
 function authHeaders(auth?: McpAuth): Record<string, string> | undefined {
   if (!auth || auth.type === "none") return undefined;
   if (auth.type === "oauth")
-    throw new AppError(
-      "MCP OAuth 연결은 아직 지원하지 않습니다. 헤더 인증을 쓰거나 인증 없는 서버를 연결하세요",
-      503,
-    );
+    throw new AppError("OAuth 연결은 «로그인으로 연결» 로 붙습니다 (헤더로 보내지 않습니다)", 422);
   const name = auth.name?.trim();
   if (!name || !auth.value) throw new AppError("헤더 인증에는 헤더 이름과 값이 필요합니다", 422);
   return { [name]: auth.value };
@@ -105,12 +115,14 @@ let warnedPlaintextHeaders = false;
 
 export class Mcp {
   private readonly clients = new Map<string, Promise<Client>>();
+  private readonly versions = new Map<string, string>();
   constructor(
     private readonly db: Store,
     private readonly rooms: Rooms,
     private readonly approvals: Approvals,
     private readonly connect: Connector = httpConnector,
     private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly http: typeof fetch = fetch,
   ) {}
 
   /** 사용자 연결 + 플랫폼 공통 연결. */
@@ -168,8 +180,148 @@ export class Mcp {
       headerNames: Object.keys(headers),
     };
   }
-  /** 연결할 때만 푼다. 로그·응답에 쓰지 않는다. */
+  /** 연결할 때만 푼다. 로그·응답에 쓰지 않는다. OAuth 연결은 그 사람의 access 토큰을 Bearer 로 싣는다. */
   private openHeaders(server: McpServer): Record<string, string> | undefined {
+    const oauth = this.openOAuth(server);
+    const headers = this.openStoredHeaders(server);
+    return oauth ? { ...headers, Authorization: `Bearer ${oauth.accessToken}` } : headers;
+  }
+  private sealOAuth(tokens: OAuthTokens): Pick<McpServer, "oauth" | "oauthCiphertext"> {
+    const key = this.env.TOKEN_ENCRYPTION_KEY;
+    if (!key) {
+      console.warn(
+        "[osiri] TOKEN_ENCRYPTION_KEY 가 없어 MCP OAuth 토큰을 평문으로 저장합니다(시험 서버 전용)",
+      );
+      return { oauth: tokens };
+    }
+    return { oauthCiphertext: encryptSecret(JSON.stringify(tokens), key) };
+  }
+  private openOAuth(server: McpServer): OAuthTokens | undefined {
+    if (!server.oauthCiphertext) return server.oauth;
+    const key = this.env.TOKEN_ENCRYPTION_KEY;
+    if (!key)
+      throw new AppError("서버에 TOKEN_ENCRYPTION_KEY 가 없어 OAuth 토큰을 읽을 수 없습니다", 503);
+    return JSON.parse(decryptSecret(server.oauthCiphertext, key)) as OAuthTokens;
+  }
+  /** access 가 1분 안에 끝나면 refresh 로 바꿔 저장한다. refresh 가 없거나 거절되면 다시 로그인하라고 알린다. */
+  private async freshOAuth(scope: string, server: McpServer): Promise<McpServer> {
+    const tokens = this.openOAuth(server);
+    if (!tokens?.expiresAt || Date.parse(tokens.expiresAt) - Date.now() > 60_000) return server;
+    const relogin = `${server.name} 로그인이 만료됐습니다 — 연결을 지우고 다시 로그인해 주세요`;
+    if (!tokens.refreshToken) throw new AppError(relogin, 401);
+    let next: OAuthTokens;
+    try {
+      next = await tokenRequest(
+        this.http,
+        tokens.tokenEndpoint,
+        {
+          grant_type: "refresh_token",
+          refresh_token: tokens.refreshToken,
+          client_id: tokens.clientId,
+          resource: tokens.resource,
+        },
+        tokens,
+      );
+    } catch (error) {
+      throw new AppError(`${relogin} (${(error as Error).message})`, 401);
+    }
+    const { oauth: _o, oauthCiphertext: _c, ...rest } = server;
+    const updated = { ...rest, ...this.sealOAuth(next) };
+    await this.db.put(scope, "mcp-servers", updated);
+    return updated;
+  }
+  /** 로그인 시작: 인가 주소를 찾아 PKCE·state 를 만들고, 돌아올 때까지 10분 들고 있는다. 브라우저로 열 주소를 준다. */
+  async startOAuth(
+    owner: string,
+    input: { name: string; url: string; riskDefault?: Risk },
+    publicUrl: string,
+  ): Promise<{ authorizeUrl: string }> {
+    const endpoints = await discover(input.url, this.http);
+    const client = oauthClientFor(endpoints.authorizationEndpoint, this.env);
+    const { verifier, challenge } = pkce();
+    const state = newState();
+    await this.db.put("system", "mcp-oauth-pending", {
+      id: state,
+      owner,
+      ...input,
+      ...endpoints,
+      clientId: client.clientId,
+      verifier,
+      createdAt: new Date().toISOString(),
+    });
+    const url = new URL(endpoints.authorizationEndpoint);
+    url.search = new URLSearchParams({
+      response_type: "code",
+      client_id: client.clientId,
+      redirect_uri: `${publicUrl.replace(/\/$/, "")}${OAUTH_CALLBACK_PATH}`,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state,
+      resource: endpoints.resource,
+      ...(client.scope ? { scope: client.scope } : {}),
+    }).toString();
+    return { authorizeUrl: url.toString() };
+  }
+  /** 로그인 끝(공개 콜백): state 로 누구의 어떤 연결인지 찾고, 코드를 토큰으로 바꿔 붙어 본 뒤 저장한다. state 는 한 번만 쓴다. */
+  async finishOAuth(state: string, code: string, publicUrl: string): Promise<McpServer> {
+    const pending = await this.db.get<{
+      id: string;
+      owner: string;
+      name: string;
+      url: string;
+      riskDefault?: Risk;
+      resource: string;
+      tokenEndpoint: string;
+      clientId: string;
+      verifier: string;
+      createdAt: string;
+    }>("system", "mcp-oauth-pending", state);
+    if (!pending)
+      throw new AppError("로그인 요청을 찾을 수 없습니다 — 0Siri 에서 다시 시작해 주세요", 400);
+    await this.db.remove("system", "mcp-oauth-pending", state);
+    if (Date.now() - Date.parse(pending.createdAt) > OAUTH_PENDING_TTL_MS)
+      throw new AppError("로그인 요청이 만료됐습니다(10분) — 0Siri 에서 다시 시작해 주세요", 400);
+    const tokens = await tokenRequest(
+      this.http,
+      pending.tokenEndpoint,
+      {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: `${publicUrl.replace(/\/$/, "")}${OAUTH_CALLBACK_PATH}`,
+        client_id: pending.clientId,
+        code_verifier: pending.verifier,
+        resource: pending.resource,
+      },
+      {
+        tokenEndpoint: pending.tokenEndpoint,
+        clientId: pending.clientId,
+        resource: pending.resource,
+      },
+    );
+    const server: McpServer = {
+      id: randomUUID(),
+      name: pending.name,
+      url: pending.url,
+      ...this.sealOAuth(tokens),
+      riskDefault: pending.riskDefault ?? "external",
+      createdAt: new Date().toISOString(),
+    };
+    // 먼저 저장하고 붙어 본다 — 붙는 동안 토큰이 갱신되면 그 갱신이 저장본에 남아야 한다. 못 붙으면 지운다
+    await this.db.put(pending.owner, "mcp-servers", server);
+    let toolSummary: McpServer["toolSummary"];
+    try {
+      toolSummary = summarize(await this.tools(pending.owner, server));
+    } catch (error) {
+      await this.db.remove(pending.owner, "mcp-servers", server.id);
+      throw error;
+    }
+    const latest =
+      (await this.db.get<McpServer>(pending.owner, "mcp-servers", server.id)) ?? server;
+    const saved = { ...latest, toolSummary };
+    await this.db.put(pending.owner, "mcp-servers", saved);
+    return saved;
+  }
+  private openStoredHeaders(server: McpServer): Record<string, string> | undefined {
     if (!server.headersCiphertext) return server.headers;
     const key = this.env.TOKEN_ENCRYPTION_KEY;
     if (!key)
@@ -245,14 +397,30 @@ export class Mcp {
     if (shared) return { server: shared, scope: "system" };
     throw new AppError("연결을 찾을 수 없습니다", 404);
   }
-  private client(scope: string, server: McpServer): Promise<Client> {
+  private async client(scope: string, stored: McpServer): Promise<Client> {
+    const server = await this.freshOAuth(scope, stored);
     const key = `${scope}:${server.id}`;
+    // OAuth 토큰이 바뀌었으면(갱신) 옛 토큰을 든 연결은 닫고 새로 붙는다
+    const version = server.oauthCiphertext ?? server.oauth?.accessToken ?? "";
+    if (this.versions.get(key) !== version) {
+      void this.clients
+        .get(key)
+        ?.then((c) => c.close())
+        .catch(() => undefined);
+      this.clients.delete(key);
+      this.versions.set(key, version);
+    }
     let client = this.clients.get(key);
     if (!client) {
       // 커넥터에는 푼 헤더를 메모리로만 넘긴다 (저장 모양의 암호문은 넘기지 않는다)
       client = Promise.resolve()
         .then(() => {
-          const { headersCiphertext: _sealed, ...rest } = server;
+          const {
+            headersCiphertext: _sealed,
+            oauthCiphertext: _token,
+            oauth: _plain,
+            ...rest
+          } = server;
           return this.connect({ ...rest, headers: this.openHeaders(server) });
         })
         .catch((error) => {
@@ -390,14 +558,17 @@ const publicServer = ({
   headersCiphertext: _sealed,
   headerNames,
   toolSummary: _summary,
+  oauth,
+  oauthCiphertext,
   ...server
 }: McpServer) => ({
   ...server,
   headerNames: headerNames ?? Object.keys(headers ?? {}),
+  oauth: !!(oauth || oauthCiphertext),
 });
 
 /** S7 연결 라우트 — /api 아래, 인증 뒤. */
-export function mcpRoutes(mcp: Mcp) {
+export function mcpRoutes(mcp: Mcp, publicUrl: string) {
   const app = new Hono<{ Variables: { owner: string } }>();
   const authSchema = z.object({
     type: z.enum(MCP_AUTH_TYPES),
@@ -424,6 +595,17 @@ export function mcpRoutes(mcp: Mcp) {
       .parse(await c.req.json());
     const server = await mcp.add(c.get("owner"), body);
     return c.json({ ...publicServer(server), ...server.toolSummary });
+  });
+  // OAuth 로그인 시작 — 브라우저로 열 주소를 준다. 끝은 공개 콜백(app.ts OAUTH_CALLBACK_PATH)이 받는다
+  app.post("/connections/mcp/oauth/start", async (c) => {
+    const body = z
+      .object({
+        name: z.string().min(1).max(60),
+        url: z.string().url(),
+        riskDefault: z.enum(RISKS).optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(await mcp.startOAuth(c.get("owner"), body, publicUrl));
   });
   app.delete("/connections/mcp/:id", async (c) => {
     await mcp.remove(c.get("owner"), c.req.param("id"));

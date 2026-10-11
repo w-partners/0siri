@@ -43,6 +43,7 @@ import { Images, imageRoutes } from "./osiri/images.ts";
 import { UsageLimits } from "./osiri/limits.ts";
 import { locationRoutes } from "./osiri/location.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
+import { escapeHtml, OAUTH_CALLBACK_PATH } from "./osiri/mcp-oauth.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
 import {
@@ -284,6 +285,30 @@ export async function createApp(
       "<h1>Google이 연결되었습니다</h1><p>0Siri로 돌아가 워크스페이스를 새로고침하세요.</p>",
     );
   });
+  // 공개: MCP OAuth 로그인 콜백 — 누구의 연결인지는 state 가 안다(시작할 때 서버가 만든 일회용 값)
+  app.get(OAUTH_CALLBACK_PATH, async (c) => {
+    const page = (title: string, detail: string, status: 200 | 400 = 200) =>
+      c.html(
+        `<meta name="viewport" content="width=device-width"><h2>${title}</h2><p>${detail}</p>`,
+        status,
+      );
+    const error = c.req.query("error");
+    if (error) return page("로그인이 취소되었습니다", "0Siri 로 돌아가셔도 됩니다.", 400);
+    const state = c.req.query("state"),
+      code = c.req.query("code");
+    if (!state || !code)
+      return page("로그인 정보가 불완전합니다", "0Siri 에서 다시 시작해 주세요.", 400);
+    try {
+      const server = await mcp.finishOAuth(state, code, config.publicUrl);
+      return page(
+        `${escapeHtml(server.name)} 이(가) 연결되었습니다`,
+        "이 창을 닫고 0Siri 로 돌아가세요.",
+      );
+    } catch (e) {
+      console.error(`[osiri] MCP OAuth 콜백 실패: ${(e as Error).message}`);
+      return page("연결하지 못했습니다", escapeHtml((e as Error).message), 400);
+    }
+  });
   // 공개: 전화번호 로그인·초대 수락 (S1). 워커: 워커 토큰으로 인증 — 사용자 인증 미들웨어 앞에 둔다.
   app.route(
     "/api/auth",
@@ -356,7 +381,7 @@ export async function createApp(
   app.route("/api", historyRoutes(history));
   app.route("/api", locationRoutes(db));
   app.route("/api", imageRoutes(images));
-  app.route("/api", mcpRoutes(mcp));
+  app.route("/api", mcpRoutes(mcp, config.publicUrl));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
   app.route(

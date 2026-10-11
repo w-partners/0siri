@@ -84,6 +84,12 @@ const text = {
   tested: (n: number) => `테스트 통과 · 도구 ${n}개 (아직 저장하지 않았습니다)`,
   connect: "연결",
   connected: "연결했습니다",
+  oauthNote:
+    "그 서비스의 내 계정으로 로그인해 붙습니다 — 그 서비스에서 내가 할 수 있는 일만 0Siri 도 할 수 있습니다.",
+  oauthLogin: "로그인으로 연결",
+  oauthOpened: "로그인 창을 열었습니다. 로그인을 마치고 돌아와 «로그인 마쳤어요» 를 눌러 주세요.",
+  oauthDone: "로그인 마쳤어요",
+  oauthBadge: "내 계정으로 로그인됨",
   keysTitle: "모델 계정 (내 API 키)",
   publicKey: "공용 열쇠로 동작 중 · 월 상한 적용",
   keyRule: "키 원문은 서버 금고에만 들어가고, 화면에는 끝 4자리만 보입니다.",
@@ -354,6 +360,7 @@ function McpRow({
         <Text style={[s.small, { color: colors.miss }]}>{server.toolsError}</Text>
       ) : null}
       <Text style={s.small}>{server.url}</Text>
+      {server.oauth && <Chip tint={colors.okBg}>{text.oauthBadge}</Chip>}
       {server.headerNames.length > 0 && (
         <Text style={s.small}>
           {text.headers}: {server.headerNames.join(", ")}
@@ -445,6 +452,8 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
     set(value);
   };
   const header = authType === "header";
+  const oauth = authType === "oauth";
+  const [opened, setOpened] = useState(false);
   const ready = !!url.trim() && (!header || (!!headerName.trim() && !!headerValue));
   return (
     <View style={{ gap: 4 }}>
@@ -498,8 +507,11 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
           <Text style={s.small}>{text.headerNote}</Text>
         </>
       )}
+      {oauth && <Text style={s.small}>{text.oauthNote}</Text>}
       <ErrorNotice error={test.error} />
-      {tested ? (
+      {oauth ? (
+        opened && <Text style={s.small}>{text.oauthOpened}</Text>
+      ) : tested ? (
         <View style={{ gap: 8, marginVertical: 8 }}>
           <Text style={[s.small, mono]}>{text.tested(tested.length)}</Text>
           {tested.length === 0 && <Text style={s.small}>{text.noTools}</Text>}
@@ -517,52 +529,83 @@ function McpForm({ onConnected, onCancel }: { onConnected: () => void; onCancel:
         <Text style={s.small}>{text.testFirst}</Text>
       )}
       <ErrorNotice error={connect.error} />
-      <View style={[s.row, { gap: 8, flexWrap: "wrap", marginTop: 8 }]}>
-        <Button
-          small
-          busy={test.busy}
-          disabled={!ready}
-          onPress={() =>
-            test.run(async () => {
-              const result = await api.request<{ tools: TestedTool[] }>(
-                "/api/connections/mcp/test",
-                {
+      {oauth ? (
+        <View style={[s.row, { gap: 8, flexWrap: "wrap", marginTop: 8 }]}>
+          <Button
+            small
+            primary
+            busy={connect.busy}
+            disabled={!ready || !name.trim()}
+            onPress={() =>
+              connect.run(async () => {
+                const { authorizeUrl } = await api.request<{ authorizeUrl: string }>(
+                  "/api/connections/mcp/oauth/start",
+                  { name: name.trim(), url: url.trim() },
+                );
+                await Linking.openURL(authorizeUrl);
+                setOpened(true);
+              })
+            }
+          >
+            {text.oauthLogin}
+          </Button>
+          {opened && (
+            <Button small onPress={onConnected}>
+              {text.oauthDone}
+            </Button>
+          )}
+          <Button small onPress={onCancel}>
+            {text.cancel}
+          </Button>
+        </View>
+      ) : (
+        <View style={[s.row, { gap: 8, flexWrap: "wrap", marginTop: 8 }]}>
+          <Button
+            small
+            busy={test.busy}
+            disabled={!ready}
+            onPress={() =>
+              test.run(async () => {
+                const result = await api.request<{ tools: TestedTool[] }>(
+                  "/api/connections/mcp/test",
+                  {
+                    url: url.trim(),
+                    auth: header
+                      ? { type: authType, name: headerName.trim(), value: headerValue }
+                      : { type: authType },
+                  },
+                );
+                setTested(result.tools);
+              })
+            }
+          >
+            {text.test}
+          </Button>
+          <Button
+            small
+            primary
+            busy={connect.busy}
+            disabled={!tested || !name.trim()}
+            onPress={() =>
+              connect.run(async () => {
+                await api.request("/api/connections/mcp", {
+                  name: name.trim(),
                   url: url.trim(),
-                  auth: header
-                    ? { type: authType, name: headerName.trim(), value: headerValue }
-                    : { type: authType },
-                },
-              );
-              setTested(result.tools);
-            })
-          }
-        >
-          {text.test}
-        </Button>
-        <Button
-          small
-          primary
-          busy={connect.busy}
-          disabled={!tested || !name.trim()}
-          onPress={() =>
-            connect.run(async () => {
-              await api.request("/api/connections/mcp", {
-                name: name.trim(),
-                url: url.trim(),
-                ...(header ? { headers: { [headerName.trim()]: headerValue } } : {}),
-              });
-              setHeaderValue(""); // 헤더 값은 제출 뒤 화면에 남기지 않는다
-              notify(text.connected);
-              onConnected();
-            })
-          }
-        >
-          {text.connect}
-        </Button>
-        <Button small onPress={onCancel}>
-          {text.cancel}
-        </Button>
-      </View>
+                  ...(header ? { headers: { [headerName.trim()]: headerValue } } : {}),
+                });
+                setHeaderValue(""); // 헤더 값은 제출 뒤 화면에 남기지 않는다
+                notify(text.connected);
+                onConnected();
+              })
+            }
+          >
+            {text.connect}
+          </Button>
+          <Button small onPress={onCancel}>
+            {text.cancel}
+          </Button>
+        </View>
+      )}
     </View>
   );
 }

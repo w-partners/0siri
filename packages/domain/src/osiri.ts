@@ -550,8 +550,8 @@ export const MCP_AUTH_LABELS: Record<McpAuthType, string> = {
   header: "header",
   oauth: "OAuth",
 };
-/** 서버가 아직 받지 않는 MCP 인증 방식(503). 화면은 고를 수 없게 «지원 예정» 으로만 보인다 */
-export const MCP_AUTH_UNSUPPORTED: readonly McpAuthType[] = ["oauth"];
+/** 서버가 아직 받지 않는 MCP 인증 방식. 화면은 고를 수 없게 «지원 예정» 으로만 보인다 (OAuth 는 v0.46.0 부터 로그인으로 받는다) */
+export const MCP_AUTH_UNSUPPORTED: readonly McpAuthType[] = [];
 export const COMING_SOON_LABEL = "지원 예정";
 /** 아직 동작하지 않는 기능에 붙이는 칩 — 눌리는 척하는 버튼 대신 이것을 보인다 */
 export const NOT_READY_LABEL = "준비 중";

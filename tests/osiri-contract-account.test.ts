@@ -184,7 +184,7 @@ before(async () => {
     privateAccountRoutes(accounts, "http://t", (owner, input) => rooms.audit(owner, input)),
   );
   app.route("/api", memoryRoutes(memories));
-  app.route("/api", mcpRoutes(mcp));
+  app.route("/api", mcpRoutes(mcp, "http://localhost:8787"));
   app.route(
     "/api",
     storeRoutes(catalog, accounts, async () => undefined, join(directory, "teams")),
@@ -841,7 +841,7 @@ test("MCP: 목록에 도구 수·위험도별 수 · 연결 시험은 저장하�
           auth: { type: "oauth" },
         })
       ).status,
-      503,
+      422, // OAuth 는 헤더가 아니라 /connections/mcp/oauth/start 로그인으로 붙는다
     );
   assert.equal((await db.list("mcp-user", "mcp-servers")).length, 0);
 
