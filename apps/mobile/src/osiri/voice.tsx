@@ -11,7 +11,7 @@ export const VOICE_TEXT = {
   start: "음성으로 입력",
   stop: "음성 입력 끝내기",
   denied:
-    "마이크 권한이 없어 음성 입력을 할 수 없습니다. 휴대폰 설정에서 0Siri 의 마이크를 허용해 주세요.",
+    "마이크 권한이 없어 음성 입력을 할 수 없습니다. 앱은 휴대폰 설정에서 0Siri 의 마이크를, 웹은 주소창 옆 자물쇠에서 마이크를 허용해 주세요.",
   failed: (why: string) => `음성 입력이 멈췄습니다: ${why}`,
 };
 /** 사용자가 끝낸 것·말이 없던 것은 오류가 아니다 */
@@ -45,7 +45,13 @@ export function VoiceButton({
     setDraft(joined);
   });
   useSpeechRecognitionEvent("error", (event) => {
-    if (!QUIET.has(event.error)) onError(VOICE_TEXT.failed(event.message || event.error));
+    if (QUIET.has(event.error)) return;
+    // 웹 브라우저는 권한 거절을 시작 뒤 오류(not-allowed)로 알린다 — 권한 안내로 바꿔 보인다
+    onError(
+      event.error === "not-allowed" || event.error === "service-not-allowed"
+        ? VOICE_TEXT.denied
+        : VOICE_TEXT.failed(event.message || event.error),
+    );
   });
 
   // 웹에서 SpeechRecognition 이 없는 브라우저(파이어폭스 등)는 버튼을 내지 않는다 — 눌러도 안 되는 버튼은 두지 않는다

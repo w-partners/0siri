@@ -140,10 +140,16 @@ export class History {
       score: number;
     }>(
       `SELECT id,thread_id,role,text,1-(embedding<=>$2::vector) AS score FROM history WHERE owner=$1 AND thread_id<>$3 ORDER BY embedding<=>$2::vector LIMIT $4`,
-      [owner, toVector(vector as number[]), exceptThread ?? "", Math.min(limit, 30)],
+      // 같은 방에서 같은 말을 여러 번 한 줄은 한 번만 보인다 — 넉넉히 읽어 거른다
+      [owner, toVector(vector as number[]), exceptThread ?? "", Math.min(limit, 30) * 4],
     );
     const titles = await this.titles(owner);
-    return rows.map((row) => ({
+    const seen = new Set<string>();
+    const unique = rows.filter((row) => {
+      const key = `${row.thread_id}\n${row.text}`;
+      return !seen.has(key) && seen.add(key);
+    });
+    return unique.slice(0, Math.min(limit, 30)).map((row) => ({
       id: row.id,
       threadId: row.thread_id,
       title: this.title(titles, row.thread_id),

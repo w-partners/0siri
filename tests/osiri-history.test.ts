@@ -68,6 +68,13 @@ test("이전 대화 일괄 색인 → 다른 방에서 뜻으로 찾는다, 지�
   assert.equal(tax2[0]?.title, "room-tax", "제목 없는 방은 id");
 });
 
+test("같은 방에서 같은 말을 반복한 줄은 검색 결과에 한 번만", async () => {
+  const echo = [1, 2, 3].map((n) => msg(`e${n}`, "user", "너는 누구야? 한 문장으로."));
+  await history.index("me", "room-echo", echo);
+  const hits = await history.search("me", "너는 누구야", 5, "room-golf");
+  assert.equal(hits.filter((h) => h.threadId === "room-echo").length, 1);
+});
+
 test("저장할 때 새 줄만 색인, 최근 방 목록은 마지막 요청·답", async () => {
   const more = [...tax, msg("t3", "user", "그럼 종합소득세 신고는 5월이지?")];
   assert.equal(await history.index("me", "room-tax", more), 1);
