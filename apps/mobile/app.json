@@ -3,7 +3,7 @@
     "name": "0Siri",
     "slug": "osiri",
     "scheme": "osiri",
-    "version": "0.23.0",
+    "version": "0.24.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -27,11 +27,17 @@
           ],
           "category": ["BROWSABLE", "DEFAULT"]
         }
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundImage": "./assets/adaptive-icon-bg.png",
+        "backgroundColor": "#0B1A4A"
+      }
     },
     "web": {
       "bundler": "metro",
-      "name": "0Siri"
+      "name": "0Siri",
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-document-picker",
@@ -47,6 +53,7 @@
         }
       ],
       "./plugins/with-onnxruntime-version"
-    ]
+    ],
+    "icon": "./assets/icon.png"
   }
 }
