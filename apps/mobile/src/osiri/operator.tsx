@@ -41,8 +41,8 @@ import { LoadError, Meter } from "./team-goals";
 /** `GET /operator/packages` 항목 — 서버 `Operator.packages()` 가 돌려주는 모양 그대로. */
 type OperatorPackage = Awaited<ReturnType<Operator["packages"]>>[number];
 
-type Menu = "versions" | "skills" | "metrics" | "notices";
-const MENUS: Menu[] = ["versions", "skills", "metrics", "notices"];
+type Menu = "versions" | "yaml" | "skills" | "metrics" | "notices";
+const MENUS: Menu[] = ["versions", "yaml", "skills", "metrics", "notices"];
 type SourceKind = keyof VersionSource;
 const SOURCES: SourceKind[] = ["imageDigest", "mcpUrl"];
 
@@ -56,6 +56,7 @@ const text = {
   myPackages: "내 패키지",
   menu: {
     versions: "버전 제출",
+    yaml: "팀 YAML",
     skills: "스킬 승인",
     metrics: "지표",
     notices: "공지",
@@ -115,6 +116,13 @@ const text = {
   noticeHint: "구독자 방에 올라갈 공지를 적어 주세요",
   publish: "공지 발행",
   published: "공지를 발행했습니다",
+  yamlHint:
+    "역할·템플릿·도구 안내·보고 주기를 여기서 고칩니다. 저장하면 관리자 등록과 같은 검사를 거쳐 바로 반영되고 감사 기록에 남습니다.",
+  yamlSave: "저장",
+  yamlSaved: "팀 YAML 을 반영했습니다",
+  yamlRollback: "직전 판으로 되돌리기",
+  yamlRolledBack: "직전 판으로 되돌렸습니다",
+  yamlMissing: "YAML 파일을 읽지 못했습니다 — 관리자에게 다시 올려 달라고 하세요",
 };
 const mono = { fontFamily: fonts.mono };
 
@@ -508,18 +516,84 @@ function PackagePanel({
     <View style={{ gap: 16 }}>
       {header}
       <ErrorNotice error={act.error} />
-      {menu === "versions"
-        ? versionSection
-        : menu === "skills"
-          ? skillSection
-          : menu === "metrics"
-            ? metricSection
-            : noticeSection}
+      {menu === "versions" ? (
+        versionSection
+      ) : menu === "yaml" ? (
+        <TeamYaml packageId={pkg.id} onChanged={onChanged} />
+      ) : menu === "skills" ? (
+        skillSection
+      ) : menu === "metrics" ? (
+        metricSection
+      ) : (
+        noticeSection
+      )}
     </View>
   );
 }
 
 /** 지표 한 칸. 값이 null 이면 «측정 중» 칩. */
+// 운영자 자기 수정 (wgolf RPT-02 A) — GET/PUT /operator/packages/:id/yaml, 한 단계 되돌리기
+function TeamYaml({ packageId, onChanged }: { packageId: string; onChanged: () => void }) {
+  const { api, notify } = useWorkspace();
+  const path = `/api/operator/packages/${packageId}/yaml`;
+  const file = useLoad(
+    () => api.request<{ yaml: string | null; previous: string | null }>(path),
+    path,
+  );
+  const [draft, setDraft] = useState<string>();
+  const act = useAction();
+  const send = (url: string, body: unknown, method: "PUT" | "POST", done: string) =>
+    act.run(async () => {
+      await api.request(url, body, method);
+      notify(done);
+      setDraft(undefined);
+      file.retry();
+      onChanged();
+    });
+  if (!file.data)
+    return file.error ? (
+      <LoadError error={file.error} onRetry={file.retry} />
+    ) : (
+      <Skeleton rows={3} height={40} />
+    );
+  const value = draft ?? file.data.yaml ?? "";
+  return (
+    <Card style={{ gap: 10 }}>
+      <Text style={s.small}>{file.data.yaml === null ? text.yamlMissing : text.yamlHint}</Text>
+      <Field
+        label={text.menu.yaml}
+        multiline
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={value}
+        onChangeText={setDraft}
+        style={[mono, { minHeight: 260 }]}
+      />
+      <ErrorNotice error={act.error} />
+      <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+        <Button
+          small
+          primary
+          busy={act.busy}
+          disabled={draft === undefined || !draft.trim()}
+          onPress={() => void send(path, { yaml: draft }, "PUT", text.yamlSaved)}
+        >
+          {text.yamlSave}
+        </Button>
+        {file.data.previous !== null && (
+          <Button
+            small
+            busy={act.busy}
+            onPress={() => void send(`${path}/rollback`, {}, "POST", text.yamlRolledBack)}
+          >
+            {text.yamlRollback}
+          </Button>
+        )}
+      </View>
+    </Card>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string | null }) {
   return (
     <View style={[s.row, { gap: 6 }]}>
