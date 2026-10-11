@@ -73,20 +73,31 @@ interface AcpPipe {
 }
 
 /** 본인 PC 러너 하나. 러너가 바깥으로 접속해 오므로 PC 쪽에 열린 포트가 없다 */
-class Runner {
+export class Runner {
   private readonly pipes = new Map<
     string,
     { push: (text: string) => void; end: () => void; fail: (e: Error) => void }
+  >();
+  private readonly calls = new Map<
+    string,
+    { resolve: (value: unknown) => void; reject: (e: Error) => void }
   >();
   constructor(
     readonly socket: WebSocket,
     readonly cwd: string,
   ) {
     socket.on("message", (raw) => {
-      let msg: { t?: string; id?: string; d?: string; error?: string };
+      let msg: { t?: string; id?: string; d?: string; error?: string; value?: unknown };
       try {
         msg = JSON.parse(String(raw));
       } catch {
+        return;
+      }
+      const call = msg.t === "result" && msg.id ? this.calls.get(msg.id) : undefined;
+      if (call) {
+        this.calls.delete(msg.id as string);
+        if (msg.error) call.reject(new AppError(`내 PC: ${msg.error}`, 422));
+        else call.resolve(msg.value);
         return;
       }
       const pipe = msg.id ? this.pipes.get(msg.id) : undefined;
@@ -101,9 +112,39 @@ class Runner {
     socket.on("close", () => {
       for (const pipe of this.pipes.values()) pipe.fail(new Error("PC 러너 연결이 끊겼습니다"));
       this.pipes.clear();
+      for (const call of this.calls.values())
+        call.reject(new AppError("PC 러너 연결이 끊겼습니다", 409));
+      this.calls.clear();
     });
   }
-  open(provider: SubscriptionProvider): AcpPipe {
+  /** 러너에게 묻는다(tmux 창 목록·파일). 옛 러너는 답하지 않는다 — 시간 안에 없으면 새 러너를 받으라고 알린다 */
+  call<T>(op: string, args: object = {}, timeoutMs = 20_000): Promise<T> {
+    const id = randomBytes(8).toString("hex");
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.calls.delete(id);
+        reject(
+          new AppError(
+            "내 PC 러너가 답하지 않습니다 — 러너를 새로 받아(«설정 › 연결 › 내 PC») 다시 실행하세요",
+            503,
+          ),
+        );
+      }, timeoutMs);
+      this.calls.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v as T);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      this.socket.send(JSON.stringify({ t: "call", id, op, args }));
+    });
+  }
+  /** `cwd` 를 주면 PC 에서 그 폴더(tmux 창 폴더)에서 띄운다. provider 는 구독 둘 + tmux CLI 들 */
+  open(provider: string, cwd?: string): AcpPipe {
     const id = randomBytes(8).toString("hex");
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -119,9 +160,9 @@ class Runner {
       fail: (e) => controller.error(e),
     });
     const send = (msg: object) => this.socket.send(JSON.stringify(msg));
-    send({ t: "open", id, provider });
+    send({ t: "open", id, provider, ...(cwd ? { cwd } : {}) });
     return {
-      cwd: this.cwd,
+      cwd: cwd ?? this.cwd,
       // 러너가 메시지를 순서대로 처리하므로 이어지는 session/new 보다 먼저 만들어진다
       mkdir: async (path) => send({ t: "mkdir", path }),
       output,
@@ -141,6 +182,13 @@ class Runner {
 
 export class Subscriptions {
   private readonly runners = new Map<string, Runner>();
+  /** 그 사람 PC 러너(tmux 창 붙이기가 쓴다). 없으면 알리고 끝낸다 */
+  runner(owner: string): Runner {
+    const runner = this.runners.get(owner);
+    if (!runner)
+      throw new AppError("내 PC 러너가 연결되어 있지 않습니다 — PC 에서 러너를 실행하세요", 409);
+    return runner;
+  }
   constructor(
     private readonly db: Store,
     private readonly options: {

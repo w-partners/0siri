@@ -44,6 +44,7 @@ import {
   threadLocked,
 } from "./conversation-run";
 import type { Mood } from "./osiri/eve";
+import { PaneFileButton } from "./osiri/pane-send";
 import { SearchToolCard } from "./search-tool-card";
 import { t } from "./strings";
 import { TaskThreadCard } from "./thread-artifacts";
@@ -841,6 +842,15 @@ export function ChatScreen({
           {picking && (
             <Card style={{ marginBottom: 12, padding: 15 }}>
               <Text style={s.heading}>{t.chat.attach.title}</Text>
+              {roomId && (
+                <PaneFileButton
+                  roomId={roomId}
+                  onSent={(path) => {
+                    setDraft((d) => `${d}${d ? "\n" : ""}📎 PC 에 보냄: ${path}`);
+                    setPicking(false);
+                  }}
+                />
+              )}
               <ScrollView style={{ maxHeight: 230 }} keyboardShouldPersistTaps="handled">
                 {w.files.length ? (
                   w.files.map((f) => (

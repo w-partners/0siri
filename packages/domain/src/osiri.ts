@@ -172,6 +172,36 @@ export const SUBSCRIPTION_PLACE_LABELS = {
   server: "서버 컨테이너",
   pc: "내 PC",
 } as const satisfies Record<SubscriptionPlace, string>;
+/**
+ * 내 PC 의 tmux 창을 방에 붙인다(ACP, 마스터 2026-10-11 «ACP처럼 작동…파일 전송도»). 그 창에서 도는 CLI 의
+ * ACP 모드를 같은 폴더에서 띄워 같은 세션을 이어 쓴다. 러너가 이 이름으로 실행 명령을 고른다(apps/runner).
+ */
+export const PANE_CLIS = ["claude", "codex", "gemini", "grok", "qwen"] as const;
+export type PaneCli = (typeof PANE_CLIS)[number];
+export const PANE_CLI_LABELS = {
+  claude: "Claude Code",
+  codex: "Codex",
+  gemini: "Gemini CLI",
+  grok: "Grok",
+  qwen: "Qwen Code (Ollama 등 로컬 모델)",
+} as const satisfies Record<PaneCli, string>;
+/** `GET /api/panes` — 내 PC tmux 에서 CLI 가 도는 창 하나 */
+export interface TmuxPane {
+  target: string;
+  cli: PaneCli;
+  cwd: string;
+}
+/** `GET /api/panes/:threadId` — 방에 붙은 창 */
+export interface PaneLink {
+  id: string;
+  target: string;
+  cli: PaneCli;
+  cwd: string;
+  sessionId: string;
+  /** 방에 이미 보여 준 세션 기록 수 — 그 뒤(tmux 에서 오간 말)만 다음 턴 앞에 보여 준다 */
+  seen: number;
+  attachedAt: string;
+}
 /** `GET /api/subscription/sessions` — 내 PC(또는 내 컨테이너)의 세션 하나(ACP session/list) */
 export interface PcSession {
   sessionId: string;

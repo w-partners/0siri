@@ -49,13 +49,14 @@ import {
   waitForApproval,
 } from "./osiri/osiri-mcp.ts";
 import { otpGateway } from "./osiri/otp.ts";
+import { Panes, paneFileRoutes, paneRoutes } from "./osiri/panes.ts";
 import { roomPersona } from "./osiri/persona.ts";
 import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
-import { Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
+import { type PermissionAsk, Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
 import { gatewayLlm } from "./osiri/team-runtime.ts";
 import { Tmux, tmuxReplyRoutes, tmuxRoutes } from "./osiri/tmux.ts";
 import { rateLimit } from "./rate-limit.ts";
@@ -106,29 +107,40 @@ export async function createApp(
   const feed = new Feed(db, new SearchService(db));
   // 0Siri MCP — 구독 세션(그 사람 컨테이너·PC)에 밖에서 붙는 기억·도구. 승인은 앱 카드로
   const osiriMcp = new OsiriMcp(db, { memories, mcp, approvals, rooms });
+  // 구독 세션·붙인 tmux 창이 함께 쓰는 승인 게이트와 0Siri MCP
+  const agentGate = async (owner: string, ask: PermissionAsk) => {
+    const approval = await approvals.request(owner, {
+      roomId: await roomForThread(rooms, owner, ask.threadId),
+      toolName: `agent:${ask.kind}`,
+      input: ask.input,
+      title: ask.title,
+      summary: `${ask.actor} 이(가) 내 구독 작업 공간에서 하려는 일입니다 — 승인해야 진행됩니다`,
+      evidence: JSON.stringify(ask.input, null, 2)?.slice(0, 4000),
+      requestedBy: ask.actor,
+    });
+    return Boolean(await waitForApproval(approvals, owner, approval.id));
+  };
+  const agentMcp = async (owner: string, threadId: string) => [
+    {
+      type: "http" as const,
+      name: "0siri",
+      url: `${config.publicUrl.replace(/\/$/, "")}/api/mcp?thread=${encodeURIComponent(threadId)}`,
+      headers: [{ name: "Authorization", value: `Bearer ${await osiriMcp.tokenFor(owner)}` }],
+    },
+  ];
   const subscriptions = new Subscriptions(db, {
     dir: `${config.dataDir}/subscriptions`,
     ...(config.subscriptionImage ? { image: config.subscriptionImage } : {}),
-    gate: async (owner, ask) => {
-      const approval = await approvals.request(owner, {
-        roomId: await roomForThread(rooms, owner, ask.threadId),
-        toolName: `agent:${ask.kind}`,
-        input: ask.input,
-        title: ask.title,
-        summary: `${ask.actor} 이(가) 내 구독 작업 공간에서 하려는 일입니다 — 승인해야 진행됩니다`,
-        evidence: JSON.stringify(ask.input, null, 2)?.slice(0, 4000),
-        requestedBy: ask.actor,
-      });
-      return Boolean(await waitForApproval(approvals, owner, approval.id));
-    },
-    mcpServers: async (owner, threadId) => [
-      {
-        type: "http",
-        name: "0siri",
-        url: `${config.publicUrl.replace(/\/$/, "")}/api/mcp?thread=${encodeURIComponent(threadId)}`,
-        headers: [{ name: "Authorization", value: `Bearer ${await osiriMcp.tokenFor(owner)}` }],
-      },
-    ],
+    gate: agentGate,
+    mcpServers: agentMcp,
+  });
+  const paneFilesDir = `${config.dataDir}/pane-files`;
+  const panes = new Panes(db, {
+    runner: (owner) => subscriptions.runner(owner),
+    gate: agentGate,
+    mcpServers: agentMcp,
+    filesDir: paneFilesDir,
+    publicUrl: config.publicUrl,
   });
   // 팀 역할 모델: 구독을 켜 둔 사람은 그 구독 세션(역할마다 세션), 아니면 공용키
   const teamLlm: TeamLlmFor = async (owner, team) => {
@@ -172,7 +184,7 @@ export async function createApp(
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   const tmux = new Tmux(db, config.publicUrl);
-  agent.osiri = { memories, routing, subscriptions, tmux };
+  agent.osiri = { memories, routing, subscriptions, tmux, panes };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -287,6 +299,8 @@ export async function createApp(
   app.route("/api", osiriMcpRoutes(osiriMcp));
   // 붙인 tmux 의 회신도 턴 열쇠로 인증한다
   app.route("/api", tmuxReplyRoutes(tmux));
+  // 붙인 창에서 받은 파일 — 주소가 열쇠
+  app.route("/api", paneFileRoutes(paneFilesDir));
   app.route("/api/worker", workerRoutes(osiri));
   // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
   app.route("/api/worker", skillWorkerRoutes(skills));
@@ -328,6 +342,7 @@ export async function createApp(
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
+  app.route("/api", paneRoutes(panes));
   app.route(
     "/api",
     tmuxRoutes(tmux, (owner) => accounts.requireRole(owner, "admin")),

@@ -34,7 +34,12 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import type { PcSession, SubscriptionView } from "../../../../packages/domain/src/osiri";
+import type {
+  PaneLink,
+  PcSession,
+  SubscriptionView,
+  TmuxPane,
+} from "../../../../packages/domain/src/osiri";
 import {
   type AnsweredByView,
   APPROVAL_STATUS_LABELS,
@@ -48,6 +53,7 @@ import {
   GOAL_METRIC_LABELS,
   GOAL_UNBLOCK_LABEL,
   isHomeRoom,
+  PANE_CLI_LABELS,
   PERSONAL_ROOM_TITLE,
   PRESENCE_LABELS,
   PRESENCE_STATES,
@@ -181,9 +187,20 @@ const text = {
   on: "켬",
   off: "끔",
   roomSkills: "이 방에 장착된 스킬",
-  tmuxTitle: "내 PC 의 tmux 붙이기 (관리자)",
+  paneTitle: "내 PC 의 tmux 붙이기",
+  paneNote:
+    "내 PC tmux 에서 Claude Code·Codex·Gemini CLI·Grok·Qwen Code(Ollama 등) 가 도는 창을 고르면, 그 창이 쓰던 세션을 이 방이 이어 씁니다 — 이전 기록이 방에 뜨고, 도구 실행·승인·파일 주고받기가 됩니다. 내 PC 러너가 켜져 있어야 합니다 — «설정 › 연결 › 내 PC».",
+  paneLoad: "tmux 창 불러오기",
+  paneEmpty:
+    "CLI 가 도는 tmux 창이 없습니다 — PC 의 tmux 에서 claude·codex·gemini·grok·qwen 중 하나를 켜고 다시 불러오세요",
+  paneOn: (target: string, cli: string, cwd: string) =>
+    `붙어 있음 — ${target} · ${cli} · ${cwd}. 이 방의 답은 그 세션이 하고, 채팅의 «PC 로 파일 보내기» 로 파일을 넘깁니다`,
+  paneAttached: (n: number) => `붙였습니다 — 이전 기록 ${n}개는 다음 말을 걸 때 방에 먼저 보입니다`,
+  paneAttach: (target: string, cli: string) => `${target} · ${cli} 붙이기`,
+  paneDetach: "떼기 (다음 말부터 영시리가 답함)",
+  tmuxTitle: "tmux 웹훅 붙이기 (관리자 · 포털 에이전트)",
   tmuxNote:
-    "tmux 터미널에 글을 넣어 주는 웹훅 주소를 넣으면, 이 방에서 한 말이 그 터미널로 가고 터미널이 보낸 회신이 여기 답으로 뜹니다. 붙어 있는 동안은 영시리 모델 대신 그 터미널이 답합니다.",
+    "포털 에이전트처럼 웹훅으로 글을 받는 터미널용입니다. 웹훅 주소를 넣으면 이 방에서 한 말이 그 터미널로 가고 터미널이 보낸 회신이 여기 답으로 뜹니다. 보통은 위 «내 PC 의 tmux 붙이기» 를 쓰세요.",
   tmuxOn: (url: string) => `붙어 있음 — 이 방의 답은 ${url} 의 터미널이 합니다`,
   tmuxField: "웹훅 주소",
   tmuxAttach: "이 방에 붙이기",
@@ -697,6 +714,80 @@ function PcSessionPicker({ roomId }: { roomId: string }) {
 }
 
 /** 이 방에 내 PC 의 tmux 를 붙인다(관리자) — 서버 osiri/tmux.ts. 붙어 있으면 그 터미널이 답한다 */
+/** 내 PC tmux 창을 방에 붙인다(ACP — 같은 세션을 잇는다). 서버 osiri/panes.ts */
+function PanePicker({ roomId }: { roomId: string }) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const path = `/api/panes/${encodeURIComponent(roomId)}`;
+  const link = useLoad(() => api.request<{ link: PaneLink | null }>(path));
+  const [panes, setPanes] = useState<TmuxPane[] | null>(null);
+  const [notice, setNotice] = useState("");
+  const current = link.data?.link;
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.heading}>{text.paneTitle}</Text>
+      <Text style={s.muted}>
+        {current
+          ? text.paneOn(current.target, PANE_CLI_LABELS[current.cli], current.cwd)
+          : text.paneNote}
+      </Text>
+      {!!notice && <Text style={s.text}>{notice}</Text>}
+      {current ? (
+        <Button
+          small
+          disabled={act.busy}
+          onPress={() =>
+            act.run(async () => {
+              link.setData(await api.request(path, undefined, "DELETE"));
+              setNotice("");
+            })
+          }
+        >
+          {text.paneDetach}
+        </Button>
+      ) : (
+        <>
+          <Button
+            small
+            disabled={act.busy}
+            onPress={() =>
+              act.run(async () =>
+                setPanes((await api.request<{ panes: TmuxPane[] }>("/api/panes")).panes),
+              )
+            }
+          >
+            {text.paneLoad}
+          </Button>
+          {panes?.length === 0 && <Text style={s.muted}>{text.paneEmpty}</Text>}
+          {panes?.map((p) => (
+            <View key={`${p.target}-${p.cli}`} style={{ gap: 4 }}>
+              <Text style={s.muted}>{p.cwd}</Text>
+              <Button
+                small
+                disabled={act.busy}
+                onPress={() =>
+                  act.run(async () => {
+                    const r = await api.request<{ link: PaneLink; history: number }>(
+                      path,
+                      p,
+                      "PUT",
+                    );
+                    link.setData({ link: r.link });
+                    setNotice(text.paneAttached(r.history));
+                  })
+                }
+              >
+                {text.paneAttach(p.target, PANE_CLI_LABELS[p.cli])}
+              </Button>
+            </View>
+          ))}
+        </>
+      )}
+      <ErrorNotice error={act.error ?? link.error} />
+    </View>
+  );
+}
+
 function TmuxPicker({ roomId }: { roomId: string }) {
   const { api } = useWorkspace();
   const act = useAction();
@@ -813,6 +904,7 @@ function RoomSettings({
       <Button small icon={Sparkles} onPress={onSkills}>
         {text.roomSkills}
       </Button>
+      {!room.packageId && <PanePicker roomId={room.id} />}
       {!room.packageId && <TmuxPicker roomId={room.id} />}
       {!room.packageId && <PcSessionPicker roomId={room.id} />}
       {room.topic && (

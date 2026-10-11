@@ -457,7 +457,35 @@ export class ConversationAgent extends AbstractAgent {
           let route: ChatRoute | undefined;
           try {
             persona = await this.persona?.(this.owner, input.threadId);
-            // 0Siri tmux 붙이기: 이 방에 내 PC 의 tmux 를 붙였으면 그 터미널이 답한다(모델·구독보다 먼저)
+            // 0Siri tmux 창 붙이기(ACP): 그 창 CLI 의 같은 세션이 답한다 — 기록·도구·파일까지(모델·구독보다 먼저)
+            const panes = this.service.osiri?.panes;
+            const pane = await panes?.linked(this.owner, input.threadId);
+            if (panes && pane) {
+              const messageId = randomUUID();
+              subscriber.next({
+                type: EventType.RUN_STARTED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+              const emit = (delta: string) =>
+                subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta });
+              // 못 이으면 숨기지 않는다 — 답 자리에 무엇이 실패했는지 쓴다
+              await panes
+                .ask(this.owner, pane, latestText, emit, turn.signal)
+                .catch((error: unknown) =>
+                  emit(`\n\n⚠ ${error instanceof Error ? error.message : String(error)}`),
+                );
+              subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId });
+              subscriber.next({
+                type: EventType.RUN_FINISHED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.complete();
+              return;
+            }
+            // 0Siri tmux 웹훅 붙이기(관리자 보조): 이 방에 웹훅을 붙였으면 그 터미널이 답한다
             const tmux = this.service.osiri?.tmux;
             const link = await tmux?.linked(this.owner, input.threadId);
             if (tmux && link) {
