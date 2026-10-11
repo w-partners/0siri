@@ -33,7 +33,7 @@ import type { TeamSpec } from "./team-runtime.ts";
 export const MARKET_FEE_RATE = 0.3; // 앱스토어 벤치마크 30% (§18 결정). 변경은 여기 한 곳.
 export type Category = StoreCategory;
 export interface PackageRole {
-  name: string; // yaml 의 에이전트 키 (root, drafter …) — 필수 키는 REQUIRED_TEAM_ROLES
+  name: string; // yaml 의 에이전트 키 (root, drafter …) — 필수 키는 missingTeamRoles
   title: string; // 사용자에게 보이는 역할명
   summary: string;
 }
@@ -45,6 +45,8 @@ export interface TeamPackage {
   category: Category;
   summary: string;
   roles: PackageRole[];
+  /** 팀 YAML `package.x-osiri-flow` 의 역할들. 없으면 기본 흐름(DEFAULT_TEAM_FLOW) */
+  flow?: string[];
   approvalPoints: string[]; // 승인 없이는 나가지 않는 행위 (§7.1-4)
   reportCadence: ReportCadence;
   verified: boolean;
@@ -175,7 +177,10 @@ export class Catalog {
     if (input.roles.length < 3)
       throw new AppError("팀장·전문 역할 2개 이상·검수 역할이 있어야 팀입니다", 422);
     // 런타임(loadTeam)이 요구하는 것과 같은 목록 — 등록은 됐는데 팀이 뜨지 않는 패키지를 막는다
-    const missing = missingTeamRoles(input.roles.map((r) => r.name));
+    const missing = missingTeamRoles(
+      input.roles.map((r) => r.name),
+      input.flow,
+    );
     if (missing.length) throw new AppError(`팀 필수 역할이 없습니다: ${missing.join(", ")}`, 422);
     if (input.approvalPoints.length === 0)
       throw new AppError("승인 지점을 1개 이상 선언해야 합니다", 422);
@@ -659,11 +664,16 @@ export function storeRoutes(
         character: z.string().min(1).max(40),
         category: z.enum(STORE_CATEGORY_IDS),
         approval_points: z.array(z.string()),
+        "x-osiri-principal": z.string().min(1).max(20).optional(),
+        "x-osiri-flow": z
+          .array(z.object({ role: z.string().min(1) }))
+          .min(1)
+          .optional(),
       })
       .safeParse(spec?.package);
     if (!head.success)
       throw new AppError(
-        "팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다",
+        "팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다 (x-osiri-flow 는 [{role}] 목록, x-osiri-principal 은 20자 이내)",
         422,
       );
     const roles = Object.entries(spec.agents ?? {}).map(([name, agent]) => ({
@@ -681,6 +691,7 @@ export function storeRoutes(
       category: head.data.category,
       summary: body.summary,
       roles,
+      flow: head.data["x-osiri-flow"]?.map((step) => step.role),
       approvalPoints: head.data.approval_points,
       reportCadence: "weekly",
       verified: existing?.verified ?? false,
@@ -713,6 +724,7 @@ export function storeRoutes(
         roles: z.array(
           z.object({ name: z.string(), title: z.string(), summary: z.string().max(200) }),
         ),
+        flow: z.array(z.string().min(1)).min(1).optional(),
         approvalPoints: z.array(z.string()),
         verified: z.boolean().default(false),
         metrics: z

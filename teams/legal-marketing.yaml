@@ -10,6 +10,7 @@ package:
     - 홈페이지·SNS 발행
     - 상담 답변 전송
   report_cadence: weekly
+  x-osiri-principal: 변호사 # 팀장 지시 «변호사의 목표: …». 흐름(x-osiri-flow)은 기본(monitor → drafter → geo)
 
 agents:
   root:

@@ -35,7 +35,7 @@ const user = (path: string, body?: unknown, method?: string) =>
 /** 가짜 LLM — 역할별 정해진 JSON. 실제 모델 없이 흐름·게이트만 검증한다. */
 const fakeLlm = async (role: string, tier: number, _system?: string, prompt = "") => {
   llmCalls.push(`${role}:${tier}`);
-  if (role === "drafter" && prompt.startsWith("수정 요청:"))
+  if (prompt.startsWith("수정 요청:"))
     return JSON.stringify({
       title: REVISED,
       body: "핵심 답변: 1년/10년.",
@@ -225,8 +225,8 @@ test("목표 분해 → 파이프라인 → 승인 전 정지 → 승인 후 1�
   assert.equal(await runtime.tick(publishTool), "pending");
   assert.deepEqual(
     llmCalls.slice(callsBefore),
-    ["drafter:3", "reviewer:4"],
-    "감지부터 다시 하지 않는다",
+    ["geo:3", "reviewer:4"],
+    "감지부터 다시 하지 않는다 — 결과물을 내는 마지막 흐름 단계(geo)가 고친다",
   );
   assert.deepEqual(published, [], "수정 요청은 발행이 아니다");
   const again = (await (await user("/api/inbox")).json()) as {
@@ -309,5 +309,73 @@ test("목표 분해 → 파이프라인 → 승인 전 정지 → 승인 후 1�
   assert.ok(audit.some((a) => a.action === "approval.request" && a.approvalId === approvalId));
   assert.ok(
     audit.some((a) => a.action === "tool.external:site:site_publish_post" && a.result === "ok"),
+  );
+});
+
+test("x-osiri-flow·x-osiri-principal — 선언한 역할을 순서대로, 앞 단계 출력을 넘기고, 마지막 출력이 승인 카드", async () => {
+  const legal = await loadTeam("teams/legal-marketing.yaml");
+  const plan = {
+    title: "홀딩 3건 입금 확인 처리안",
+    body: "A·B 입금 확인, C 미입금",
+    sources: ["예약 #1"],
+  };
+  const team = {
+    ...legal,
+    package: {
+      ...legal.package,
+      "x-osiri-principal": "운영자",
+      "x-osiri-flow": [{ role: "lookup" }, { role: "plan" }],
+    },
+    agents: {
+      ...legal.agents,
+      lookup: { title: "조회", description: "", instruction: "" },
+      plan: { title: "처리안", description: "", instruction: "" },
+    },
+  };
+  const prompts: string[] = [];
+  const llm = async (role: string, tier: number, system: string, prompt: string) => {
+    prompts.push(`${role}| ${prompt}`);
+    if (role === "lookup") return "홀딩 3건, 입금 2건";
+    if (role === "plan") return JSON.stringify(plan);
+    return fakeLlm(role, tier, system, prompt);
+  };
+  const roomId = ((await (await user("/api/rooms")).json()) as { id: string }[])[0]?.id as string;
+  const { token } = (await (await user(`/api/rooms/${roomId}/worker-token`, {})).json()) as {
+    token: string;
+  };
+  const runtime = new TeamRuntime({
+    apiUrl: "http://osiri.test/api/worker",
+    workerToken: token,
+    team,
+    llm,
+    fetchFn: ((url: string, init?: RequestInit) => app.request(url, init)) as typeof fetch,
+    maxPolls: 1,
+    log: () => undefined,
+  });
+  reviewPass = true;
+  const goals = await runtime.decompose("이번 주 홀딩 정리");
+  assert.match(prompts[0] ?? "", /^root\| 운영자의 목표: /, "주체 문구는 package 에서");
+  const short = goals.find((g) => g.level === "short") as Parameters<
+    TeamRuntime["runShortGoal"]
+  >[0];
+  assert.equal(await runtime.runShortGoal(short), "pending");
+  assert.deepEqual(
+    prompts.slice(1).map((p) => p.split("|")[0]),
+    ["lookup", "plan", "reviewer"],
+    "monitor·drafter·geo 를 부르지 않는다",
+  );
+  assert.match(prompts[2] ?? "", /앞 단계\(lookup\) 결과: 홀딩 3건, 입금 2건/);
+  const inbox = (await (await user("/api/inbox")).json()) as { pending: { title: string }[] };
+  assert.ok(inbox.pending.some((p) => p.title === `발행 승인: ${plan.title}`));
+  const tasks = (
+    (await (await user(`/api/goals?room_id=${roomId}`)).json()) as {
+      level: string;
+      parentId: string | null;
+      assignee?: string;
+    }[]
+  ).filter((g) => g.level === "task" && g.parentId === short.id);
+  assert.ok(
+    tasks.length && tasks.every((t) => t.assignee === "plan"),
+    "작업은 결과물을 내는 역할이 맡는다",
   );
 });

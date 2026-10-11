@@ -1,12 +1,13 @@
 // 0Siri 팀 런타임 (0SIRI-SPEC §7, §8, §15.3, §15.4, §22-8).
 // 0Siri 서버 안에서 방마다 돈다(Provisioner). 모델 호출만 밖으로 — 그 사람 구독 세션(ACP) 또는 공용키 게이트웨이.
 // DB 직접 접근 금지 — 0Siri 워커 API 로만 말한다 (§15.4-6). 팀 정의(지시문)는 서버를 떠나지 않는다.
-// 흐름: 목표 분해(팀장) → 감지 → 초안 → GEO → 검수 → [승인 대기] → 발행 → 주간 보고. 유일한 정지점은 발행 전 승인.
+// 흐름: 목표 분해(팀장) → 흐름 단계(YAML x-osiri-flow, 기본 감지 → 초안 → GEO) → 검수 → [승인 대기] → 발행 → 주간 보고. 유일한 정지점은 발행 전 승인.
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import {
   missingTeamRoles,
   REJECT_REASON_KINDS,
+  teamFlow,
   type WorkerPresenceState,
 } from "../../../../packages/domain/src/osiri.ts";
 import { modelId, tierModels } from "./routing.ts";
@@ -20,9 +21,21 @@ export interface TeamAgent {
 }
 export interface TeamSpec {
   version: number;
-  package: { slug: string; name: string; character: string; approval_points: string[] };
+  package: {
+    slug: string;
+    name: string;
+    character: string;
+    approval_points: string[];
+    /** 팀장 지시의 주체 «<주체>의 목표: …». 없으면 «사용자» */
+    "x-osiri-principal"?: string;
+    /** 검수 앞 단계. 각 단계는 앞 단계 출력을 받고, 마지막 출력이 승인 카드 입력 {title, body, sources}. 없으면 DEFAULT_TEAM_FLOW */
+    "x-osiri-flow"?: { role: string }[];
+  };
   agents: Record<string, TeamAgent>;
 }
+/** YAML 에 선언된 흐름 역할 이름들(선언이 없으면 undefined → 기본 흐름) */
+export const declaredFlow = (pkg: TeamSpec["package"]) =>
+  pkg["x-osiri-flow"]?.map((step) => step.role);
 export type Llm = (role: string, tier: 2 | 3 | 4, system: string, user: string) => Promise<string>;
 export interface RuntimeOptions {
   apiUrl: string; // http://server/api/worker
@@ -69,7 +82,10 @@ type PublishTool = { serverId: string; tool: string };
 export async function loadTeam(path: string): Promise<TeamSpec> {
   const spec = parseYaml(await readFile(path, "utf8")) as TeamSpec;
   // 패키지 등록(Catalog.upsertPackage)과 같은 필수 역할 목록
-  const missing = missingTeamRoles(Object.keys(spec.agents ?? {}));
+  const missing = missingTeamRoles(
+    Object.keys(spec.agents ?? {}),
+    spec.package && declaredFlow(spec.package),
+  );
   if (missing.length) throw new Error(`팀 정의에 ${missing.join(", ")} 역할이 없습니다: ${path}`);
   if (!spec.package?.approval_points?.length) throw new Error("승인 지점이 선언되지 않았습니다");
   return spec;
@@ -85,7 +101,12 @@ export class TeamRuntime {
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (line: string) => void;
+  private readonly flow: readonly string[];
+  /** 결과물을 내는 역할(흐름의 마지막) — 수정 요청을 고치고, 분해한 작업을 맡는다 */
+  private readonly maker: string;
   constructor(private readonly options: RuntimeOptions) {
+    this.flow = teamFlow(declaredFlow(options.team.package));
+    this.maker = this.flow[this.flow.length - 1] as string;
     this.fetchFn = options.fetchFn ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.log = options.log ?? ((line) => console.log(`[team] ${line}`));
@@ -152,7 +173,10 @@ export class TeamRuntime {
   async decompose(goalText: string, existingLong?: Pick<Goal, "id">): Promise<Goal[]> {
     await this.presence("working", "목표 분해 중");
     const plan = json<{ long: string; mid: string[]; short: { title: string; tasks: string[] }[] }>(
-      await this.ask("root", `변호사의 목표: ${goalText}`),
+      await this.ask(
+        "root",
+        `${this.options.team.package["x-osiri-principal"] ?? "사용자"}의 목표: ${goalText}`,
+      ),
     );
     if (!Array.isArray(plan.mid) || !Array.isArray(plan.short) || plan.short.length === 0)
       throw new Error("팀장이 낸 분해 결과에 단기 목표가 없습니다 — 실행할 작업이 생기지 않습니다");
@@ -179,7 +203,7 @@ export class TeamRuntime {
           title: t,
           level: "task",
           parentId: short.id,
-          assignee: "drafter",
+          assignee: this.maker,
         });
     }
     await this.audit("root", "goal.decompose", "ok", { goal_id: long.id });
@@ -190,18 +214,20 @@ export class TeamRuntime {
     return [long, ...mids, ...shorts];
   }
 
-  /** 단기 목표 1건: 감지 → 초안 → GEO → 검수 → 승인 요청. 발행은 승인 토큰이 있을 때만. */
+  /** 단기 목표 1건: 흐름 단계(기본 감지 → 초안 → GEO) → 검수 → 승인 요청. 발행은 승인 토큰이 있을 때만. */
   async runShortGoal(goal: Goal, publishTool?: PublishTool): Promise<ShortGoalOutcome> {
     const progress = this.progressOf(goal);
     await this.presence("working", `${goal.title} 작업 중`);
-    const signal = await this.ask("monitor", `단기 목표: ${goal.title}`);
-    await progress(20, "detect");
-    const draft = json<Draft>(
-      await this.ask("drafter", `단기 목표: ${goal.title}\n감지 결과: ${signal}`),
-    );
-    await progress(40, "draft");
-    const geo = json<Draft>(await this.ask("geo", JSON.stringify(draft)));
-    await progress(60, "geo");
+    const steps = this.flow.length;
+    let output = "";
+    for (const [i, role] of this.flow.entries()) {
+      const prev = i ? `\n앞 단계(${this.flow[i - 1]}) 결과: ${output}` : "";
+      output = await this.ask(role, `단기 목표: ${goal.title}${prev}`);
+      // 화면 단계는 그대로(감지 20 · 초안 40 · geo 60) — 첫 단계 감지, 3단계 이상의 마지막 geo, 나머지 초안
+      const stage = i === 0 ? "detect" : i === steps - 1 && steps >= 3 ? "geo" : "draft";
+      await progress(20 + Math.round((40 * i) / Math.max(steps - 1, 1)), stage);
+    }
+    const geo = json<Draft>(output);
     const review = json<{ pass: boolean; reasons: string[]; reason_kind?: string }>(
       await this.ask("reviewer", JSON.stringify(geo)),
     );
@@ -368,7 +394,7 @@ export class TeamRuntime {
    */
   private async revise(goal: Goal, request: ApprovalRequest, note: string) {
     const fixed = json<Draft>(
-      await this.ask("drafter", `수정 요청: ${note}\n원고: ${JSON.stringify(request.input)}`),
+      await this.ask(this.maker, `수정 요청: ${note}\n원고: ${JSON.stringify(request.input)}`),
     );
     const review = json<{ pass: boolean; reasons: string[] }>(
       await this.ask("reviewer", JSON.stringify(fixed)),
@@ -391,7 +417,7 @@ export class TeamRuntime {
     });
     await this.say(
       `수정 요청(${note})대로 고쳤습니다. 고친 원고로 다시 승인을 요청드립니다.`,
-      "drafter",
+      this.maker,
     );
     return "pending" as const;
   }

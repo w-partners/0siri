@@ -40,12 +40,17 @@ import {
 } from "../apps/server/src/osiri/team-runtime.ts";
 import {
   BOARD_STAGES,
+  CORE_TEAM_ROLES,
+  DEFAULT_TEAM_FLOW,
   missingTeamRoles,
   PRESENCE_LABELS,
-  REQUIRED_TEAM_ROLES,
   STORE_CATEGORIES,
   STORE_CATEGORY_IDS,
 } from "../packages/domain/src/osiri.ts";
+
+/** 흐름을 선언하지 않은 팀의 필수 역할 */
+const REQUIRED_TEAM_ROLES = [...CORE_TEAM_ROLES, ...DEFAULT_TEAM_FLOW];
+
 import { grantOnSubscribe } from "./grant-on-subscribe.ts";
 import { browserFixture } from "./helpers/browser.ts";
 import { modelFixture } from "./helpers/model.ts";
@@ -133,13 +138,19 @@ test("#0 공용 상수 — 서버가 쓰는 목록이 domain/osiri.ts 한 곳에
     assert.ok(STORE_CATEGORY_IDS.includes(legacy), "이전 id 는 계속 유효");
   assert.equal(BOARD_STAGES.length, 7);
   assert.deepEqual(missingTeamRoles(["root", "reviewer"]), [
+    "publisher",
+    "analyst",
     "monitor",
     "drafter",
     "geo",
-    "publisher",
-    "analyst",
   ]);
-  assert.deepEqual(missingTeamRoles([...REQUIRED_TEAM_ROLES]), []);
+  assert.deepEqual(missingTeamRoles(REQUIRED_TEAM_ROLES), []);
+  // 흐름을 선언한 팀은 기본 흐름 역할(monitor·drafter·geo)이 없어도 된다 — 대신 선언한 역할이 있어야 한다
+  assert.deepEqual(missingTeamRoles([...CORE_TEAM_ROLES, "lookup"], ["lookup", "plan"]), ["plan"]);
+  assert.deepEqual(
+    missingTeamRoles([...CORE_TEAM_ROLES, "lookup", "plan"], ["lookup", "plan"]),
+    [],
+  );
 });
 
 test("#1 #2 MCP isError → failed, 팀은 발행 완료로 올리지 않는다 · 승인 단계 목표는 tick 이 이어 간다", async () => {

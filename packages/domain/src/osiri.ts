@@ -126,20 +126,16 @@ export const STORE_CATEGORY_LABELS: Record<StoreCategory, string> = {
 export const STORE_CATEGORY_ALL_LABEL = "전체";
 /** 해지·탈퇴 후 데이터 보존 일수 (§6.2, §15.4.5, §24-13) */
 export const RETENTION_DAYS = 30;
-/** 팀 패키지·팀 YAML 이 반드시 가져야 하는 역할 키. 패키지 등록과 런타임 로드가 같은 목록을 본다. */
-export const REQUIRED_TEAM_ROLES = [
-  "root",
-  "monitor",
-  "drafter",
-  "geo",
-  "reviewer",
-  "publisher",
-  "analyst",
-] as const;
-export type RequiredTeamRole = (typeof REQUIRED_TEAM_ROLES)[number];
-/** 빠진 필수 역할 키. 비어 있으면 통과. */
-export const missingTeamRoles = (names: readonly string[]): RequiredTeamRole[] =>
-  REQUIRED_TEAM_ROLES.filter((role) => !names.includes(role));
+/** 어느 팀이든 있어야 하는 역할 — 분해(root) · 검수 · 승인 뒤 실행 · 주간 보고 */
+export const CORE_TEAM_ROLES = ["root", "reviewer", "publisher", "analyst"] as const;
+/** 검수 앞 단계를 팀 YAML(`package.x-osiri-flow`)에 선언하지 않았을 때의 흐름 */
+export const DEFAULT_TEAM_FLOW = ["monitor", "drafter", "geo"] as const;
+/** 팀이 실제로 돌릴 검수 앞 단계 역할들 */
+export const teamFlow = (flow?: readonly string[]): readonly string[] =>
+  flow?.length ? flow : DEFAULT_TEAM_FLOW;
+/** 빠진 필수 역할 키(공통 + 흐름 역할). 비어 있으면 통과. 패키지 등록·운영자 심사·런타임 로드가 같은 함수를 본다. */
+export const missingTeamRoles = (names: readonly string[], flow?: readonly string[]): string[] =>
+  [...new Set([...CORE_TEAM_ROLES, ...teamFlow(flow)])].filter((role) => !names.includes(role));
 
 // ---- 모델 라우팅 (§11, §13) ----
 export const MODEL_PROVIDERS = ["openai", "anthropic", "google"] as const;

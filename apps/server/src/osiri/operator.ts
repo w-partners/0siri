@@ -163,7 +163,10 @@ export const DEFAULT_REVIEW_CHECKS: Record<ReviewItem, ReviewCheck> = {
   token_bound_to_input: manual,
   audit_has_approval_id: manual,
   reviewer_rejects: ({ pkg }) => {
-    const missing = missingTeamRoles(pkg.roles.map((role) => role.name));
+    const missing = missingTeamRoles(
+      pkg.roles.map((role) => role.name),
+      pkg.flow,
+    );
     return missing.length
       ? { pass: false, reason: `팀 필수 역할이 없습니다: ${missing.join(", ")}` }
       : manual();
