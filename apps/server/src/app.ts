@@ -32,9 +32,10 @@ import {
   privateAccountRoutes,
   publicAccountRoutes,
 } from "./osiri/account-routes.ts";
-import { Accounts } from "./osiri/accounts.ts";
+import { Accounts, requireNotSuspended } from "./osiri/accounts.ts";
 import { adminViewRoutes } from "./osiri/admin-view.ts";
 import { Approvals } from "./osiri/approvals.ts";
+import { Bots, botRoutes } from "./osiri/bots.ts";
 import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
@@ -61,9 +62,9 @@ import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
-import { Catalog, storeRoutes } from "./osiri/store.ts";
+import { Catalog, type Subscription, storeRoutes, subscriptionControls } from "./osiri/store.ts";
 import { type PermissionAsk, Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
-import { gatewayLlm } from "./osiri/team-runtime.ts";
+import { gatewayLlm, loadTeam } from "./osiri/team-runtime.ts";
 import { Tmux, tmuxReplyRoutes, tmuxRoutes } from "./osiri/tmux.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { SearchService } from "./search.ts";
@@ -120,6 +121,52 @@ export async function createApp(
   const skills = new Skills(db, rooms);
   const operator = new Operator(db, rooms, catalog, accounts, skills);
   const feed = new Feed(db, new SearchService(db));
+  // 단체 톡 봇 — 방장의 구독 팀 도구를 방장 이름으로 부른다. 워커와 같은 게이트(정지·팀 중지·일시정지·끈 도구는 Mcp.call)
+  const bots = new Bots(db, groups, {
+    teamTools: async (owner) =>
+      Promise.all(
+        (await db.list<Subscription>(owner, "subscriptions"))
+          .filter((s) => s.status !== "ended")
+          .map(async (s) => {
+            const pkg = await catalog.packageById(s.packageId);
+            const team = await loadTeam(pkg.runtime.teamYaml);
+            const tools = Object.values(team.agents).flatMap((a) => a["x-osiri-tools"] ?? []);
+            return {
+              roomId: s.roomId,
+              packageId: pkg.id,
+              team: pkg.name,
+              tools: [...new Set(tools)],
+            };
+          }),
+      ),
+    runTool: async (bot, args) => {
+      await requireNotSuspended(db, bot.ownerId);
+      const pkg = await catalog.packageById(bot.packageId);
+      if (pkg.halted)
+        throw new AppError(`관리자가 이 팀의 실행을 중지했습니다: ${pkg.halted.reason}`, 403);
+      const controls = await subscriptionControls(db, bot.ownerId, bot.roomId);
+      if (controls.paused) throw new AppError("구독자가 이 팀을 일시정지했습니다", 403);
+      const [serverName, toolName] = bot.tool.includes(":")
+        ? (bot.tool.split(":", 2) as [string, string])
+        : [undefined, bot.tool];
+      for (const server of await mcp.list(bot.ownerId)) {
+        if (serverName && server.name !== serverName) continue;
+        if ((await mcp.toolsFor(bot.ownerId, server.id)).some((t) => t.name === toolName))
+          return mcp.call(bot.ownerId, {
+            roomId: bot.roomId,
+            serverId: server.id,
+            tool: toolName,
+            args,
+            actor: `bot:${bot.name}`,
+            controls,
+          });
+      }
+      throw new AppError(
+        `도구 ${bot.tool} 이(가) 방장의 연결에 없습니다 — 설정 › 연결에서 붙이세요`,
+        404,
+      );
+    },
+  });
   // 0Siri MCP — 구독 세션(그 사람 컨테이너·PC)에 밖에서 붙는 기억·도구. 승인은 앱 카드로
   const osiriMcp = new OsiriMcp(db, { memories, mcp, approvals, rooms, history });
   // 구독 세션·붙인 tmux 창이 함께 쓰는 승인 게이트와 0Siri MCP
@@ -179,6 +226,7 @@ export async function createApp(
     routing,
     skills,
     feed,
+    bots,
     subscriptions,
     osiriMcp,
     operator,
@@ -393,6 +441,7 @@ export async function createApp(
       return { pkg: { id: pkg.id, name: pkg.name }, operators: await operator.operatorsOf(pkg.id) };
     }),
   );
+  app.route("/api", botRoutes(bots));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
   app.route(

@@ -737,3 +737,13 @@ export const FEED_RESULTS_PER_RUN = 5;
 export const GROUP_TITLE_MAX = 40;
 export const GROUP_NICKNAME_MAX = 20;
 export const GROUP_TEXT_MAX = 4000;
+/** 단체 톡 봇 — 방장이 구독 팀의 도구 하나를 봇으로 (트리거: 특정 단어 · /명령어 · 크론) */
+export const GROUP_BOT_TRIGGERS = ["keyword", "command", "cron"] as const;
+export type GroupBotTrigger = (typeof GROUP_BOT_TRIGGERS)[number];
+export const GROUP_BOT_TRIGGER_LABELS: Record<GroupBotTrigger, string> = {
+  keyword: "특정 단어",
+  command: "/명령어",
+  cron: "크론",
+};
+/** 봇 답 한 번의 최대 글자 — 넘으면 자른다 */
+export const GROUP_BOT_REPLY_MAX = 1500;

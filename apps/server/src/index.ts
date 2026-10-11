@@ -17,6 +17,7 @@ const { app, agent, osiri } = await createApp(db, config);
 if (config.taskWorkerEnabled) {
   agent.start();
   osiri.feed.start();
+  osiri.bots.start();
 }
 const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
   runtime: osiri.teamRuntime,

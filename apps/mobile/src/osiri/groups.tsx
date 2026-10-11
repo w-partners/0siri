@@ -1,14 +1,18 @@
 // 단체 톡 화면 — 목록(메뉴 안) · 대화 · 멤버(초대·닉네임·나가기). 서버 osiri/groups.ts 가 정본.
 // ponytail: 새 메시지는 3초마다 after=seq 로 묻는다(서버 주석과 같은 상한).
 import * as Clipboard from "expo-clipboard";
-import { ArrowLeft, MessagesSquare, Users } from "lucide-react-native";
+import { ArrowLeft, Bot, MessagesSquare, Users } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
+  GROUP_BOT_TRIGGER_LABELS,
+  GROUP_BOT_TRIGGERS,
   GROUP_NICKNAME_MAX,
   GROUP_TEXT_MAX,
   GROUP_TITLE_MAX,
+  type GroupBotTrigger,
 } from "../../../../packages/domain/src/osiri";
+import type { GroupBot, TeamTools } from "../../../server/src/osiri/bots.ts";
 import type { Group, GroupMessage } from "../../../server/src/osiri/groups.ts";
 import {
   Button,
@@ -53,6 +57,26 @@ const text = {
   leave: "이 방 나가기",
   back: "뒤로",
   empty: "아직 대화가 없어요",
+  bots: "봇",
+  noBots: "아직 봇이 없어요",
+  addBot: "봇 만들기",
+  removeBot: "빼기",
+  noTeams:
+    "구독 중인 에이전트 팀이 없어요 — 스토어에서 팀을 구독하면 그 팀의 도구로 봇을 만들 수 있어요",
+  pickTeam: "어느 팀의 도구로 만들까요",
+  noTools: "이 팀은 봇으로 쓸 도구를 열어 두지 않았어요(팀 YAML x-osiri-tools)",
+  pickTool: "도구",
+  botName: "봇 이름",
+  trigger: "언제 움직일까요",
+  triggerValue: {
+    keyword: "이 단어가 들어간 말에",
+    command: "명령어",
+    cron: "크론(분 시 일 월 요일, 서울 시각)",
+  },
+  triggerExample: { keyword: "티타임", command: "/티타임", cron: "0 9 * * 1" },
+  args: "도구 인자(JSON) — 글자 값의 {text} 는 명령어 뒤 글·그 말 전체로 바뀝니다",
+  badArgs: "도구 인자가 JSON 이 아닙니다",
+  makeBot: "봇 넣기",
 };
 
 /** 메뉴의 단체 톡 목록 + 만들기 */
@@ -423,6 +447,7 @@ function Members({
           )}
         </View>
       )}
+      {group.kind !== "operator" && <BotPanel group={group} />}
       {!group.mine && me && (
         <Button
           small
@@ -437,6 +462,163 @@ function Members({
         >
           {text.leave}
         </Button>
+      )}
+      <ErrorNotice error={act.error} />
+    </View>
+  );
+}
+
+/** 이 방의 봇 — 멤버는 보고, 방장은 구독 팀 도구로 만들고 뺀다 */
+function BotPanel({ group }: { group: GroupView }) {
+  const { api } = useWorkspace();
+  const bots = useLoad(() => api.request<GroupBot[]>(`/api/groups/${group.id}/bots`), group.id);
+  const [options, setOptions] = useState<TeamTools[]>();
+  const [roomId, setRoomId] = useState("");
+  const [tool, setTool] = useState("");
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<GroupBotTrigger>("command");
+  const [value, setValue] = useState("");
+  const [args, setArgs] = useState("{}");
+  const act = useAction();
+  const team = options?.find((t) => t.roomId === roomId);
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={s.label}>{text.bots}</Text>
+      <ErrorNotice error={bots.error} />
+      {bots.data?.length === 0 && <Text style={s.small}>{text.noBots}</Text>}
+      {bots.data?.map((b) => (
+        <View key={b.id} style={[s.row, { gap: 8 }]}>
+          <Bot size={16} color={colors.muted} />
+          <View style={{ flex: 1 }}>
+            <Text style={s.text}>
+              {b.name} · {b.teamName}
+            </Text>
+            <Text style={s.small}>
+              {GROUP_BOT_TRIGGER_LABELS[b.trigger.kind]}{" "}
+              {b.trigger.kind === "command" ? `/${b.trigger.value}` : b.trigger.value} → {b.tool}
+            </Text>
+          </View>
+          {group.mine && (
+            <Button
+              small
+              danger
+              disabled={act.busy}
+              onPress={() =>
+                act.run(async () => {
+                  await api.request(`/api/groups/${group.id}/bots/${b.id}`, undefined, "DELETE");
+                  bots.retry();
+                })
+              }
+            >
+              {text.removeBot}
+            </Button>
+          )}
+        </View>
+      ))}
+      {group.mine && !options && (
+        <Button
+          small
+          busy={act.busy}
+          onPress={() =>
+            act.run(async () =>
+              setOptions(await api.request<TeamTools[]>(`/api/groups/${group.id}/bot-options`)),
+            )
+          }
+        >
+          {text.addBot}
+        </Button>
+      )}
+      {options?.length === 0 && <Text style={s.small}>{text.noTeams}</Text>}
+      {!!options?.length && (
+        <View style={{ gap: 6 }}>
+          <Text style={s.small}>{text.pickTeam}</Text>
+          <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+            {options.map((t) => (
+              <Button
+                key={t.roomId}
+                small
+                primary={t.roomId === roomId}
+                onPress={() => {
+                  setRoomId(t.roomId);
+                  setTool("");
+                }}
+              >
+                {t.team}
+              </Button>
+            ))}
+          </View>
+          {team && team.tools.length === 0 && <Text style={s.small}>{text.noTools}</Text>}
+          {team && team.tools.length > 0 && (
+            <>
+              <Text style={s.small}>{text.pickTool}</Text>
+              <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                {team.tools.map((t) => (
+                  <Button key={t} small primary={t === tool} onPress={() => setTool(t)}>
+                    {t}
+                  </Button>
+                ))}
+              </View>
+            </>
+          )}
+          {tool && (
+            <>
+              <Field
+                label={text.botName}
+                value={name}
+                maxLength={GROUP_NICKNAME_MAX}
+                onChangeText={setName}
+              />
+              <Text style={s.small}>{text.trigger}</Text>
+              <View style={[s.row, { gap: 6 }]}>
+                {GROUP_BOT_TRIGGERS.map((k) => (
+                  <Button key={k} small primary={k === kind} onPress={() => setKind(k)}>
+                    {GROUP_BOT_TRIGGER_LABELS[k]}
+                  </Button>
+                ))}
+              </View>
+              <Field
+                label={text.triggerValue[kind]}
+                placeholder={text.triggerExample[kind]}
+                value={value}
+                maxLength={100}
+                onChangeText={setValue}
+              />
+              <Field label={text.args} value={args} autoCapitalize="none" onChangeText={setArgs} />
+              <Button
+                small
+                primary
+                busy={act.busy}
+                disabled={!name.trim() || !value.trim()}
+                onPress={() =>
+                  act.run(async () => {
+                    let parsed: unknown;
+                    try {
+                      parsed = JSON.parse(args || "{}");
+                    } catch {
+                      throw new Error(text.badArgs);
+                    }
+                    await api.request(`/api/groups/${group.id}/bots`, {
+                      roomId,
+                      tool,
+                      name: name.trim(),
+                      args: parsed,
+                      trigger: { kind, value: value.trim() },
+                    });
+                    setOptions(undefined);
+                    setRoomId("");
+                    setTool("");
+                    setName("");
+                    setValue("");
+                    setArgs("{}");
+                    bots.retry();
+                  })
+                }
+              >
+                {text.makeBot}
+              </Button>
+            </>
+          )}
+        </View>
       )}
       <ErrorNotice error={act.error} />
     </View>
