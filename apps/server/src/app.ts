@@ -57,6 +57,7 @@ import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, storeRoutes } from "./osiri/store.ts";
 import { Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
 import { gatewayLlm } from "./osiri/team-runtime.ts";
+import { Tmux, tmuxReplyRoutes, tmuxRoutes } from "./osiri/tmux.ts";
 import { rateLimit } from "./rate-limit.ts";
 import { SearchService } from "./search.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -170,7 +171,8 @@ export async function createApp(
       ),
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
-  agent.osiri = { memories, routing, subscriptions };
+  const tmux = new Tmux(db, config.publicUrl);
+  agent.osiri = { memories, routing, subscriptions, tmux };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -283,6 +285,8 @@ export async function createApp(
     );
   // 0Siri MCP 는 자기 열쇠로 인증한다(사용자 로그인 토큰이 아니다) — 인증 미들웨어보다 앞에
   app.route("/api", osiriMcpRoutes(osiriMcp));
+  // 붙인 tmux 의 회신도 턴 열쇠로 인증한다
+  app.route("/api", tmuxReplyRoutes(tmux));
   app.route("/api/worker", workerRoutes(osiri));
   // 워커 토큰 인증은 바로 위 workerRoutes 의 미들웨어가 건다 — 순서를 바꾸지 않는다
   app.route("/api/worker", skillWorkerRoutes(skills));
@@ -324,6 +328,10 @@ export async function createApp(
   app.route("/api", memoryRoutes(memories));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
+  app.route(
+    "/api",
+    tmuxRoutes(tmux, (owner) => accounts.requireRole(owner, "admin")),
+  );
   app.route("/api", osiriMcpKeyRoutes(osiriMcp, config.publicUrl));
   app.route(
     "/api",

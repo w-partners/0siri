@@ -457,6 +457,33 @@ export class ConversationAgent extends AbstractAgent {
           let route: ChatRoute | undefined;
           try {
             persona = await this.persona?.(this.owner, input.threadId);
+            // 0Siri tmux 붙이기: 이 방에 내 PC 의 tmux 를 붙였으면 그 터미널이 답한다(모델·구독보다 먼저)
+            const tmux = this.service.osiri?.tmux;
+            const link = await tmux?.linked(this.owner, input.threadId);
+            if (tmux && link) {
+              const messageId = randomUUID();
+              subscriber.next({
+                type: EventType.RUN_STARTED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+              // 못 받으면 숨기지 않는다 — 답 자리에 무엇이 실패했는지 쓴다
+              const delta = await tmux
+                .ask(this.owner, link, latestText, turn.signal)
+                .catch(
+                  (error: unknown) => `⚠ ${error instanceof Error ? error.message : String(error)}`,
+                );
+              subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta });
+              subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId });
+              subscriber.next({
+                type: EventType.RUN_FINISHED,
+                threadId: input.threadId,
+                runId: input.runId,
+              });
+              subscriber.complete();
+              return;
+            }
             // 0Siri 구독 사용: 켜 둔 사람은 공용키·BYOK 대신 본인 구독(서버 컨테이너·내 PC)으로 답한다
             const subscriptions = this.service.osiri?.subscriptions;
             const sub = await subscriptions?.activeFor(this.owner);

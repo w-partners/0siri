@@ -181,6 +181,13 @@ const text = {
   on: "켬",
   off: "끔",
   roomSkills: "이 방에 장착된 스킬",
+  tmuxTitle: "내 PC 의 tmux 붙이기 (관리자)",
+  tmuxNote:
+    "tmux 터미널에 글을 넣어 주는 웹훅 주소를 넣으면, 이 방에서 한 말이 그 터미널로 가고 터미널이 보낸 회신이 여기 답으로 뜹니다. 붙어 있는 동안은 영시리 모델 대신 그 터미널이 답합니다.",
+  tmuxOn: (url: string) => `붙어 있음 — 이 방의 답은 ${url} 의 터미널이 합니다`,
+  tmuxField: "웹훅 주소",
+  tmuxAttach: "이 방에 붙이기",
+  tmuxDetach: "떼기 (다음 말부터 영시리가 답함)",
   pcTitle: "내 PC 의 세션 잇기",
   pcNote:
     "내 PC 에서 쓰던 Claude Code·Codex 대화(tmux 등)를 이 방에 붙입니다. 영시리가 그 대화를 이어 쓰고, 매번 PC 쪽에서 더한 내용까지 다시 읽습니다. 같은 세션을 PC 와 앱에서 동시에 쓰지 마세요.",
@@ -689,6 +696,56 @@ function PcSessionPicker({ roomId }: { roomId: string }) {
   );
 }
 
+/** 이 방에 내 PC 의 tmux 를 붙인다(관리자) — 서버 osiri/tmux.ts. 붙어 있으면 그 터미널이 답한다 */
+function TmuxPicker({ roomId }: { roomId: string }) {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const me = useLoad(() => api.request<{ user: { role: string } }>("/api/me"), "me");
+  const path = `/api/tmux/${encodeURIComponent(roomId)}`;
+  const link = useLoad(() => api.request<{ link: { webhook: string } | null }>(path));
+  const [webhook, setWebhook] = useState("");
+  if (me.data?.user.role !== "admin") return null;
+  const current = link.data?.link?.webhook;
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={s.heading}>{text.tmuxTitle}</Text>
+      <Text style={s.muted}>{current ? text.tmuxOn(current) : text.tmuxNote}</Text>
+      {current ? (
+        <Button
+          small
+          disabled={act.busy}
+          onPress={() =>
+            act.run(async () => link.setData(await api.request(path, undefined, "DELETE")))
+          }
+        >
+          {text.tmuxDetach}
+        </Button>
+      ) : (
+        <>
+          <Field
+            label={text.tmuxField}
+            value={webhook}
+            placeholder="http://100.x.x.x:9400/api/webhook/<터미널>"
+            onChangeText={setWebhook}
+          />
+          <Button
+            small
+            disabled={act.busy || !/^https?:\/\/\S+$/.test(webhook.trim())}
+            onPress={() =>
+              act.run(async () =>
+                link.setData(await api.request(path, { webhook: webhook.trim() }, "PUT")),
+              )
+            }
+          >
+            {text.tmuxAttach}
+          </Button>
+        </>
+      )}
+      <ErrorNotice error={act.error ?? link.error} />
+    </View>
+  );
+}
+
 /** 방별 설정 (마스터 2026-10-10 «방별 설정이 있어야 하지 않아?»): 이름(내가 만든 방) · 고정 · 알림 · 이 방 스킬 · 삭제(내가 만든 방). */
 function RoomSettings({
   room,
@@ -756,6 +813,7 @@ function RoomSettings({
       <Button small icon={Sparkles} onPress={onSkills}>
         {text.roomSkills}
       </Button>
+      {!room.packageId && <TmuxPicker roomId={room.id} />}
       {!room.packageId && <PcSessionPicker roomId={room.id} />}
       {room.topic && (
         <Button
