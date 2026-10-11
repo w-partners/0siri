@@ -384,7 +384,15 @@ export async function createApp(
   app.route("/api", locationRoutes(db));
   app.route("/api", imageRoutes(images));
   app.route("/api", mcpRoutes(mcp, config.publicUrl));
-  app.route("/api", groupRoutes(groups, config.publicUrl));
+  app.route(
+    "/api",
+    groupRoutes(groups, config.publicUrl, async (owner, roomId) => {
+      const room = await rooms.get(owner, roomId);
+      if (!room.packageId) throw new AppError("팀 방에서만 운영자와 대화할 수 있습니다", 409);
+      const pkg = await catalog.packageById(room.packageId);
+      return { pkg: { id: pkg.id, name: pkg.name }, operators: await operator.operatorsOf(pkg.id) };
+    }),
+  );
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
   app.route(

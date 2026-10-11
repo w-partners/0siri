@@ -524,7 +524,14 @@ function Shell({
   const main = group ? (
     <GroupScreen key={group.id} group={group} onBack={() => setGroup(undefined)} />
   ) : room ? (
-    <RoomScreen key={room.id} room={room} focus={focus} onBack={closeRoom} onOpenRoom={openRoom} />
+    <RoomScreen
+      key={room.id}
+      room={room}
+      focus={focus}
+      onBack={closeRoom}
+      onOpenRoom={openRoom}
+      onOpenGroup={setGroup}
+    />
   ) : tab === "rooms" ? (
     personal ? (
       <RoomScreen key="home" home room={personal} onBack={closeRoom} onOpenRoom={openRoom} />

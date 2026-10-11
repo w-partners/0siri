@@ -116,6 +116,7 @@ let warnedPlaintextHeaders = false;
 export class Mcp {
   private readonly clients = new Map<string, Promise<Client>>();
   private readonly versions = new Map<string, string>();
+  private readonly refreshing = new Map<string, Promise<McpServer>>();
   constructor(
     private readonly db: Store,
     private readonly rooms: Rooms,
@@ -207,6 +208,20 @@ export class Mcp {
   private async freshOAuth(scope: string, server: McpServer): Promise<McpServer> {
     const tokens = this.openOAuth(server);
     if (!tokens?.expiresAt || Date.parse(tokens.expiresAt) - Date.now() > 60_000) return server;
+    // refresh 는 회전형일 수 있다(W: 쓴 refresh 는 바로 무효) — 같은 연결의 동시 갱신은 한 번만 보내고 결과를 나눠 쓴다
+    const key = `${scope}:${server.id}`;
+    let pending = this.refreshing.get(key);
+    if (!pending) {
+      pending = this.refreshOAuth(scope, server, tokens).finally(() => this.refreshing.delete(key));
+      this.refreshing.set(key, pending);
+    }
+    return pending;
+  }
+  private async refreshOAuth(
+    scope: string,
+    server: McpServer,
+    tokens: OAuthTokens,
+  ): Promise<McpServer> {
     const relogin = `${server.name} 로그인이 만료됐습니다 — 연결을 지우고 다시 로그인해 주세요`;
     if (!tokens.refreshToken) throw new AppError(relogin, 401);
     let next: OAuthTokens;

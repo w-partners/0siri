@@ -20,6 +20,7 @@ let db: Store, directory: string, mcp: Mcp;
 const seenAuth: string[] = [];
 const challenges = new Map<string, string>(); // code → challenge
 let refreshes = 0;
+const usedRefresh = new Set<string>();
 
 const fakeFetch = (async (input: string | URL, init?: RequestInit) => {
   const url = String(input);
@@ -43,8 +44,18 @@ const fakeFetch = (async (input: string | URL, init?: RequestInit) => {
         form.get("redirect_uri") === `${PUBLIC}/api/mcp/oauth/callback` &&
         form.get("client_id") === "oax_test";
       if (!ok) return json({ error: "invalid_grant" }, 400);
+      if (form.get("code") === "code-2")
+        return json({ access_token: "b0", refresh_token: "s0", expires_in: 30 });
       // 30초짜리 — 1분 안에 끝나므로 다음 사용 때 바로 갱신돼야 한다
       return json({ access_token: "a1", refresh_token: "r1", expires_in: 30 });
+    }
+    // 회전형 refresh(W 와 같다): s<n> 은 한 번만 쓰이고, 쓰면 s<n+1> 을 준다. 토큰은 계속 30초짜리라 매번 갱신된다
+    const rt = form.get("refresh_token") ?? "";
+    if (form.get("grant_type") === "refresh_token" && /^s\d+$/.test(rt)) {
+      if (usedRefresh.has(rt)) return json({ error: "invalid_grant" }, 401);
+      usedRefresh.add(rt);
+      const n = Number(rt.slice(1)) + 1;
+      return json({ access_token: `b${n}`, refresh_token: `s${n}`, expires_in: 30 });
     }
     if (form.get("grant_type") === "refresh_token" && form.get("refresh_token") === "r1") {
       refreshes++;
@@ -138,4 +149,19 @@ test("client_id 가 없는 인가 서버는 시작부터 거절(지어내지 않
     other.startOAuth("user-1", { name: "W", url: `${W}/api/v1/mcp` }, PUBLIC),
     /OAuth 클라이언트가 0Siri 에 등록돼 있지 않습니다/,
   );
+});
+
+test("회전형 refresh: 같은 연결을 동시에 두 번 써도 갱신은 한 번(옛 refresh 재사용으로 끊기지 않는다)", async () => {
+  const { authorizeUrl } = await mcp.startOAuth(
+    "user-2",
+    { name: "W2", url: `${W}/api/v1/mcp` },
+    PUBLIC,
+  );
+  const q = new URL(authorizeUrl).searchParams;
+  challenges.set("code-2", q.get("code_challenge") as string);
+  const saved = await mcp.finishOAuth(q.get("state") as string, "code-2", PUBLIC);
+  assert.deepEqual([...usedRefresh], ["s0"]);
+  await Promise.all([mcp.toolsFor("user-2", saved.id), mcp.toolsFor("user-2", saved.id)]);
+  assert.deepEqual([...usedRefresh], ["s0", "s1"], "s1 은 한 번만 쓰였다");
+  assert.equal(seenAuth.at(-1), "Bearer b2");
 });

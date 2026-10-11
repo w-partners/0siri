@@ -27,6 +27,9 @@ export interface Group {
   createdAt: string;
   /** 마지막 메시지 순번 — 새 메시지는 이 다음 번호를 받는다 */
   seq: number;
+  /** «운영자와 대화» 방: 구독자(방장) + 그 팀 운영자. 초대는 막는다 */
+  kind?: "operator";
+  packageId?: string;
 }
 export interface GroupInvite {
   id: string;
@@ -120,6 +123,39 @@ export class Groups {
     return { ...group, mine: group.ownerId === userId };
   }
 
+  /** 구독자 ↔ 팀 운영자 방. 구독자·팀마다 하나(id 고정). 새로 지정된 운영자는 열 때 들어온다. */
+  async operatorChat(
+    userId: string,
+    pkg: { id: string; name: string },
+    operators: { ids: string[]; fallback: boolean },
+  ) {
+    const id = `operator-${pkg.id}-${userId}`;
+    let group = await this.db.get<Group>("system", "groups", id);
+    if (!group) {
+      group = {
+        id,
+        title: `${pkg.name} · 운영자`,
+        ownerId: userId,
+        members: [],
+        createdAt: new Date().toISOString(),
+        seq: 0,
+        kind: "operator",
+        packageId: pkg.id,
+      };
+      await this.join(group, { userId, nickname: await this.defaultNickname(userId) });
+      if (operators.fallback)
+        await this.post(
+          group,
+          "system",
+          "안내",
+          "이 팀에 지정된 운영자가 아직 없어 관리자가 받습니다",
+        );
+    }
+    for (const op of operators.ids)
+      if (op !== userId && !group.members.some((m) => m.userId === op))
+        await this.join(group, { userId: op, nickname: operators.fallback ? "관리자" : "운영자" });
+    return this.view(group, userId);
+  }
   /** 방장이 번호로 초대. 회원이면 바로 들어오고, 아니면 대기 + 가입 초대(이미 남이 초대한 번호면 대기만). */
   async invite(
     userId: string,
@@ -128,6 +164,8 @@ export class Groups {
   ): Promise<{ joined: boolean; phoneHint: string; inviteToken?: string }> {
     const group = await this.forMember(userId, groupId);
     if (group.ownerId !== userId) throw new AppError("방장만 초대할 수 있습니다", 403);
+    if (group.kind === "operator")
+      throw new AppError("운영자와의 대화에는 다른 사람을 초대할 수 없습니다", 403);
     const phone = normalizePhone(input.phone);
     const target = await this.accounts.userByPhone(phone);
     if (target) {
@@ -218,7 +256,18 @@ export class Groups {
   }
 }
 
-export function groupRoutes(groups: Groups, publicUrl: string) {
+export function groupRoutes(
+  groups: Groups,
+  publicUrl: string,
+  /** 내 팀 방 → 그 팀과 맡은 운영자 (app.ts 가 rooms·catalog·operator 로 채운다) */
+  operatorsFor: (
+    owner: string,
+    roomId: string,
+  ) => Promise<{
+    pkg: { id: string; name: string };
+    operators: { ids: string[]; fallback: boolean };
+  }>,
+) {
   const app = new Hono<{ Variables: { owner: string } }>();
   const nickname = z.string().trim().min(1).max(GROUP_NICKNAME_MAX);
   app.get("/groups", async (c) => c.json(await groups.mine(c.get("owner"))));
@@ -228,6 +277,10 @@ export function groupRoutes(groups: Groups, publicUrl: string) {
       .parse(await c.req.json());
     const group = await groups.create(c.get("owner"), body.title);
     return c.json(groups.view(group, c.get("owner")), 201);
+  });
+  app.post("/rooms/:roomId/operator-chat", async (c) => {
+    const { pkg, operators } = await operatorsFor(c.get("owner"), c.req.param("roomId"));
+    return c.json(await groups.operatorChat(c.get("owner"), pkg, operators));
   });
   app.get("/groups/:id", async (c) =>
     c.json(groups.view(await groups.forMember(c.get("owner"), c.req.param("id")), c.get("owner"))),

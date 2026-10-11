@@ -98,3 +98,39 @@ test("단체 톡 초대·대화·나가기", async () => {
   await assert.rejects(groups.messages(friend.id, group.id), /찾을 수 없습니다/);
   await assert.rejects(groups.remove(owner.id, group.id, owner.id), /방장은/);
 });
+
+test("운영자와 대화: 구독자·팀마다 방 하나, 운영자 자동 참여, 초대 금지, 지정 운영자 없으면 관리자가 받는다고 적는다", async () => {
+  const subscriber = await accounts.createUser({ phone: "01012345672", password: "pass1234" });
+  const op = await accounts.createUser({
+    phone: "01012345673",
+    password: "pass1234",
+    role: "operator",
+  });
+  const pkg = { id: "pkg-1", name: "법률 마케팅팀" };
+  const first = await groups.operatorChat(subscriber.id, pkg, { ids: [op.id], fallback: false });
+  const again = await groups.operatorChat(subscriber.id, pkg, { ids: [op.id], fallback: false });
+  assert.equal(first.id, again.id);
+  assert.equal(first.title, "법률 마케팅팀 · 운영자");
+  assert.deepEqual((await groups.get(first.id)).members.map((m) => m.nickname).slice(1), [
+    "운영자",
+  ]);
+  assert.ok(
+    (await groups.mine(op.id)).some((g) => g.id === first.id),
+    "운영자 목록에 보인다",
+  );
+  await groups.say(op.id, first.id, "무엇을 도와드릴까요?");
+  await assert.rejects(
+    groups.invite(subscriber.id, first.id, { phone: "01012345674", nickname: "x" }),
+    /초대할 수 없습니다/,
+  );
+  const fallback = await groups.operatorChat(
+    subscriber.id,
+    { id: "pkg-2", name: "W" },
+    { ids: [op.id], fallback: true },
+  );
+  assert.ok(
+    (await groups.messages(subscriber.id, fallback.id)).some((m) =>
+      /관리자가 받습니다/.test(m.text),
+    ),
+  );
+});

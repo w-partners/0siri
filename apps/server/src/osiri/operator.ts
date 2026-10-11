@@ -253,6 +253,19 @@ export class Operator {
       updatedAt: now(),
     });
   }
+  /**
+   * 구독자가 «운영자와 대화» 할 상대. 지정된 담당이 없으면 관리자가 받는다 — 관리자는 모든 패키지의 담당으로 본다(owned 와 같은 규칙).
+   * 그 경우 fallback=true 로 알려 대화방에 그렇게 적는다(조용히 바꾸지 않는다).
+   */
+  async operatorsOf(packageId: string): Promise<{ ids: string[]; fallback: boolean }> {
+    const entry = await this.db.get<PackageOperators>(PLATFORM, OPERATOR_KIND, packageId);
+    if (entry?.operatorIds.length) return { ids: entry.operatorIds, fallback: false };
+    const admins = (await this.db.list<{ id: string; role: string }>("system", "users"))
+      .filter((u) => u.role === "admin")
+      .map((u) => u.id);
+    if (!admins.length) throw new AppError("이 팀을 맡은 운영자도 관리자도 없습니다", 409);
+    return { ids: admins, fallback: true };
+  }
   /** 내 패키지. 관리자는 플랫폼 전체 패키지의 담당으로 본다. */
   private async owned(userId: string): Promise<OwnedPackage[]> {
     const user = await this.operator(userId);

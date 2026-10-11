@@ -115,6 +115,7 @@ import {
 } from "../ui";
 import { useWorkspace } from "../workspace";
 import { CharacterAvatar, type Mood, selfAnimated, useCharacterPref, useStill } from "./eve";
+import type { GroupView } from "./groups";
 import { HtmlFrame } from "./html-frame";
 import { MESSAGE_ACTION_TEXT } from "./message-actions";
 import { customTabId, moveTab, orderTabs } from "./room-tabs";
@@ -264,6 +265,7 @@ const text = {
   characterPhoto: "내 사진",
   photoTooBig: "사진이 너무 커요 — 200KB 이하 그림으로 골라 주세요",
   teamSummary: "팀 상태",
+  operatorChat: "운영자와 대화",
   teamSummaryLine: (pending: number, progress: number, done: number) =>
     `승인 대기 ${pending} · 목표 진척 ${progress}% · 오늘 완료 ${done}건`,
   tabOrder: "탭 순서 바꾸기",
@@ -2034,6 +2036,7 @@ export function RoomScreen({
   onBack,
   home = false,
   onOpenRoom,
+  onOpenGroup,
   focus,
 }: {
   room: Room;
@@ -2041,6 +2044,8 @@ export function RoomScreen({
   /** 기본 채팅(홈): 앱을 열면 바로 영시리와 대화. 뒤로 대신 팀 방 목록 버튼, 버전 표시 */
   home?: boolean;
   onOpenRoom?: (room: Room, focus?: RoomFocus) => void;
+  /** 팀 방의 «운영자와 대화» 가 연 단체 톡 */
+  onOpenGroup?: (group: GroupView) => void;
   /** 열자마자 보일 곳 — 목록 배지·결재함 [방에서 보기]·활동 항목이 넘긴다 */
   focus?: RoomFocus;
 }) {
@@ -2409,6 +2414,21 @@ export function RoomScreen({
             </Text>
             {brief && <Flow flow={brief.flow} />}
           </Pressable>
+          {onOpenGroup && (
+            <View style={[s.row, { gap: 8 }]}>
+              <Button
+                small
+                icon={MessageSquarePlus}
+                onPress={() =>
+                  void api
+                    .request<GroupView>(`/api/rooms/${room.id}/operator-chat`, {})
+                    .then(onOpenGroup, (e) => setError(errorText(e)))
+                }
+              >
+                {text.operatorChat}
+              </Button>
+            </View>
+          )}
         </View>
       )}
       {!plain && (
