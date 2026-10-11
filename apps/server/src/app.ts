@@ -37,6 +37,7 @@ import { Approvals } from "./osiri/approvals.ts";
 import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
+import { History, historyRoutes } from "./osiri/history.ts";
 import { UsageLimits } from "./osiri/limits.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
@@ -92,6 +93,14 @@ export async function createApp(
   const approvals = new Approvals(db, rooms, bus);
   const mcp = new Mcp(db, rooms, approvals);
   const memories = new Memories(db);
+  // 대화 기록 검색(EmbeddingGemma 2) — 이 기능 이전 대화를 시작할 때 한 번 색인한다. 막지 않고, 결과·실패를 로그로 남긴다
+  const history = new History(db);
+  history
+    .backfill()
+    .then((n) => console.log(`[osiri/history] 이전 대화 ${n}줄 색인`))
+    .catch((error) =>
+      console.error(`[osiri/history] 이전 대화 색인 실패: ${(error as Error).message}`),
+    );
   const catalog = new Catalog(db, rooms);
   const limits = new UsageLimits(
     db,
@@ -106,7 +115,7 @@ export async function createApp(
   const operator = new Operator(db, rooms, catalog, accounts, skills);
   const feed = new Feed(db, new SearchService(db));
   // 0Siri MCP — 구독 세션(그 사람 컨테이너·PC)에 밖에서 붙는 기억·도구. 승인은 앱 카드로
-  const osiriMcp = new OsiriMcp(db, { memories, mcp, approvals, rooms });
+  const osiriMcp = new OsiriMcp(db, { memories, mcp, approvals, rooms, history });
   // 구독 세션·붙인 tmux 창이 함께 쓰는 승인 게이트와 0Siri MCP
   const agentGate = async (owner: string, ask: PermissionAsk) => {
     const approval = await approvals.request(owner, {
@@ -184,7 +193,7 @@ export async function createApp(
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   const tmux = new Tmux(db, config.publicUrl);
-  agent.osiri = { memories, routing, subscriptions, tmux, panes };
+  agent.osiri = { memories, routing, subscriptions, tmux, panes, history };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -340,6 +349,7 @@ export async function createApp(
   app.route("/api", bugReportRoutes(accounts, config.pagePickerBase, config.pagePickerKeyFile));
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
+  app.route("/api", historyRoutes(history));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
@@ -448,6 +458,7 @@ export async function createApp(
     const messages = z.array(z.unknown()).max(1000).parse(body.messages);
     for (const message of messages) MessageSchema.parse(message);
     await db.put(c.get("owner"), "conversations", { id: conversationId(c), messages });
+    history.indexLater(c.get("owner"), conversationId(c), messages);
     return c.json({ ok: true });
   });
   app.post("/api/files", async (c) => {

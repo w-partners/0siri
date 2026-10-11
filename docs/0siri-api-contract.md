@@ -78,6 +78,7 @@
 - `GET /memories?category=profile|preference|goal|feedback&q=` — 항목에 `category`, `sourceLabel`("대화에서 학습" 등) 추가.
 - `PATCH /memories/:id` `{ text }` (임베딩 다시 계산).
 - `GET /memories/mcp-access` · `PATCH /memories/mcp-access` `{ enabled: boolean }` (다른 LLM 앱이 읽는 기억 MCP 문 — 켤 때만 열린다).
+- `GET /history/search?q=` → `{ id, threadId, title, role, text, score }[]` (최대 20) · `GET /history/recent` → `{ threadId, title, updatedAt, lastAsk?, lastAnswer? }[]` (최대 12). 대화 기록(`PUT /conversation` 때 새 줄만, 서버 시작 때 이전 대화)을 EmbeddingGemma 2 로 색인. 채팅 모델 도구 `search_history`·`recent_sessions`, 0Siri MCP `history_search`·`recent_sessions` 는 지금 방을 뺀다.
   (v0.4.0) 두 응답에 `ready: boolean` 추가 — 지금은 항상 `false`: 밖에서 읽는 기억 MCP 문이 아직 없어 스위치는 저장만 된다. 화면은 `ready: false` 면 «준비 중» 으로 보인다.
 
 ## 스킬 (화면 9)

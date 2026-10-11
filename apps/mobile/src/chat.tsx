@@ -45,6 +45,7 @@ import {
 } from "./conversation-run";
 import type { Mood } from "./osiri/eve";
 import { PaneFileButton } from "./osiri/pane-send";
+import { VoiceButton } from "./osiri/voice";
 import { SearchToolCard } from "./search-tool-card";
 import { t } from "./strings";
 import { TaskThreadCard } from "./thread-artifacts";
@@ -268,6 +269,8 @@ export function ChatScreen({
   const renderToolCall = useRenderToolCall();
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceError, setVoiceError] = useState<string>();
   const [inputHeight, setInputHeight] = useState(44);
   const [showResults, setShowResults] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -554,7 +557,7 @@ export function ChatScreen({
     ? last?.role === "assistant" && last.content
       ? "speaking"
       : "thinking"
-    : focused || draft
+    : focused || draft || voiceOn
       ? "listening"
       : "idle";
   useEffect(() => onMood?.(mood), [mood, onMood]);
@@ -946,6 +949,7 @@ export function ChatScreen({
                     ))}
                 </View>
               )}
+              <ErrorNotice error={voiceError} />
               <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
                 <Pressable
                   accessibilityRole="button"
@@ -1017,6 +1021,12 @@ export function ChatScreen({
                         }
                       : undefined
                   }
+                />
+                <VoiceButton
+                  draft={draft}
+                  setDraft={setDraft}
+                  onListening={setVoiceOn}
+                  onError={setVoiceError}
                 />
                 <Pressable
                   accessibilityRole="button"

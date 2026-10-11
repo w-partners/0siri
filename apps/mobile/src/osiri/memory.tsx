@@ -12,6 +12,7 @@ import {
   type MemoryCategory,
   SKILL_STATUS_LABELS,
 } from "../../../../packages/domain/src/osiri";
+import type { HistoryHit, RecentThread } from "../../../server/src/osiri/history.ts";
 import type { Skill } from "../../../server/src/osiri/skills.ts";
 import {
   Button,
@@ -44,6 +45,14 @@ import {
 const FACT_LIMIT = 200;
 
 const text = {
+  historyTitle: "대화 기록",
+  historyHint:
+    "모든 대화방에서 오간 말을 EmbeddingGemma 2 로 색인해 뜻으로 찾습니다. 영시리에게 «다른 방에서 얘기한 거» 를 물어도 같은 기록을 찾아 답합니다.",
+  historySearch: "대화 기록 검색",
+  recentTitle: "최근에 움직인 대화방",
+  historyEmpty: "아직 대화 기록이 없습니다",
+  said: "내 말",
+  answered: "영시리 답",
   title: "기억",
   purpose:
     "에이전트가 나에 대해 아는 사실입니다. 틀린 것은 고치고 지울 것은 지우세요. 기억은 모델 밖에 저장되어 큰 모델을 바꿔도 따라옵니다.",
@@ -113,6 +122,7 @@ export function MemoryScreen() {
       <View style={columns}>
         <View style={column}>
           <Facts />
+          <ChatHistory />
         </View>
         <View style={column}>
           <PersonalSkills />
@@ -124,6 +134,70 @@ export function MemoryScreen() {
           <Diagnostics />
         </View>
       </View>
+    </View>
+  );
+}
+
+/** 대화 기록 — 모든 대화방에서 오간 말을 EmbeddingGemma 2(서버)로 찾고, 검색어가 없으면 최근에 움직인 대화방을 보인다 */
+function ChatHistory() {
+  const { api } = useWorkspace();
+  const [q, setQ] = useState("");
+  const query = q.trim();
+  const list = useLoad<(HistoryHit | RecentThread)[]>(
+    () =>
+      query
+        ? api.request<HistoryHit[]>(`/api/history/search?q=${encodeURIComponent(query)}`)
+        : api.request<RecentThread[]>("/api/history/recent"),
+    query,
+  );
+  return (
+    <View>
+      <SectionHeading title={text.historyTitle} />
+      <Card style={{ gap: 12 }}>
+        <Text style={s.small}>{text.historyHint}</Text>
+        <Field label={text.historySearch} value={q} onChangeText={setQ} />
+        {!query && <Text style={[s.small, mono]}>{text.recentTitle}</Text>}
+        <Loaded state={list} rows={3} height={56}>
+          {(items) =>
+            items.length === 0 ? (
+              <Text style={s.small}>{query ? text.noMatch : text.historyEmpty}</Text>
+            ) : (
+              items.map((item) => (
+                <View key={"id" in item ? item.id : item.threadId} style={{ gap: 3 }}>
+                  <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+                    <Text style={[s.small, { fontWeight: "700", color: colors.text }]}>
+                      {item.title}
+                    </Text>
+                    <Text style={[s.small, mono]}>
+                      {"score" in item
+                        ? `${item.role === "user" ? text.said : text.answered} · ${text.score(item.score)}`
+                        : dateLabel(item.updatedAt)}
+                    </Text>
+                  </View>
+                  {"score" in item ? (
+                    <Text style={s.small} numberOfLines={3}>
+                      {item.text}
+                    </Text>
+                  ) : (
+                    <>
+                      {!!item.lastAsk && (
+                        <Text style={s.small} numberOfLines={2}>
+                          {`${text.said}: ${item.lastAsk}`}
+                        </Text>
+                      )}
+                      {!!item.lastAnswer && (
+                        <Text style={s.small} numberOfLines={2}>
+                          {`${text.answered}: ${item.lastAnswer}`}
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </View>
+              ))
+            )
+          }
+        </Loaded>
+      </Card>
     </View>
   );
 }
