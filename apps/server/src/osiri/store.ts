@@ -89,6 +89,26 @@ export interface Subscription {
   dataRetainedUntil?: string; // 해지 후 30일 (§6.2, §15.4.5)
   /** 해지했을 때의 기간 말. 이 시각이 지나면 ended */
   endsAt?: string;
+  /** 구독자 조정 (wgolf RPT-02 C) */
+  controls?: SubscriberControls;
+}
+/** 구독자 조정 — 팀 제작자가 연 범위 안에서 좁히기만 한다(넓히는 칸은 없다) */
+export interface SubscriberControls {
+  /** (라) 일시정지 — 해지와 별개. 켜 있으면 그 방 워커가 API 를 못 쓴다 */
+  paused?: boolean;
+  /** (가) 끈 도구 "<서버>:<도구>" — 팀이 목록에서 못 보고 못 부른다 */
+  disabledTools?: string[];
+  /** (나) «승인 받기» 로 올린 도구 — read·write 도 실행 전 승인 카드. external 은 원래 승인이고 끌 수 없다 */
+  approvalTools?: string[];
+}
+/** 이 방(팀) 구독의 조정 — 워커 입구가 읽는다. 구독 방이 아니면 빈 조정 */
+export async function subscriptionControls(
+  db: Store,
+  owner: string,
+  roomId: string,
+): Promise<SubscriberControls> {
+  const subs = await db.list<Subscription>(owner, "subscriptions");
+  return subs.find((s) => s.roomId === roomId)?.controls ?? {};
 }
 /** 응답 모양 — 없는 값은 빠뜨리지 않고 null 로 낸다 (계약: `endsAt`). 결제는 앱에 넣지 않는다 — 결제 수단 필드는 없다. */
 export const subscriptionView = (s: Subscription) => ({
@@ -490,6 +510,23 @@ export class Catalog {
     });
     return subscriptionView(updated);
   }
+  /** 구독자 조정 바꾸기 — 준 칸만 덮는다. 감사 subscription.controls */
+  async setControls(owner: string, id: string, patch: SubscriberControls) {
+    const subscription = await this.own(owner, id);
+    const updated: Subscription = {
+      ...subscription,
+      controls: { ...subscription.controls, ...patch },
+    };
+    await this.db.put(owner, "subscriptions", updated);
+    await this.rooms.audit(owner, {
+      packageId: subscription.packageId,
+      roomId: subscription.roomId,
+      actor: `user:${owner}`,
+      action: `subscription.controls ${JSON.stringify(patch)}`,
+      result: "ok",
+    });
+    return subscriptionView(updated);
+  }
   /** 해지 예약 취소: cancelled → active, 방 읽기 전용 해제. 이미 끝난 구독은 되살리지 못한다(다시 구독). */
   async resume(owner: string, id: string) {
     const subscription = await this.own(owner, id);
@@ -618,6 +655,20 @@ export function storeRoutes(
   app.post("/subscriptions/:id/cancel", async (c) =>
     c.json(await catalog.cancel(c.get("owner"), c.req.param("id"))),
   );
+  // 구독자 조정 (wgolf RPT-02 C): 일시정지·도구 끄기·«승인 받기» 로 올리기
+  app.patch("/subscriptions/:id/controls", async (c) => {
+    const tools = z
+      .array(z.string().regex(/^[^:\s]+:[^:\s]+$/, '도구는 "<서버>:<도구>" 형식'))
+      .max(100);
+    const body = z
+      .object({
+        paused: z.boolean().optional(),
+        disabledTools: tools.optional(),
+        approvalTools: tools.optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(await catalog.setControls(c.get("owner"), c.req.param("id"), body));
+  });
   app.post("/subscriptions/:id/resume", async (c) => {
     try {
       return c.json(await catalog.resume(c.get("owner"), c.req.param("id")));

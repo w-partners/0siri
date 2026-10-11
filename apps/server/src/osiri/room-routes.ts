@@ -33,7 +33,12 @@ import type { Mcp } from "./mcp.ts";
 import { assertProposed, type Room, type Rooms, type TaskStage, type TeamGoal } from "./rooms.ts";
 import type { Routing } from "./routing.ts";
 import type { Skills } from "./skills.ts";
-import type { Catalog, TeamPackage } from "./store.ts";
+import {
+  type Catalog,
+  type SubscriberControls,
+  subscriptionControls,
+  type TeamPackage,
+} from "./store.ts";
 import { gatewayLlm, type Llm, loadTeam, TeamRuntime } from "./team-runtime.ts";
 
 type Env = { Variables: { owner: string } };
@@ -656,7 +661,14 @@ export async function issueWorkerToken(
 
 /** 워커(도커 컨테이너) 라우트 — 워커 토큰으로 인증. /api/worker 에 마운트, 사용자 인증 미들웨어보다 앞에. */
 export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDeps) {
-  type WorkerEnv = { Variables: { owner: string; roomId: string; packageId: string | null } };
+  type WorkerEnv = {
+    Variables: {
+      owner: string;
+      roomId: string;
+      packageId: string | null;
+      controls: SubscriberControls;
+    };
+  };
   const app = new Hono<WorkerEnv>();
   app.use("*", async (c, next) => {
     const header = c.req.header("authorization");
@@ -673,6 +685,10 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDep
       const halted = (await db.get<TeamPackage>("system", "packages", grant.packageId))?.halted;
       if (halted) throw new AppError(`관리자가 이 팀의 실행을 중지했습니다: ${halted.reason}`, 403);
     }
+    // 구독자 조정(C 라): 일시정지면 워커가 아무것도 못 한다 — 해지와 별개
+    const controls = await subscriptionControls(db, grant.userId, grant.roomId);
+    if (controls.paused) throw new AppError("구독자가 이 팀을 일시정지했습니다", 403);
+    c.set("controls", controls);
     c.set("owner", grant.userId);
     c.set("roomId", grant.roomId);
     c.set("packageId", grant.packageId);
@@ -750,7 +766,19 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDep
         ),
       ),
     );
-    return c.json(servers.map((s, i) => ({ id: s.id, name: s.name, ...listed[i] })));
+    // 구독자가 끈 도구(C 가)는 팀이 보지 못한다
+    const off = new Set(c.get("controls").disabledTools ?? []);
+    return c.json(
+      servers.map((s, i) => {
+        const entry = listed[i] as { tools: { name: string }[]; error?: string };
+        return {
+          id: s.id,
+          name: s.name,
+          ...entry,
+          tools: entry.tools.filter((t) => !off.has(`${s.name}:${t.name}`)),
+        };
+      }),
+    );
   });
   app.post("/tools/call", async (c) => {
     if (!mcp) throw new AppError("MCP 연결 기능이 꺼져 있습니다", 503);
@@ -763,7 +791,13 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDep
         actor: z.string().max(60).default("team"),
       })
       .parse(await c.req.json());
-    return c.json(await mcp.call(c.get("owner"), { roomId: c.get("roomId"), ...body }));
+    return c.json(
+      await mcp.call(c.get("owner"), {
+        roomId: c.get("roomId"),
+        ...body,
+        controls: c.get("controls"),
+      }),
+    );
   });
   // 승인 토큰 집행 — 서버가 게이트. 토큰·도구·입력이 전부 맞을 때만 1회 통과
   app.post("/approvals/:id/consume", async (c) => {

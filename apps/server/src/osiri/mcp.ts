@@ -290,6 +290,8 @@ export class Mcp {
       args?: unknown;
       approval?: { id: string; token: string };
       actor?: string;
+      /** 구독자 조정(wgolf RPT-02 C 가·나) — 끈 도구는 거절, 올린 도구는 read·write 도 승인 */
+      controls?: { disabledTools?: string[]; approvalTools?: string[] };
     },
   ): Promise<ToolResult> {
     const { server, scope } = await this.server(owner, input.serverId);
@@ -300,7 +302,9 @@ export class Mcp {
     const blocked = (await settingValue<string[]>(this.db, BLOCKED_TOOLS_SETTING)) ?? [];
     if (blocked.includes(toolName) || blocked.includes(`${server.name}:*`))
       throw new AppError(`관리자가 차단한 도구입니다: ${toolName}`, 403);
-    if (tool.risk === "external") {
+    if (input.controls?.disabledTools?.includes(toolName))
+      throw new AppError(`구독자가 끈 도구입니다: ${toolName}`, 403);
+    if (tool.risk === "external" || input.controls?.approvalTools?.includes(toolName)) {
       if (!input.approval) {
         const approval = await this.approvals.request(owner, {
           roomId: input.roomId,

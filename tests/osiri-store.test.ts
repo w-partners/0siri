@@ -236,6 +236,24 @@ test("탐색·검색·정렬, 가격은 설정값, 구독 트랜잭션(성공·�
     0,
   );
 
+  // 구독자 조정(C): 준 칸만 덮고, 도구 형식이 틀리면 422, 남의 구독은 못 바꾼다, 감사가 남는다
+  const controls = `/api/subscriptions/${subscription.id}/controls`;
+  // 형식 오류(zod) — 운영 앱은 422, 이 하네스는 500. 거절되는 것만 본다
+  assert.notEqual(
+    (await call(controls, "user-1", { disabledTools: ["publish"] }, "PATCH")).status,
+    200,
+  );
+  await call(controls, "user-1", { disabledTools: ["site:publish"] }, "PATCH");
+  const paused = (await (await call(controls, "user-1", { paused: true }, "PATCH")).json()) as {
+    controls: { paused: boolean; disabledTools: string[] };
+  };
+  assert.deepEqual(paused.controls, { disabledTools: ["site:publish"], paused: true });
+  assert.notEqual((await call(controls, "user-2", { paused: false }, "PATCH")).status, 200);
+  assert.ok(
+    (await rooms.auditLogs("user-1")).some((a) => a.action.startsWith("subscription.controls")),
+  );
+  await call(controls, "user-1", { paused: false }, "PATCH");
+
   // 해지(예약) → 30일 보존 고지. 방은 기간 말까지 그대로 쓴다
   const cancelled = (await (
     await call(`/api/subscriptions/${subscription.id}/cancel`, "user-1", {})

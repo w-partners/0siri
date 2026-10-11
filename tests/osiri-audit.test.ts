@@ -102,6 +102,11 @@ async function siteMcp() {
         ? { isError: true, content: [{ type: "text", text: "사이트가 500 을 돌려줌" }] }
         : { content: [{ type: "text", text: "ok" }] },
   );
+  server.registerTool(
+    "lookup",
+    { description: "조회", _meta: { "x-osiri-risk": "read" } },
+    async () => ({ content: [{ type: "text", text: "rows" }] }),
+  );
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(b);
   const client = new Client({ name: "t", version: "0" });
@@ -762,4 +767,44 @@ test("관리자 제한(E): 정지된 사람·실행 중지된 팀의 워커는 �
     /관리자가 차단한 도구입니다: site:publish/,
   );
   await catalog.setSetting(BLOCKED_TOOLS_SETTING, []);
+});
+
+test("구독자 조정(C): 일시정지면 워커 403, 끈 도구는 목록에서 빠지고 호출 403, «승인 받기» 로 올린 read 도구는 승인 카드", async () => {
+  const room = await rooms.ensurePersonalRoom(OWNER);
+  const site = (await mcp.list(OWNER)).find((s) => s.name === "site");
+  assert.ok(site, "앞 테스트가 연결한 site");
+  const subscription = {
+    id: `sub-${randomUUID()}`,
+    packageId: "p",
+    roomId: room.id,
+    status: "active",
+    controls: { disabledTools: ["site:publish"], approvalTools: ["site:lookup"] },
+  };
+  await db.put(OWNER, "subscriptions", subscription);
+  const token = await issueWorkerToken(db, OWNER, room.id, null);
+  const call = (path: string, body?: unknown) =>
+    app.request(`/api/worker${path}`, {
+      method: body ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  const listed = (await (await call("/tools")).json()) as {
+    name: string;
+    tools: { name: string }[];
+  }[];
+  assert.deepEqual(
+    listed.find((s) => s.name === "site")?.tools.map((t) => t.name),
+    ["lookup"],
+    "끈 도구는 팀이 못 본다",
+  );
+  const off = await call("/tools/call", { serverId: site.id, tool: "publish", args: draft });
+  assert.equal(off.status, 403);
+  const raised = (await (
+    await call("/tools/call", { serverId: site.id, tool: "lookup", args: {} })
+  ).json()) as { status: string };
+  assert.equal(raised.status, "pending_approval", "read 도 승인으로 올렸다");
+  await db.put(OWNER, "subscriptions", { ...subscription, controls: { paused: true } });
+  assert.equal((await call("/tools")).status, 403, "일시정지");
+  await db.remove(OWNER, "subscriptions", subscription.id);
+  assert.equal((await call("/tools")).status, 200);
 });
