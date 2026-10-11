@@ -117,12 +117,14 @@ export class History {
     return total;
   }
 
+  /** 지금 있는 대화방(+기본 대화)의 제목. 여기 없는 대화(지운 방에 남은 대화)는 검색·최근 목록에 내지 않는다 */
   private async titles(owner: string): Promise<Map<string, string>> {
     const rooms = await this.db.list<{ id: string; title: string }>(owner, "rooms");
-    return new Map(rooms.map((room) => [room.id, room.title]));
+    return new Map([
+      ["default", DEFAULT_THREAD_TITLE],
+      ...rooms.map((room): [string, string] => [room.id, room.title]),
+    ]);
   }
-  private title = (titles: Map<string, string>, threadId: string) =>
-    titles.get(threadId) ?? (threadId === "default" ? DEFAULT_THREAD_TITLE : threadId);
 
   async search(
     owner: string,
@@ -147,12 +149,12 @@ export class History {
     const seen = new Set<string>();
     const unique = rows.filter((row) => {
       const key = `${row.thread_id}\n${row.text}`;
-      return !seen.has(key) && seen.add(key);
+      return titles.has(row.thread_id) && !seen.has(key) && seen.add(key);
     });
     return unique.slice(0, Math.min(limit, 30)).map((row) => ({
       id: row.id,
       threadId: row.thread_id,
-      title: this.title(titles, row.thread_id),
+      title: titles.get(row.thread_id) as string,
       role: row.role,
       text: row.text.slice(0, SNIPPET),
       score: Number(row.score),
@@ -167,10 +169,11 @@ export class History {
       data: { messages?: unknown[] };
     }>(
       "SELECT id,updated_at,data FROM records WHERE owner=$1 AND kind='conversations' AND id<>$2 ORDER BY updated_at DESC LIMIT $3",
-      [owner, exceptThread ?? "", Math.min(limit, 30)],
+      [owner, exceptThread ?? "", Math.min(limit, 30) * 3],
     );
     const titles = await this.titles(owner);
-    return rows.map((row) => {
+    const live = rows.filter((row) => titles.has(row.id)).slice(0, Math.min(limit, 30));
+    return live.map((row) => {
       const lines = linesOf(row.data?.messages ?? []);
       const last = (role: Line["role"]) =>
         // findLast 는 앱 tsconfig(lib)에 없다 — 이 파일 타입을 앱도 import 한다
@@ -180,7 +183,7 @@ export class History {
           ?.text.slice(0, SNIPPET);
       return {
         threadId: row.id,
-        title: this.title(titles, row.id),
+        title: titles.get(row.id) as string,
         updatedAt: new Date(row.updated_at).toISOString(),
         lastAsk: last("user"),
         lastAnswer: last("assistant"),

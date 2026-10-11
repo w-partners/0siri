@@ -30,7 +30,15 @@ before(async () => {
   history = new History(db, () => undefined);
   await db.put("me", "rooms", { id: "room-golf", title: "골프 예약" });
   await db.put("me", "conversations", { id: "room-golf", messages: golf });
+  await db.put("me", "rooms", { id: "room-tax", title: "세금" });
+  await db.put("me", "rooms", { id: "room-echo", title: "시험" });
   await db.put("me", "conversations", { id: "room-tax", messages: tax });
+  // 지운 방에 남은 대화 — 검색·최근 목록에 나오면 안 된다
+  await db.put("me", "conversations", {
+    id: "room-gone",
+    messages: [msg("x1", "user", "남서울CC 티타임 지운 방 메모")],
+  });
+  await db.put("other", "rooms", { id: "room-x", title: "남의 방" });
   await db.put("other", "conversations", {
     id: "room-x",
     messages: [msg("o1", "user", "남서울CC 티타임 비밀 메모")],
@@ -50,7 +58,7 @@ test("linesOf: 사람이 읽는 글만(도구·빈 글 제외), 배열 content �
 });
 
 test("이전 대화 일괄 색인 → 다른 방에서 뜻으로 찾는다, 지금 방·남의 기록은 나오지 않는다", async () => {
-  assert.equal(await history.backfill(), 5);
+  assert.equal(await history.backfill(), 6);
   assert.equal(await history.backfill(), 0, "이미 색인한 줄은 다시 임베딩하지 않는다");
   const hits = await history.search("me", "골프장 예약 언제였지", 3, "room-tax");
   assert.equal(hits[0]?.threadId, "room-golf");
@@ -63,9 +71,13 @@ test("이전 대화 일괄 색인 → 다른 방에서 뜻으로 찾는다, 지�
     hits.every((h) => h.threadId !== "room-x"),
     "다른 사람 기록은 섞이지 않는다",
   );
+  assert.ok(
+    hits.every((h) => h.threadId !== "room-gone"),
+    "지운 방에 남은 대화는 나오지 않는다",
+  );
   const tax2 = await history.search("me", "세금 공제율", 1, "room-golf");
   assert.equal(tax2[0]?.threadId, "room-tax");
-  assert.equal(tax2[0]?.title, "room-tax", "제목 없는 방은 id");
+  assert.equal(tax2[0]?.title, "세금");
 });
 
 test("같은 방에서 같은 말을 반복한 줄은 검색 결과에 한 번만", async () => {
