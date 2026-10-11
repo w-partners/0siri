@@ -346,6 +346,20 @@ const text = {
   listOpen: "바로 공개",
   registerSubmit: "등록",
   registered: (name: string) => `${name} 을(를) 스토어에 등록했습니다`,
+  oversight: "감독 (정지·사용 내역)",
+  oversightHide: "감독 접기",
+  oversightAudited: "이 회원의 기록을 열면 관리자 감사 기록에 남습니다.",
+  suspendReason: "정지 사유 (회원에게 보입니다)",
+  suspend: "이용 정지",
+  unsuspend: "정지 해제",
+  suspended: (name: string) => `${name} 의 이용을 정지했습니다`,
+  unsuspended: (name: string) => `${name} 의 정지를 풀었습니다`,
+  suspendedNow: (reason: string) => `이용 정지 중 — ${reason}`,
+  usageLine: (month: string, calls: number, tokens: number, cost: number) =>
+    `${month} 사용: 호출 ${calls}회 · 토큰 ${tokens.toLocaleString()} · ${cost.toLocaleString()}원`,
+  roomsLine: (titles: string[]) =>
+    `대화방 ${titles.length}개${titles.length ? `: ${titles.join(", ")}` : ""}`,
+  noAudit: "감사 기록이 없습니다",
 };
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
@@ -1482,6 +1496,8 @@ function UserAdminRow({
       </View>
       {self && <Text style={s.small}>{ROLE_SELF_MESSAGE}</Text>}
       <ErrorNotice error={roleAct.error} />
+      {user.suspended && <Text style={s.small}>{text.suspendedNow(user.suspended.reason)}</Text>}
+      {!self && <UserOversight user={user} onChanged={onChanged} />}
       <Button small onPress={() => setOpen(!open)}>
         {open ? text.grantsHide : text.grants(granted.length)}
       </Button>
@@ -1526,6 +1542,118 @@ function UserAdminRow({
           <ErrorNotice error={grantAct.error} />
         </View>
       )}
+    </View>
+  );
+}
+
+/**
+ * 관리자 감독 (wgolf RPT-02 D·E·F): 이용 정지·해제, 이 회원의 사용량·감사 기록·대화방 보기.
+ * 펼칠 때만 불러온다 — 서버가 볼 때마다 관리자 감사(admin.view)를 남기므로, 목록만 훑어서는 남의 기록을 열지 않는다.
+ */
+function UserOversight({ user, onChanged }: { user: AdminUser; onChanged: () => void }) {
+  const { api, notify } = useWorkspace();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const act = useAction();
+  return (
+    <View style={{ gap: 8 }}>
+      <Button small onPress={() => setOpen(!open)}>
+        {open ? text.oversightHide : text.oversight}
+      </Button>
+      {open && (
+        <View style={{ gap: 8 }}>
+          {user.suspended ? (
+            <Button
+              small
+              busy={act.busy}
+              onPress={() =>
+                act.run(async () => {
+                  await api.request(
+                    `/api/admin/users/${user.id}/suspension`,
+                    { suspended: false },
+                    "PUT",
+                  );
+                  notify(text.unsuspended(userLabel(user)));
+                  onChanged();
+                })
+              }
+            >
+              {text.unsuspend}
+            </Button>
+          ) : (
+            <>
+              <Field label={text.suspendReason} value={reason} onChangeText={setReason} />
+              <Button
+                small
+                busy={act.busy}
+                disabled={!reason.trim()}
+                onPress={() =>
+                  act.run(async () => {
+                    await api.request(
+                      `/api/admin/users/${user.id}/suspension`,
+                      { suspended: true, reason: reason.trim() },
+                      "PUT",
+                    );
+                    notify(text.suspended(userLabel(user)));
+                    setReason("");
+                    onChanged();
+                  })
+                }
+              >
+                {text.suspend}
+              </Button>
+            </>
+          )}
+          <ErrorNotice error={act.error} />
+          <Text style={s.small}>{text.oversightAudited}</Text>
+          <OversightView userId={user.id} />
+        </View>
+      )}
+    </View>
+  );
+}
+type UsageView = {
+  month: string;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  costKrw: number;
+};
+type AuditView = { id: string; ts: string; actor: string; action: string; result: string };
+type RoomView = { id: string; title: string };
+function OversightView({ userId }: { userId: string }) {
+  const { api } = useWorkspace();
+  const base = `/api/admin/users/${userId}`;
+  const usage = useLoad(() => api.request<UsageView>(`${base}/usage`));
+  const audit = useLoad(() => api.request<AuditView[]>(`${base}/audit`));
+  const rooms = useLoad(() => api.request<RoomView[]>(`${base}/rooms`));
+  return (
+    <View style={{ gap: 6 }}>
+      <Loaded state={usage}>
+        {(u) => (
+          <Text style={s.small}>
+            {text.usageLine(u.month, u.calls, u.tokensIn + u.tokensOut, u.costKrw)}
+          </Text>
+        )}
+      </Loaded>
+      <Loaded state={rooms}>
+        {(list) => <Text style={s.small}>{text.roomsLine(list.map((r) => r.title))}</Text>}
+      </Loaded>
+      <Loaded state={audit}>
+        {(list) =>
+          list.length === 0 ? (
+            <Text style={s.small}>{text.noAudit}</Text>
+          ) : (
+            <View style={{ gap: 2 }}>
+              {list.slice(0, 20).map((a) => (
+                <Text key={a.id} style={[s.small, mono]}>
+                  {a.ts.slice(0, 16).replace("T", " ")} {a.result} {a.action}
+                </Text>
+              ))}
+            </View>
+          )
+        }
+      </Loaded>
     </View>
   );
 }
