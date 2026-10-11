@@ -114,15 +114,7 @@ import {
   timeLabel,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import {
-  CharacterAvatar,
-  type CharacterPref as CharacterPrefs,
-  type Mood,
-  selfAnimated,
-  setCharacterPref,
-  useCharacterPref,
-  useStill,
-} from "./eve";
+import { CharacterAvatar, type Mood, selfAnimated, useCharacterPref, useStill } from "./eve";
 import { HtmlFrame } from "./html-frame";
 import { MESSAGE_ACTION_TEXT } from "./message-actions";
 import { customTabId, moveTab, orderTabs } from "./room-tabs";
@@ -2061,14 +2053,6 @@ export function RoomScreen({
   const [orderError, setOrderError] = useState("");
   const [brief, setBrief] = useState<Summary | null>(null);
   const teamIcons = useCharacterPref().teamIcons ?? "row";
-  // 앱을 열면 캐릭터·팀 아이콘 설정을 서버에서 한 번 받는다 (설정 화면을 열지 않아도)
-  useEffect(() => {
-    if (!home) return;
-    api.request<{ character: CharacterPrefs }>("/api/settings").then(
-      (r) => setCharacterPref(r.character),
-      (e) => setError(errorText(e)),
-    );
-  }, [api, home]);
   const [mood, setMood] = useState<Mood>("idle");
   const [headHeight, setHeadHeight] = useState(0);
   const [skillsOpen, setSkillsOpen] = useState(false);

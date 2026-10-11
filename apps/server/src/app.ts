@@ -38,6 +38,7 @@ import { Approvals } from "./osiri/approvals.ts";
 import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
+import { Groups, groupRoutes } from "./osiri/groups.ts";
 import { History, historyRoutes } from "./osiri/history.ts";
 import { Images, imageRoutes } from "./osiri/images.ts";
 import { UsageLimits } from "./osiri/limits.ts";
@@ -93,6 +94,7 @@ export async function createApp(
   // 0Siri 서비스 (0SIRI-SPEC §21). 전부 records 저장소 위, 기억만 pgvector.
   const accounts = new Accounts(db);
   const bus = new EventBus();
+  const groups = new Groups(db, accounts);
   const rooms = new Rooms(db, bus);
   const approvals = new Approvals(db, rooms, bus);
   const mcp = new Mcp(db, rooms, approvals);
@@ -382,6 +384,7 @@ export async function createApp(
   app.route("/api", locationRoutes(db));
   app.route("/api", imageRoutes(images));
   app.route("/api", mcpRoutes(mcp, config.publicUrl));
+  app.route("/api", groupRoutes(groups, config.publicUrl));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
   app.route(

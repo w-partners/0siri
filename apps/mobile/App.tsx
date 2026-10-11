@@ -43,6 +43,7 @@ import { AutomationScreen } from "./src/osiri/automation";
 import { installDiag, setScreen } from "./src/osiri/diag";
 import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { FeedScreen } from "./src/osiri/feed";
+import { GroupList, GroupScreen, type GroupView } from "./src/osiri/groups";
 import { InboxScreen } from "./src/osiri/inbox";
 import { ReportHost } from "./src/osiri/report";
 import {
@@ -275,6 +276,7 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [storeTab, setStoreTab] = useState<StoreTab>(initial.storeTab);
   const [room, setRoom] = useState<Room>();
+  const [group, setGroup] = useState<GroupView>();
   // 오류 보고의 «오류 발생 전 활동» — 지금 어느 화면·어느 방인지
   useEffect(() => setScreen(room ? `room:${room.id}` : `tab:${tab}`), [room, tab]);
   // 방을 열 때 보일 곳 (목록 배지 → 승인 카드, 결재함 [방에서 보기]·활동 → 그 메시지)
@@ -328,14 +330,16 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
   // 안드로이드 뒤로 제스처: 방·다른 탭 → 홈(기본 대화), 홈에서만 앱을 닫는다. 서랍·시트는 Modal 이 스스로 닫힌다
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (!room && tab === "rooms") return false;
+      if (!room && !group && tab === "rooms") return false;
+      setGroup(undefined);
       setRoom(undefined);
       setTab("rooms");
       return true;
     });
     return () => sub.remove();
-  }, [room, tab]);
+  }, [room, group, tab]);
   const openRoom = useCallback((next: Room, nextFocus?: RoomFocus) => {
+    setGroup(undefined);
     setTab("rooms");
     setRoom(next);
     setFocus(nextFocus);
@@ -404,6 +408,8 @@ function WorkspaceApp({ token, onLogout }: { token: string; onLogout: () => void
               setTab(next);
             }}
             room={room}
+            group={group}
+            setGroup={setGroup}
             focus={focus}
             personal={personal}
             pending={pending}
@@ -437,6 +443,8 @@ function Shell({
   tab,
   setTab,
   room,
+  group,
+  setGroup,
   focus,
   personal,
   pending,
@@ -454,6 +462,8 @@ function Shell({
   tab: Tab;
   setTab: (tab: Tab) => void;
   room?: Room;
+  group?: GroupView;
+  setGroup: (group?: GroupView) => void;
   focus?: RoomFocus;
   personal?: Room;
   pending: number;
@@ -511,7 +521,9 @@ function Shell({
     );
   // 방 안: 탭 숨김, 전체 화면 (§4.0). 웹에서는 사이드바 옆 메인에 뜬다
   // 채팅 탭 = 영시리와의 기본 채팅(Muse 처럼). 팀 방은 그 화면의 버튼으로 연다
-  const main = room ? (
+  const main = group ? (
+    <GroupScreen key={group.id} group={group} onBack={() => setGroup(undefined)} />
+  ) : room ? (
     <RoomScreen key={room.id} room={room} focus={focus} onBack={closeRoom} onOpenRoom={openRoom} />
   ) : tab === "rooms" ? (
     personal ? (
@@ -584,6 +596,7 @@ function Shell({
                   onOpen={openRoom}
                   activeId={room?.id ?? (tab === "rooms" ? personal?.id : undefined)}
                 />
+                <GroupList onOpen={setGroup} activeId={group?.id} />
               </ScrollView>
               <LiveChip live={live} />
               <View
@@ -667,6 +680,13 @@ function Shell({
               onOpen={(next, nextFocus) => {
                 setMenuOpen(false);
                 openRoom(next, nextFocus);
+              }}
+            />
+            <GroupList
+              activeId={group?.id}
+              onOpen={(next) => {
+                setMenuOpen(false);
+                setGroup(next);
               }}
             />
             <View style={{ height: 1, backgroundColor: colors.line, marginVertical: 8 }} />

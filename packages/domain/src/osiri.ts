@@ -732,3 +732,8 @@ export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 export const FEED_EVERY_HOURS = 12;
 export const FEED_PROMPT_MAX = 10;
 export const FEED_RESULTS_PER_RUN = 5;
+
+// 단체 톡 (마스터 2026-10-11) — 서버 osiri/groups.ts 와 화면 groups.tsx 가 같이 쓴다
+export const GROUP_TITLE_MAX = 40;
+export const GROUP_NICKNAME_MAX = 20;
+export const GROUP_TEXT_MAX = 4000;
