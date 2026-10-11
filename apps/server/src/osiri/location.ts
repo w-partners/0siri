@@ -1,0 +1,92 @@
+// 사용자 위치(GPS) — 날씨·주변·길 묻기에 쓰려고 앱이 올린 마지막 위치 하나만 둔다(records kind "location", id "me").
+// 개인정보라 본인 owner 에만 쓰고 읽으며, 끄면 좌표를 지우고 다시 켤 때까지 받지 않는다.
+import { Hono } from "hono";
+import { z } from "zod";
+import type { Store } from "../db.ts";
+
+export interface UserLocation {
+  id: "me";
+  enabled: boolean;
+  lat?: number;
+  lng?: number;
+  /** 미터 */
+  accuracy?: number;
+  /** 기기가 역지오코딩한 주소(없을 수 있다 — 웹은 좌표만) */
+  address?: string;
+  at?: string;
+}
+/** 이보다 오래된 위치는 답에 쓰지 않는다 — 사람이 움직였을 수 있다 */
+export const LOCATION_FRESH_MS = 6 * 3600 * 1000;
+const KIND = "location";
+
+export async function readLocation(db: Store, owner: string): Promise<UserLocation> {
+  return (await db.get<UserLocation>(owner, KIND, "me")) ?? { id: "me", enabled: true };
+}
+
+/** 대화 프롬프트에 붙일 한 줄. 꺼졌거나 오래됐거나 없으면 undefined */
+export async function locationNote(
+  db: Store,
+  owner: string,
+  now = Date.now(),
+): Promise<string | undefined> {
+  const where = await readLocation(db, owner);
+  if (!where.enabled || where.lat === undefined || where.lng === undefined || !where.at) return;
+  const age = now - Date.parse(where.at);
+  if (!(age >= 0 && age <= LOCATION_FRESH_MS)) return;
+  const place = where.address ? `${where.address} ` : "";
+  return `User's current location (from their phone GPS, ${Math.round(age / 60000)} min ago, ±${Math.round(where.accuracy ?? 0)}m): ${place}(lat ${where.lat.toFixed(5)}, lng ${where.lng.toFixed(5)}). Use it for weather, nearby places, directions and local time questions without asking where they are; do not mention coordinates unless asked.`;
+}
+
+/**
+ * 날씨 — Open-Meteo(키 없음, 무료)의 지금·오늘·내일 예보. 웹 검색은 실시간 수치를 못 주는 일이 잦아 따로 둔다.
+ * 값 뜻: weather_code 는 WMO 코드(0 맑음, 1~3 구름, 45·48 안개, 51~67 비, 71~77 눈, 80~82 소나기, 95~99 뇌우).
+ */
+export async function weatherAt(lat: number, lng: number, fetcher: typeof fetch = fetch) {
+  const url = new URL("https://api.open-meteo.com/v1/forecast");
+  url.search = new URLSearchParams({
+    latitude: String(lat),
+    longitude: String(lng),
+    current:
+      "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+    daily:
+      "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum",
+    timezone: "auto",
+    forecast_days: "2",
+  }).toString();
+  const response = await fetcher(url, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`날씨 서비스 응답 ${response.status}`);
+  return { source: "Open-Meteo", ...(await response.json()) };
+}
+
+export function locationRoutes(db: Store) {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  app.get("/location", async (c) => c.json(await readLocation(db, c.get("owner"))));
+  // 앱이 위치를 올린다. 꺼 둔 사용자의 위치는 저장하지 않는다(앱이 아직 모르고 보내도)
+  app.put("/location", async (c) => {
+    const body = z
+      .object({
+        lat: z.number().min(-90).max(90),
+        lng: z.number().min(-180).max(180),
+        accuracy: z.number().min(0).max(1e6).optional(),
+        address: z.string().trim().max(200).optional(),
+      })
+      .parse(await c.req.json());
+    const owner = c.get("owner");
+    const current = await readLocation(db, owner);
+    if (!current.enabled) return c.json(current);
+    const next: UserLocation = { id: "me", enabled: true, ...body, at: new Date().toISOString() };
+    await db.put(owner, KIND, next);
+    return c.json(next);
+  });
+  // 켜고 끄기. 끄면 좌표·주소를 지운다
+  app.patch("/location", async (c) => {
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(await c.req.json());
+    const owner = c.get("owner");
+    const next: UserLocation = enabled
+      ? { ...(await readLocation(db, owner)), enabled: true }
+      : { id: "me", enabled: false };
+    await db.put(owner, KIND, next);
+    return c.json(next);
+  });
+  return app;
+}

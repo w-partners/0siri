@@ -80,6 +80,7 @@ import {
 import { DeviceMemoryError } from "./device-embed.types";
 import { openReport } from "./diag";
 import { setCharacterPref } from "./eve";
+import { type LocationState, locationState, setLocationEnabled } from "./location";
 import { MemoryScreen } from "./memory";
 import { NetworkScreen } from "./network";
 import { OperatorScreen } from "./operator";
@@ -226,6 +227,16 @@ const text = {
   notifyNotReady: "알림 발송이 아직 없습니다 — 준비되면 여기서 켜고 끌 수 있습니다",
   onOff: (on: boolean) => (on ? "켜짐" : "꺼짐"),
   characterTitle: "캐릭터",
+  locationTitle: "위치",
+  locationOn: "내 위치를 영시리에게 알려 주기 (날씨·주변·길 안내)",
+  locationHint:
+    "대화 화면을 열 때 휴대폰 위치(GPS)를 10분에 한 번 서버에 둡니다. 6시간이 지난 위치는 쓰지 않고, 끄면 저장된 위치를 지웁니다.",
+  locationStates: {
+    ok: "위치를 받고 있습니다",
+    denied: "위치 권한이 거절되어 있습니다 — 휴대폰 설정의 0Siri 앱 권한에서 위치를 허용하세요",
+    off: "꺼져 있습니다",
+    error: "위치를 읽지 못했습니다 — 위치 서비스(GPS)가 켜져 있는지 확인하세요",
+  } satisfies Record<LocationState, string>,
   characterOn: "캐릭터 표시",
   intensity: "반응 강도",
   menuTitle: "더 보기",
@@ -811,6 +822,32 @@ function DeviceCard() {
   );
 }
 
+function LocationBlock() {
+  const { api } = useWorkspace();
+  const act = useAction();
+  const [enabled, setEnabled] = useState<boolean>();
+  const [status, setStatus] = useState<LocationState | undefined>(locationState());
+  useEffect(() => {
+    api.request<{ enabled: boolean }>("/api/location").then(
+      (where) => setEnabled(where.enabled),
+      () => setStatus("error"),
+    );
+  }, [api]);
+  const toggle = () =>
+    act.run(async () => {
+      const next = !enabled;
+      setStatus(await setLocationEnabled(api, next));
+      setEnabled(next);
+    });
+  return (
+    <Block title={text.locationTitle}>
+      <CheckRow label={text.locationOn} checked={enabled === true} onPress={toggle} />
+      <Text style={s.small}>{text.locationHint}</Text>
+      {status && <Text style={s.small}>{text.locationStates[status]}</Text>}
+    </Block>
+  );
+}
+
 function PreferencesCard({
   settings,
   onSaved,
@@ -870,6 +907,7 @@ function PreferencesCard({
             </>
           )}
         </Block>
+        <LocationBlock />
         <Block title={text.characterTitle}>
           <CheckRow
             label={text.characterOn}

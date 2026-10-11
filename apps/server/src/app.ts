@@ -39,6 +39,7 @@ import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { History, historyRoutes } from "./osiri/history.ts";
 import { UsageLimits } from "./osiri/limits.ts";
+import { locationRoutes } from "./osiri/location.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
@@ -350,6 +351,7 @@ export async function createApp(
   app.route("/api", roomRoutes(osiri));
   app.route("/api", memoryRoutes(memories));
   app.route("/api", historyRoutes(history));
+  app.route("/api", locationRoutes(db));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));

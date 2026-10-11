@@ -44,6 +44,7 @@ import {
   threadLocked,
 } from "./conversation-run";
 import type { Mood } from "./osiri/eve";
+import { shareLocation } from "./osiri/location";
 import { PaneFileButton } from "./osiri/pane-send";
 import { VoiceButton } from "./osiri/voice";
 import { SearchToolCard } from "./search-tool-card";
@@ -287,6 +288,10 @@ export function ChatScreen({
   const [restored, setRestored] = useState(false);
   const [restoreError, setRestoreError] = useState("");
   const [outboxError, setOutboxError] = useState("");
+  // 위치: 대화 화면이 열리면 지금 위치를 서버에 둔다(10분에 한 번, 꺼 뒀으면 안 함) — 날씨·주변 질문용
+  useEffect(() => {
+    void shareLocation(api);
+  }, [api]);
   useEffect(() => {
     let live = true;
     setRestored(false);

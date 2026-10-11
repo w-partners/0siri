@@ -21,6 +21,7 @@ import type { Config } from "../config.ts";
 import { createJevAdapter, type JevAdapter } from "../jev/adapter.ts";
 import { JevService } from "../jev/service.ts";
 import { presentChoicesTool } from "../jev/tools.ts";
+import { locationNote, readLocation, weatherAt } from "../osiri/location.ts";
 import type { ChatRoute } from "../osiri/routing.ts";
 import { searchDescription, searchInputSchema, searchInstructions } from "../search.ts";
 import type { AgentService } from "./service.ts";
@@ -425,6 +426,35 @@ export class ConversationAgent extends AbstractAgent {
           return { sessions: await history.recent(this.owner, 8, input.threadId) };
         },
       }),
+      defineTool({
+        name: "weather",
+        description:
+          "Current weather and today/tomorrow forecast (Open-Meteo, live). Without lat/lng it uses the user's phone location. For another place, pass that place's lat/lng. Use this instead of web search for weather.",
+        parameters: z.object({
+          lat: z.number().min(-90).max(90).optional(),
+          lng: z.number().min(-180).max(180).optional(),
+        }),
+        execute: async ({ lat, lng }) => {
+          try {
+            if (lat !== undefined && lng !== undefined) return await weatherAt(lat, lng);
+            const where = await readLocation(this.service.db, this.owner);
+            if (!where.enabled || where.lat === undefined || where.lng === undefined)
+              return {
+                error:
+                  "사용자 위치를 모릅니다(위치가 꺼져 있거나 아직 안 올라옴) — 어느 지역인지 물어보세요",
+              };
+            return {
+              place: where.address,
+              at: where.at,
+              ...(await weatherAt(where.lat, where.lng)),
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[osiri] weather 실패: ${message}`);
+            return { error: `날씨를 가져오지 못했습니다: ${message}` };
+          }
+        },
+      }),
     ];
     // 0Siri: 방 페르소나는 DB 조회라 비동기 → 에이전트는 구독 시점에 만든다.
     // 0Siri: 모델·티어는 요청마다 Routing 이 고른다(설정·월 상한·BYOK 반영). 답변 메시지 id 는 사용량 기록에 묶는다.
@@ -486,6 +516,9 @@ export class ConversationAgent extends AbstractAgent {
           let route: ChatRoute | undefined;
           try {
             persona = await this.persona?.(this.owner, input.threadId);
+            // 0Siri: 앱이 올린 최근 위치(켜 둔 사람만) — 날씨·주변 질문에 «어디세요?» 를 묻지 않게
+            const where = await locationNote(this.service.db, this.owner);
+            if (where) persona = persona ? `${persona}\n\n${where}` : where;
             // 0Siri tmux 창 붙이기(ACP): 그 창 CLI 의 같은 세션이 답한다 — 기록·도구·파일까지(모델·구독보다 먼저)
             const panes = this.service.osiri?.panes;
             const pane = await panes?.linked(this.owner, input.threadId);
