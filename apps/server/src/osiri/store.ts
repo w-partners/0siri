@@ -26,7 +26,7 @@ import {
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import { type Accounts, type AuditWriter, KindError } from "./accounts.ts";
+import { type Accounts, type AuditWriter, KindError, normalizePhone } from "./accounts.ts";
 import { LIMITS_PREFIX, limitsSchema } from "./limits.ts";
 import type { Rooms } from "./rooms.ts";
 import { everyMs, type TeamSpec } from "./team-runtime.ts";
@@ -100,6 +100,14 @@ export interface SubscriberControls {
   disabledTools?: string[];
   /** (나) «승인 받기» 로 올린 도구 — read·write 도 실행 전 승인 카드. external 은 원래 승인이고 끌 수 없다 */
   approvalTools?: string[];
+  /** (다) 결재자 — 구독자 말고도 이 팀(방)의 승인을 결재할 수 있는 회원 id */
+  approvers?: string[];
+}
+/** 결재자 색인 (system): 결재자가 «내가 결재할 남의 방» 을 찾는다. id = `<결재자>|<구독자>|<방>` */
+export type ApproverEntry = { id: string; approverId: string; owner: string; roomId: string };
+export const APPROVER_INDEX = "approvers";
+export async function delegatedRooms(db: Store, approverId: string): Promise<ApproverEntry[]> {
+  return db.listByField<ApproverEntry>("system", APPROVER_INDEX, "approverId", approverId);
 }
 /** 이 방(팀) 구독의 조정 — 워커 입구가 읽는다. 구독 방이 아니면 빈 조정 */
 export async function subscriptionControls(
@@ -518,6 +526,18 @@ export class Catalog {
       controls: { ...subscription.controls, ...patch },
     };
     await this.db.put(owner, "subscriptions", updated);
+    if (patch.approvers) {
+      const key = (approverId: string) => `${approverId}|${owner}|${subscription.roomId}`;
+      for (const old of subscription.controls?.approvers ?? [])
+        await this.db.remove("system", APPROVER_INDEX, key(old));
+      for (const approverId of patch.approvers)
+        await this.db.put<ApproverEntry>("system", APPROVER_INDEX, {
+          id: key(approverId),
+          approverId,
+          owner,
+          roomId: subscription.roomId,
+        });
+    }
     await this.rooms.audit(owner, {
       packageId: subscription.packageId,
       roomId: subscription.roomId,
@@ -665,9 +685,29 @@ export function storeRoutes(
         paused: z.boolean().optional(),
         disabledTools: tools.optional(),
         approvalTools: tools.optional(),
+        /** (다) 결재자 전화번호 — 회원이어야 한다. 빈 목록이면 결재자 없음 */
+        approverPhones: z.array(z.string().min(1)).max(10).optional(),
       })
       .parse(await c.req.json());
-    return c.json(await catalog.setControls(c.get("owner"), c.req.param("id"), body));
+    const owner = c.get("owner");
+    const { approverPhones, ...controls } = body;
+    let approvers: string[] | undefined;
+    if (approverPhones) {
+      approvers = [];
+      for (const phone of approverPhones) {
+        const user = await accounts.userByPhone(normalizePhone(phone));
+        // ponytail: 404 로 회원 여부가 갈린다(번호 열거) — 지인 앱이라 받아들임. 넓게 열면 같은 네트워크 회원만 허용
+        if (!user) throw new AppError("회원이 아닌 번호가 있습니다", 404);
+        if (user.id === owner) throw new AppError("나 자신은 결재자로 따로 넣지 않습니다", 422);
+        approvers.push(user.id);
+      }
+    }
+    return c.json(
+      await catalog.setControls(owner, c.req.param("id"), {
+        ...controls,
+        ...(approvers ? { approvers } : {}),
+      }),
+    );
   });
   app.post("/subscriptions/:id/resume", async (c) => {
     try {

@@ -1,6 +1,6 @@
 // 0Siri 방·결재함·목표·승인·실시간 스트림·워커 API 라우트 (0SIRI-SPEC §21).
 import { createHash, randomBytes } from "node:crypto";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { z } from "zod";
 import {
@@ -35,6 +35,7 @@ import type { Routing } from "./routing.ts";
 import type { Skills } from "./skills.ts";
 import {
   type Catalog,
+  delegatedRooms,
   type SubscriberControls,
   subscriptionControls,
   type TeamPackage,
@@ -410,21 +411,26 @@ export function roomRoutes(deps: RoomDeps) {
   });
 
   // S3/S4 승인·반려. 반려는 reasonKind 필수(400). 이미 처리된 건은 409 + 현재 status
-  app.post("/approvals/:id/decide", async (c) => {
-    const body = z
-      .object({
-        decision: z.enum(APPROVAL_DECISIONS),
-        reasonKind: z.enum(REJECT_REASON_KINDS).optional(),
-        reason: z.string().max(1000).optional(),
-        frozenHash: z.string().optional(),
-      })
-      .parse(await c.req.json());
+  const decideBody = z.object({
+    decision: z.enum(APPROVAL_DECISIONS),
+    reasonKind: z.enum(REJECT_REASON_KINDS).optional(),
+    reason: z.string().max(1000).optional(),
+    frozenHash: z.string().optional(),
+  });
+  /** 결재 한 건 — 본인 결재와 지정 결재자(C 다)가 같은 길을 탄다. decidedBy 가 실제 결재한 사람 */
+  const decideAs = async (
+    c: Context<Env>,
+    owner: string,
+    id: string,
+    decidedBy: string,
+    body: z.infer<typeof decideBody>,
+  ) => {
     let result: Awaited<ReturnType<Approvals["decide"]>>;
     try {
-      result = await approvals.decide(c.get("owner"), c.req.param("id"), body.decision, {
+      result = await approvals.decide(owner, id, body.decision, {
         reason: body.reason,
         reasonKind: body.reasonKind,
-        decidedBy: c.get("owner"),
+        decidedBy,
         frozenHash: body.frozenHash,
       });
     } catch (error) {
@@ -438,6 +444,38 @@ export function roomRoutes(deps: RoomDeps) {
       ...safe
     } = result as typeof result & { token?: string };
     return c.json(safe);
+  };
+  app.post("/approvals/:id/decide", async (c) =>
+    decideAs(
+      c,
+      c.get("owner"),
+      c.req.param("id"),
+      c.get("owner"),
+      decideBody.parse(await c.req.json()),
+    ),
+  );
+  // 지정 결재자(wgolf RPT-02 C 다): 구독자가 나를 결재자로 둔 방들의 승인 대기
+  app.get("/approvals/delegated", async (c) => {
+    const entries = await delegatedRooms(db, c.get("owner"));
+    const lists = await Promise.all(
+      entries.map(async (e) =>
+        (await approvals.pendingForRoom(e.owner, e.roomId)).map(({ tokenHash: _h, ...a }) => ({
+          ...a,
+          owner: e.owner,
+        })),
+      ),
+    );
+    return c.json(lists.flat());
+  });
+  app.post("/approvals/delegated/:owner/:id/decide", async (c) => {
+    const me = c.get("owner");
+    const owner = c.req.param("owner");
+    const approval = await approvals.get(owner, c.req.param("id"));
+    const allowed = (await delegatedRooms(db, me)).some(
+      (e) => e.owner === owner && e.roomId === approval.roomId,
+    );
+    if (!allowed) throw new AppError("이 승인의 결재자가 아닙니다", 403);
+    return decideAs(c, owner, approval.id, me, decideBody.parse(await c.req.json()));
   });
   // S4 결재함 — 전 팀 승인 대기 + 활동 (§10 ③층). ?room_id= · ?kind= 로 거른다.
   // 승인 대기는 팀(방)별로 읽는다 — 한 팀이 실패해도 나머지는 주고, 실패한 팀은 failed 로 알린다

@@ -808,3 +808,46 @@ test("구독자 조정(C): 일시정지면 워커 403, 끈 도구는 목록에�
   await db.remove(OWNER, "subscriptions", subscription.id);
   assert.equal((await call("/tools")).status, 200);
 });
+
+test("지정 결재자(C 다): 구독자가 둔 결재자만 그 방 승인을 보고 결재한다, 결재자를 빼면 사라진다", async () => {
+  const room = await rooms.ensurePersonalRoom(OWNER);
+  const site = (await mcp.list(OWNER)).find((s) => s.name === "site");
+  assert.ok(site);
+  const subId = `sub-${randomUUID()}`;
+  await db.put(OWNER, "subscriptions", {
+    id: subId,
+    packageId: "p",
+    roomId: room.id,
+    status: "active",
+  });
+  const catalog = new Catalog(db, rooms, async () => undefined);
+  await catalog.setControls(OWNER, subId, { approvers: ["approver-1"] });
+  const pending = (await mcp.call(OWNER, {
+    roomId: room.id,
+    serverId: site.id,
+    tool: "publish",
+    args: draft,
+  })) as { approvalId: string };
+  const as = (who: string, path: string, body?: unknown) =>
+    app.request(`/api${path}`, {
+      method: body ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${who}`, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  const listed = (await (await as("approver-1", "/approvals/delegated")).json()) as {
+    id: string;
+    owner: string;
+    tokenHash?: string;
+  }[];
+  const mine = listed.find((a) => a.id === pending.approvalId);
+  assert.equal(mine?.owner, OWNER);
+  assert.equal(mine?.tokenHash, undefined, "토큰 해시는 내보내지 않는다");
+  assert.deepEqual(await (await as("stranger", "/approvals/delegated")).json(), []);
+  const path = `/approvals/delegated/${OWNER}/${pending.approvalId}/decide`;
+  assert.equal((await as("stranger", path, { decision: "approve" })).status, 403);
+  assert.equal((await as("approver-1", path, { decision: "approve" })).status, 200);
+  assert.equal((await approvals.get(OWNER, pending.approvalId)).decidedBy, "approver-1");
+  await catalog.setControls(OWNER, subId, { approvers: [] });
+  assert.deepEqual(await (await as("approver-1", "/approvals/delegated")).json(), []);
+  await db.remove(OWNER, "subscriptions", subId);
+});
