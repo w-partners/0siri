@@ -23,6 +23,8 @@ import {
   type StoreCategory,
   type SubscribeErrorKind,
   type SubscriptionStatus,
+  TEAM_TABS_MAX,
+  type TeamTab,
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -48,6 +50,8 @@ export interface TeamPackage {
   roles: PackageRole[];
   /** 팀 YAML `package.x-osiri-flow` 의 역할들. 없으면 기본 흐름(DEFAULT_TEAM_FLOW) */
   flow?: string[];
+  /** 운영자가 만든 팀 탭(`package.x-osiri-tabs`) — 팀 방 탭 줄에 기본 탭과 함께 뜬다 */
+  tabs?: TeamTab[];
   approvalPoints: string[]; // 승인 없이는 나가지 않는 행위 (§7.1-4)
   reportCadence: ReportCadence;
   verified: boolean;
@@ -789,6 +793,20 @@ export function storeRoutes(
           .array(z.object({ role: z.string().min(1) }))
           .min(1)
           .optional(),
+        "x-osiri-tabs": z
+          .array(
+            z
+              .object({
+                id: z.string().regex(/^[a-z0-9-]{1,30}$/),
+                title: z.string().min(1).max(20),
+                markdown: z.string().max(20000).optional(),
+                html: z.string().max(60000).optional(),
+              })
+              .refine((tab) => !!tab.markdown !== !!tab.html),
+          )
+          .max(TEAM_TABS_MAX)
+          .refine((tabs) => new Set(tabs.map((t) => t.id)).size === tabs.length)
+          .optional(),
         "x-osiri-watch": z
           .array(
             z.object({
@@ -812,7 +830,7 @@ export function storeRoutes(
       .safeParse(spec?.package);
     if (!head.success)
       throw new AppError(
-        `팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다 (x-osiri-flow 는 [{role}] 목록, x-osiri-principal 은 20자 이내, x-osiri-watch 는 [{id, tool, every: 5m·1h·1d, role, notify?}], report_cadence 는 ${REPORT_CADENCES.join("·")})`,
+        `팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다 (x-osiri-flow 는 [{role}] 목록, x-osiri-principal 은 20자 이내, x-osiri-watch 는 [{id, tool, every: 5m·1h·1d, role, notify?}], x-osiri-tabs 는 [{id: 소문자·숫자·-, title: 20자, markdown 또는 html 하나}] ${TEAM_TABS_MAX}개 이내·id 중복 없이, report_cadence 는 ${REPORT_CADENCES.join("·")})`,
         422,
       );
     for (const watch of head.data["x-osiri-watch"] ?? [])
@@ -847,6 +865,7 @@ export function storeRoutes(
       summary: meta.summary,
       roles,
       flow: head.data["x-osiri-flow"]?.map((step) => step.role),
+      tabs: head.data["x-osiri-tabs"],
       approvalPoints: head.data.approval_points,
       reportCadence: head.data.report_cadence ?? "weekly",
       verified: existing?.verified ?? false,

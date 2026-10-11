@@ -21,6 +21,9 @@ import {
   PROPOSAL_DECISIONS,
   REJECT_REASON_KINDS,
   REVIEW_ESCALATION_THRESHOLD,
+  PERSONAL_CHARACTER_ID,
+  ROOM_CHARACTER_PHOTO_MAX,
+  ROOM_CHARACTER_PRESETS,
   ROOM_TITLE_MAX,
   WORKER_PRESENCE_STATES,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -252,13 +255,39 @@ export function roomRoutes(deps: RoomDeps) {
       .parse(await c.req.json());
     return c.json(await rooms.createTopic(c.get("owner"), body.title, body.seed));
   });
+  // 방 설정: 이름(주제방만) · 캐릭터(null = 팀 기본으로) · 탭 순서 (마스터 2026-10-11 «팀별 캐릭터·탭 위치 이동»)
   app.patch("/rooms/:id", async (c) => {
-    const { title } = z
-      .object({ title: z.string().trim().min(1).max(ROOM_TITLE_MAX) })
+    const body = z
+      .object({
+        title: z.string().trim().min(1).max(ROOM_TITLE_MAX).optional(),
+        character: z
+          .union([
+            z.enum(ROOM_CHARACTER_PRESETS),
+            z
+              .string()
+              .max(ROOM_CHARACTER_PHOTO_MAX)
+              .regex(/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/),
+            z.string().max(500).regex(/^https:\/\/\S+$/),
+          ])
+          .nullable()
+          .optional(),
+        tabOrder: z.array(z.string().min(1).max(40)).max(30).optional(),
+      })
       .parse(await c.req.json());
-    const room = await rooms.get(c.get("owner"), c.req.param("id"));
-    if (!room.topic) throw new AppError("팀 방·영시리 방 이름은 바꿀 수 없습니다", 409);
-    return c.json(await rooms.patch(c.get("owner"), room.id, { title }));
+    const owner = c.get("owner");
+    const room = await rooms.get(owner, c.req.param("id"));
+    if (body.title !== undefined && !room.topic)
+      throw new AppError("팀 방·영시리 방 이름은 바꿀 수 없습니다", 409);
+    const patch: Partial<Room> = {};
+    if (body.title !== undefined) patch.title = body.title;
+    if (body.tabOrder) patch.tabOrder = body.tabOrder;
+    if (body.character !== undefined)
+      patch.character =
+        body.character ??
+        (room.packageId
+          ? ((await catalog?.packageById(room.packageId))?.character ?? PERSONAL_CHARACTER_ID)
+          : PERSONAL_CHARACTER_ID);
+    return c.json(await rooms.patch(owner, room.id, patch));
   });
   app.delete("/rooms/:id", async (c) => {
     await rooms.removeTopic(c.get("owner"), c.req.param("id"));
@@ -340,7 +369,21 @@ export function roomRoutes(deps: RoomDeps) {
       for (const entry of await routing.answers(owner, roomId))
         for (const messageId of entry.messageIds)
           answers[messageId] = answeredByView(entry.answered_by);
-    return c.json({ room, digest, messages, board: await rooms.board(owner, roomId), answers });
+    // 운영자가 팀 YAML 로 만든 탭 — 패키지를 못 읽으면 탭 없이 내고 흔적을 남긴다
+    const tabs = room.packageId
+      ? ((await catalog?.packageById(room.packageId).catch((error) => {
+          console.warn(`[osiri] 방 ${roomId} 팀 탭을 읽지 못함: ${errorText(error)}`);
+          return undefined;
+        }))?.tabs ?? [])
+      : [];
+    return c.json({
+      room,
+      digest,
+      messages,
+      board: await rooms.board(owner, roomId),
+      answers,
+      tabs,
+    });
   });
   app.post("/rooms/:id/messages", async (c) => {
     const body = z

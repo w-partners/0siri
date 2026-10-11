@@ -340,6 +340,26 @@ export const REVIEW_MANUAL_REASON = "자동 검증 미지원 — 수동 심사 �
 
 // ---- 개인 방 (일반 등급) ----
 export const PERSONAL_CHARACTER_ID = "yeongsil";
+/** 방 설정에서 고르는 캐릭터 — 영시리(EVE)·플랫폼 카피바라 두 색. 그 밖에 팀 기본값·내 사진(data:image) */
+export const ROOM_CHARACTER_PRESETS = ["yeongsil", "mascot:sand", "mascot:lilac"] as const;
+export const ROOM_CHARACTER_LABELS: Record<(typeof ROOM_CHARACTER_PRESETS)[number], string> = {
+  yeongsil: "영시리",
+  "mascot:sand": "카피바라 (모래)",
+  "mascot:lilac": "카피바라 (라일락)",
+};
+/** 방 캐릭터로 올리는 사진의 최대 크기(data URL 글자 수) — 방 목록마다 실리므로 작게 */
+export const ROOM_CHARACTER_PHOTO_MAX = 300_000;
+/** 운영자가 팀 YAML `package.x-osiri-tabs` 로 만드는 팀 탭 — 본문은 마크다운 또는 HTML 중 하나 */
+export interface TeamTab {
+  id: string;
+  title: string;
+  markdown?: string;
+  html?: string;
+}
+export const TEAM_TABS_MAX = 8;
+/** 팀 방 기본 탭 — 사용자가 순서를 바꾼다(방마다 tabOrder). 운영자 탭은 id 앞에 "x:" */
+export const BUILTIN_ROOM_TABS = ["chat", "board", "goals", "skills", "feed", "ideas", "files"] as const;
+export type BuiltinRoomTab = (typeof BUILTIN_ROOM_TABS)[number];
 export const PERSONAL_ROOM_TITLE = "영시리";
 
 // ---- 계정·스토어·연결·기억·설정 (계약 화면 1·6·7·8·11) ----
@@ -401,16 +421,29 @@ export interface NotificationPrefs {
   approvals: boolean;
   weeklyReport: boolean;
 }
+/** 기본 채팅(영시리 방)에서 팀 아이콘을 어떻게 보일지 — 머리 아래 줄 · 화면 위에 떠 있게 · 숨김 */
+export const TEAM_ICON_MODES = ["row", "float", "hidden"] as const;
+export type TeamIconMode = (typeof TEAM_ICON_MODES)[number];
+export const TEAM_ICON_MODE_LABELS: Record<TeamIconMode, string> = {
+  row: "머리 아래 줄",
+  float: "떠 있게",
+  hidden: "숨김",
+};
 export interface CharacterPrefs {
   enabled: boolean;
   intensity: CharacterIntensity;
+  teamIcons?: TeamIconMode;
 }
 /** 사용자가 한 번도 바꾸지 않았을 때의 설정 초기값 — 서버·앱이 같은 값을 본다 */
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   approvals: true,
   weeklyReport: true,
 };
-export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = { enabled: true, intensity: "motion" };
+export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = {
+  enabled: true,
+  intensity: "motion",
+  teamIcons: "row",
+};
 
 // ---- 서버·앱 공용 라벨·문턱 (화면 3·4·5·6·9·11) — 서버가 쓰던 표를 여기로 올렸다 ----
 export const APPROVAL_STATUSES = [

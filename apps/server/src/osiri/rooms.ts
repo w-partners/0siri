@@ -46,6 +46,8 @@ export interface Room {
   archived?: boolean; // 해지 시 읽기 전용
   muted?: boolean; // 알림 끔 (방 목록 항목은 항상 boolean 으로 낸다)
   topic?: boolean; // 사용자가 «새 대화방»으로 연 영시리 주제방 (packageId 없음, 홈 아님)
+  /** 사용자가 정한 팀 방 탭 순서(기본 탭 id·운영자 탭 "x:<id>"). 없거나 빠진 탭은 기본 순서로 뒤에 붙는다 */
+  tabOrder?: string[];
 }
 /** 방 목록 카드 — `GET /rooms` 항목 */
 export type RoomCard = Room & {

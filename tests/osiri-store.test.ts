@@ -366,3 +366,32 @@ test("팀 제작자 셀프서비스: 담당 운영자가 자기 팀 YAML 을 고
   const restored = (await (await call(path, "op-1")).json()) as { yaml: string };
   assert.equal(restored.yaml, edited, "한 단계 전 판(감시 넣기 전)으로 돌아간다");
 });
+
+test("팀 탭: 운영자가 YAML x-osiri-tabs 로 탭을 만들고(마크다운·HTML 중 하나), 잘못된 탭은 거절", async () => {
+  // 앞 테스트가 같은 팀(legal-marketing)을 이미 등록했다 — 그 판의 YAML 에 탭을 더한다
+  const pkg = (await catalog.packages()).find((p) => p.slug === "legal-marketing");
+  assert.ok(pkg);
+  const path = `/api/operator/packages/${pkg.id}/yaml`;
+  const yamlNow = ((await (await call(path, "op-1")).json()) as { yaml: string }).yaml;
+  const withTabs = (tabs: string) =>
+    yamlNow.replace(/report_cadence: (\w+)/, `report_cadence: $1\n  x-osiri-tabs:\n${tabs}`);
+  const ok = withTabs(
+    '    - { id: guide, title: 이용 안내, markdown: "# 안내\\n상담은 평일" }\n    - { id: price, title: 가격표, html: "<table><tr><td>1</td></tr></table>" }',
+  );
+  assert.equal((await call(path, "op-1", { yaml: ok }, "PUT")).status, 200);
+  const saved = await catalog.packageById(pkg.id);
+  assert.deepEqual(
+    saved.tabs?.map((t) => [t.id, t.title, !!t.markdown, !!t.html]),
+    [
+      ["guide", "이용 안내", true, false],
+      ["price", "가격표", false, true],
+    ],
+  );
+  for (const bad of [
+    withTabs('    - { id: a, title: 둘다, markdown: "x", html: "<p>x</p>" }'),
+    withTabs('    - { id: a, title: 없음 }'),
+    withTabs('    - { id: a, title: 하나, markdown: "x" }\n    - { id: a, title: 둘, markdown: "y" }'),
+    withTabs('    - { id: "Bad Id", title: 이름, markdown: "x" }'),
+  ])
+    assert.equal((await call(path, "op-1", { yaml: bad }, "PUT")).status, 422);
+});

@@ -16,6 +16,7 @@ import {
   CAP_WARN_REACHED_PERCENT,
   type CapWarnLevel,
   CHARACTER_INTENSITIES,
+  TEAM_ICON_MODES,
   type CharacterPrefs,
   DEFAULT_CHARACTER_PREFS,
   DEFAULT_NOTIFICATION_PREFS,
@@ -696,6 +697,7 @@ export function settingsRoutes(
           .object({
             enabled: z.boolean().optional(),
             intensity: z.enum(CHARACTER_INTENSITIES).optional(),
+            teamIcons: z.enum(TEAM_ICON_MODES).optional(),
           })
           .optional(),
       })
