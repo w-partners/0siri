@@ -54,6 +54,7 @@ import type { Mood } from "./osiri/eve";
 import { shareBeforeSend, shareLocation } from "./osiri/location";
 import { PaneFileButton } from "./osiri/pane-send";
 import { PhotoAttachButton, showPhotoMarkers } from "./osiri/photo-attach";
+import { StopSpeakingButton, useSpokenReply } from "./osiri/speak";
 import { VoiceButton } from "./osiri/voice";
 import { SearchToolCard } from "./search-tool-card";
 import { t } from "./strings";
@@ -597,6 +598,7 @@ export function ChatScreen({
   }, [copilotkit, agentId, queue]);
   async function stop() {
     queue.pause();
+    voiceReply.stop();
     if (deviceRunning.current) {
       // 기기 답변: 런타임에 멈추라고 한다 — 그때까지 나온 답은 남기고 저장한다
       deviceStopped.current = true;
@@ -613,10 +615,13 @@ export function ChatScreen({
       setError(t.chat.errors.stopFailed(e instanceof Error ? e.message : String(e)));
     }
   }
-  function send() {
-    const text = draft.trim();
+  /** spoken: 음성으로 들은 글 — 그 답은 음성으로 읽는다. 글로 보내면 읽던 음성을 멈춘다 */
+  function send(spoken?: string) {
+    const text = (spoken ?? draft).trim();
     // 끊겨 있을 때는 준비가 덜 됐어도 받아서 쌓아 둔다(보내는 것은 flush 가 준비된 뒤에 한다)
     if (!text || (online && (!isReady || !loaded))) return;
+    if (spoken) voiceReply.start();
+    else voiceReply.stop();
     // A new submission can continue after Stop; held follow-ups still need explicit resume.
     if (!busy && !agent.isRunning && !saveError && !queue.getSnapshot().pending.length)
       queue.resume();
@@ -637,7 +642,8 @@ export function ChatScreen({
   const visible = messages.filter((m) => m.role === "user" || m.role === "assistant");
   const replying = busy || agent.isRunning;
   // 기분: 답이 흘러나오는 중이면 speaking, 그 전까지는 thinking, 사용자가 쓰는 중이면 listening
-  const last = visible.at(-1) as { role: string; content?: string } | undefined;
+  const last = visible.at(-1) as { id: string; role: string; content?: string } | undefined;
+  const voiceReply = useSpokenReply(last, replying);
   const mood: Mood = replying
     ? last?.role === "assistant" && last.content
       ? "speaking"
@@ -1048,6 +1054,7 @@ export function ChatScreen({
                 </View>
               )}
               <ErrorNotice error={voiceError} />
+              {voiceReply.speaking && <StopSpeakingButton onPress={voiceReply.stop} />}
               <View style={[s.row, { gap: 7, alignItems: "flex-end" }]}>
                 <Pressable
                   accessibilityRole="button"
@@ -1123,14 +1130,19 @@ export function ChatScreen({
                 <VoiceButton
                   draft={draft}
                   setDraft={setDraft}
-                  onListening={setVoiceOn}
+                  onDone={send}
+                  onListening={(listening) => {
+                    // 말하기 시작하면 읽던 답은 멈춘다
+                    if (listening) voiceReply.stop();
+                    setVoiceOn(listening);
+                  }}
                   onError={setVoiceError}
                 />
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={replying ? t.chat.composer.stop : t.chat.composer.send}
                   disabled={!replying && (!draft.trim() || (online && (!loaded || !isReady)))}
-                  onPress={replying ? () => void stop() : send}
+                  onPress={replying ? () => void stop() : () => send()}
                   style={({ pressed }) => ({
                     width: 44,
                     height: 44,

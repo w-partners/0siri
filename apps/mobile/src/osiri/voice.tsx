@@ -1,4 +1,4 @@
-// 음성 입력 — 마이크 버튼을 누르면 앱 안에서 바로 듣고 입력창에 글자로 채운다.
+// 음성 입력 — 마이크 버튼을 누르면 앱 안에서 바로 듣고 입력창에 글자로 채우고, 말이 끝나면 바로 보낸다(마스터 2026-10-11).
 // 안드로이드는 SpeechRecognizer 를 직접 부른다(구글 음성 입력 창·키보드 마이크를 띄우지 않는다). 웹은 브라우저 SpeechRecognition.
 // continuous: 말을 멈춰도 다시 누를 때까지 듣는다 — 안드로이드 13+ 에서는 이 모드여야 시작음(삑)도 나지 않는다.
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition";
@@ -16,33 +16,51 @@ export const VOICE_TEXT = {
 };
 /** 사용자가 끝낸 것·말이 없던 것은 오류가 아니다 */
 const QUIET = new Set(["aborted", "no-speech", "speech-timeout"]);
+/** 말이 이만큼 끊기면 끝난 것으로 보고 보낸다 — ponytail: 고정값, 말이 느린 사람이 잘리면 늘린다 */
+const SILENCE_MS = 1500;
 
 export function VoiceButton({
   draft,
   setDraft,
+  onDone,
   onListening,
   onError,
 }: {
   draft: string;
   setDraft: (text: string) => void;
+  /** 듣기가 끝났을 때 들은 글(입력창에 있던 글 포함) — 바로 보낸다 */
+  onDone: (text: string) => void;
   onListening: (on: boolean) => void;
   onError: (message: string | undefined) => void;
 }) {
   const [on, setOn] = useState(false);
   // 누른 순간의 입력창 글 + 확정된 말. 듣는 중의 말은 그 뒤에 잠정으로 붙는다
   const base = useRef("");
+  // 이번에 들은 글 전체 — 듣기가 끝나면 이것을 보낸다
+  const heard = useRef("");
+  const silence = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const set = (value: boolean) => {
     setOn(value);
     onListening(value);
   };
   useSpeechRecognitionEvent("start", () => set(true));
-  useSpeechRecognitionEvent("end", () => set(false));
+  useSpeechRecognitionEvent("end", () => {
+    clearTimeout(silence.current);
+    set(false);
+    const text = heard.current.trim();
+    heard.current = "";
+    if (text) onDone(text);
+  });
   useSpeechRecognitionEvent("result", (event) => {
     const said = event.results[0]?.transcript?.trim() ?? "";
     if (!said) return;
     const joined = base.current ? `${base.current} ${said}` : said;
     if (event.isFinal) base.current = joined;
+    heard.current = joined;
     setDraft(joined);
+    // 말이 끊기면 듣기를 끝낸다 → end 에서 보낸다. continuous 를 끄지 않는 것은 안드로이드 시작음(삑) 때문
+    clearTimeout(silence.current);
+    silence.current = setTimeout(() => ExpoSpeechRecognitionModule.stop(), SILENCE_MS);
   });
   useSpeechRecognitionEvent("error", (event) => {
     if (QUIET.has(event.error)) return;
@@ -63,6 +81,7 @@ export function VoiceButton({
     const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!permission.granted) return onError(VOICE_TEXT.denied);
     base.current = draft.trim();
+    heard.current = "";
     ExpoSpeechRecognitionModule.start({
       lang: "ko-KR",
       interimResults: true,
