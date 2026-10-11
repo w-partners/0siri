@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import {
   OTP_PURPOSES,
+  TERMS_VERSION,
   USER_ROLES,
   type WaitlistStatus,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -44,6 +45,10 @@ export function publicAccountRoutes(accounts: Accounts, otp: Otp) {
   });
   // 가입은 그 번호로 온 인증번호를 맞혀야 한다 (본인 번호 확인)
   const signupCode = z.string().max(12).default("");
+  // 가입은 지금 판 약관에 동의해야 한다 — 옛 앱(값 없음)·옛 판 동의는 400 으로 막아 새 판을 보게 한다
+  const terms = z.literal(TERMS_VERSION, {
+    error: "이용약관에 동의해야 가입할 수 있습니다 — 앱을 최신으로 업데이트하세요",
+  });
   app.post("/invite/accept", async (c) => {
     const body = z
       .object({
@@ -51,6 +56,7 @@ export function publicAccountRoutes(accounts: Accounts, otp: Otp) {
         phone: z.string().min(1),
         password: z.string().min(1),
         code: signupCode,
+        agreeTerms: terms,
       })
       .parse(await c.req.json());
     await otp.verify(normalizePhone(body.phone), body.code, "signup");
@@ -80,6 +86,7 @@ export function publicAccountRoutes(accounts: Accounts, otp: Otp) {
         // 빠졌거나 짧으면 applyWaitlist 가 «구체적으로 적어 달라»는 400 을 낸다
         purpose: z.string().max(5000).default(""),
         code: signupCode,
+        agreeTerms: terms,
       })
       .parse(await c.req.json());
     await otp.verify(normalizePhone(body.phone), body.code, "signup");

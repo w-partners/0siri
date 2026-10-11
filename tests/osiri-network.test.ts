@@ -1,3 +1,4 @@
+import { TERMS_VERSION } from "../packages/domain/src/osiri.ts";
 // 가입: 전화번호 초대 · 가입 신청(관리자가 상위 회원을 붙여 승인) · 아래로만 보이는 가입 네트워크
 // 전화번호는 전부 자리표시자다 (010-1234-5678 꼴) — 실제 번호를 쓰지 않는다.
 
@@ -72,7 +73,12 @@ const login = (phone: string, password = PASSWORD) =>
 const inviteAndJoin = async (inviterToken: string, phone: string): Promise<Session> => {
   const { link } = await read<{ link: string }>(call("/api/invites", { phone }, inviterToken), 201);
   return read<Session>(
-    call("/api/auth/invite/accept", { token: tokenOf(link), phone, password: PASSWORD }),
+    call("/api/auth/invite/accept", {
+      token: tokenOf(link),
+      phone,
+      password: PASSWORD,
+      agreeTerms: TERMS_VERSION,
+    }),
   );
 };
 const tokenOf = (link: string) => link.slice(link.lastIndexOf("/") + 1);
@@ -144,13 +150,23 @@ test("초대: 회원이 전화번호만으로 초대 → 링크 확인 → 다�
   // 다른 번호로는 가입할 수 없다
   assert.equal(
     await errorOf(
-      call("/api/auth/invite/accept", { token, phone: "010-1234-0000", password: PASSWORD }),
+      call("/api/auth/invite/accept", {
+        token,
+        phone: "010-1234-0000",
+        password: PASSWORD,
+        agreeTerms: TERMS_VERSION,
+      }),
       400,
     ),
     INVITE_PHONE_MISMATCH_MESSAGE,
   );
   const joined = await read<Session>(
-    call("/api/auth/invite/accept", { token, phone: "010-1234-5678", password: PASSWORD }),
+    call("/api/auth/invite/accept", {
+      token,
+      phone: "010-1234-5678",
+      password: PASSWORD,
+      agreeTerms: TERMS_VERSION,
+    }),
   );
   assert.equal(joined.user.invitedBy, admin.user.id);
   assert.ok(!("passwordHash" in joined.user));
@@ -304,7 +320,8 @@ test("네트워크: 아래로만 보인다 — 위·옆은 없고, 손자의 번
 });
 
 test("가입 신청: 목적이 구체적이어야 하고, 비밀번호는 해시로만 남고, 검토 중 로그인은 403", async () => {
-  const apply = (body: Record<string, unknown>) => call("/api/auth/waitlist", body);
+  const apply = (body: Record<string, unknown>) =>
+    call("/api/auth/waitlist", { agreeTerms: TERMS_VERSION, ...body });
   const phone = "010-2222-0001";
   // 목적 없음·짧음 → 400 + 구체적으로 적으라는 안내
   for (const purpose of [undefined, "", "써 보고 싶어요", " ".repeat(WAITLIST_PURPOSE_MIN + 5)])
@@ -333,6 +350,14 @@ test("가입 신청: 목적이 구체적이어야 하고, 비밀번호는 해시
   assert.ok(!("password" in stored));
   assert.ok(stored.passwordHash && verifyPassword(PASSWORD, stored.passwordHash));
   assert.equal(stored.purpose, PURPOSE);
+  assert.equal(stored.termsAgreed?.version, TERMS_VERSION, "약관 동의 판·시각이 남는다");
+  // 약관 동의 없이(옛 앱)·옛 판으로는 가입 신청이 안 된다
+  for (const agreeTerms of [undefined, "2000-01-01"])
+    assert.equal(
+      (await apply({ phone: "010-2222-0009", password: PASSWORD, purpose: PURPOSE, agreeTerms }))
+        .status,
+      422,
+    );
   const everything = await db.sql<{ data: unknown }>("SELECT data FROM records");
   assert.ok(everything.rows.every((row) => !JSON.stringify(row.data).includes(PASSWORD)));
 
@@ -404,6 +429,11 @@ test("가입 신청 승인: 상위 회원을 붙이면 그 번호·비밀번호�
   assert.equal(approved.status, "approved");
   assert.equal(approved.parentId, parent.user.id);
   assert.ok(approved.decidedAt);
+  assert.equal(
+    (await accounts.userByPhone("01022220001"))?.termsAgreed?.version,
+    TERMS_VERSION,
+    "신청 때 동의가 회원으로 옮겨진다",
+  );
   // 감사 로그: 관리자 본인 것 + system 것
   const written = audits.slice(before);
   assert.deepEqual(
@@ -442,7 +472,15 @@ test("가입 신청 승인: 상위 회원을 붙이면 그 번호·비밀번호�
 
 test("가입 신청 반려: 사유가 필요하고, 신청자가 로그인하면 사유를 본다 · 다시 신청할 수 있다", async () => {
   const phone = "010-2222-0002";
-  await read(call("/api/auth/waitlist", { phone, password: PASSWORD, purpose: PURPOSE }), 201);
+  await read(
+    call("/api/auth/waitlist", {
+      phone,
+      password: PASSWORD,
+      purpose: PURPOSE,
+      agreeTerms: TERMS_VERSION,
+    }),
+    201,
+  );
   const entry = (
     await read<WaitlistView[]>(call("/api/admin/waitlist", undefined, admin.token))
   ).find((w) => w.phone === "01022220002") as WaitlistView;
@@ -471,7 +509,15 @@ test("가입 신청 반려: 사유가 필요하고, 신청자가 로그인하면
   );
   assert.equal(await accounts.userByPhone("01022220002"), null);
   // 반려된 번호는 다시 신청할 수 있고, 다시 검토 중이 된다
-  await read(call("/api/auth/waitlist", { phone, password: PASSWORD, purpose: PURPOSE }), 201);
+  await read(
+    call("/api/auth/waitlist", {
+      phone,
+      password: PASSWORD,
+      purpose: PURPOSE,
+      agreeTerms: TERMS_VERSION,
+    }),
+    201,
+  );
   assert.equal(
     await errorOf(call("/api/auth/login", { phone, password: PASSWORD }), 403),
     WAITLIST_PENDING_LOGIN_MESSAGE,

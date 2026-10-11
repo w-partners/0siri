@@ -1,3 +1,4 @@
+import { TERMS_VERSION } from "../packages/domain/src/osiri.ts";
 // docs/0siri-api-contract.md «스토어 · 연결 · 기억 · 설정 · 로그인·온보딩» 계약 시험.
 // 기억 시험은 임베딩 모델(q8)을 실제로 쓴다 — osiri-memories.test.ts 와 같은 캐시를 읽는다.
 
@@ -894,7 +895,7 @@ test("가입 신청: 같은 번호는 한 번만 남고, 관리자만 본다", a
     app.request("/api/auth/waitlist", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone, password: "pass1234", purpose }),
+      body: JSON.stringify({ phone, password: "pass1234", purpose, agreeTerms: TERMS_VERSION }),
     });
   const first = await post("010-7777-0001");
   assert.equal(first.status, 201);

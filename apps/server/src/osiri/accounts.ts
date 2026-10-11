@@ -52,6 +52,12 @@ export interface User {
   deleteRequestedAt?: string;
   /** 이 시각이 지나면 정리(sweep)가 계정과 데이터를 지운다 */
   deleteAfter?: string;
+  /** 가입 때 동의한 이용약관 판과 시각 (TERMS_VERSION). 약관 도입 전 계정은 없다 */
+  termsAgreed?: TermsAgreed;
+}
+export interface TermsAgreed {
+  version: string;
+  at: string;
 }
 export interface Profile {
   id: "me";
@@ -76,6 +82,8 @@ export interface WaitlistEntry {
   parentId?: string;
   rejectReason?: string;
   userId?: string;
+  /** 신청 때 동의한 약관 — 승인하면 사용자 행으로 옮긴다 */
+  termsAgreed?: TermsAgreed;
 }
 /** `GET /admin/waitlist` 항목 — 해시는 싣지 않는다 */
 export interface WaitlistView {
@@ -222,6 +230,7 @@ export class Accounts {
     role?: Role;
     tier?: Tier;
     invitedBy?: string;
+    termsAgreed?: TermsAgreed;
   }): Promise<User> {
     const phone = normalizePhone(input.phone);
     assertPassword(input.password);
@@ -234,6 +243,7 @@ export class Accounts {
     role?: Role;
     tier?: Tier;
     invitedBy?: string;
+    termsAgreed?: TermsAgreed;
   }): Promise<User> {
     const { phone } = input;
     const user: User = {
@@ -244,6 +254,7 @@ export class Accounts {
       tier: input.tier ?? "free",
       createdAt: new Date().toISOString(),
       invitedBy: input.invitedBy ?? null,
+      ...(input.termsAgreed && { termsAgreed: input.termsAgreed }),
     };
     // 전화번호 유일성은 phone-index 의 insertIfAbsent 로 보장한다 (경쟁 시 한쪽만 성공)
     const claimed = await this.db.insertIfAbsent("system", "phone-index", {
@@ -403,7 +414,12 @@ export class Accounts {
       inviterName: (await this.profile(invite.createdBy)).displayName || null,
     };
   }
-  async acceptInvite(input: { token: string; phone: string; password: string }) {
+  async acceptInvite(input: {
+    token: string;
+    phone: string;
+    password: string;
+    agreeTerms: string;
+  }) {
     const invite = await this.db.get<Invite>("system", "invites", digestHex(input.token));
     if (!invite) throw new AppError("초대 링크가 올바르지 않습니다", 400);
     if (invite.usedBy) throw new AppError("이미 사용된 초대 링크입니다", 400);
@@ -416,6 +432,7 @@ export class Accounts {
       password: input.password,
       role: invite.role,
       invitedBy: invite.createdBy,
+      termsAgreed: { version: input.agreeTerms, at: new Date().toISOString() },
     });
     await this.db.put("system", "invites", {
       ...invite,
@@ -515,7 +532,12 @@ export class Accounts {
    * 가입 신청: 전화번호 + 비밀번호 + 구체적인 사용 목적. 비밀번호는 해시로만 남긴다.
    * 번호당 한 줄 — 검토 중이면 409. 반려됐거나 옛(번호만 있는) 항목은 새 신청으로 덮는다.
    */
-  async applyWaitlist(input: { phone: string; password: string; purpose: string }): Promise<void> {
+  async applyWaitlist(input: {
+    phone: string;
+    password: string;
+    purpose: string;
+    agreeTerms: string;
+  }): Promise<void> {
     const phone = normalizePhone(input.phone);
     assertPassword(input.password);
     const purpose = input.purpose.trim();
@@ -529,6 +551,7 @@ export class Accounts {
       status: "pending",
       purpose,
       passwordHash: hashPassword(input.password),
+      termsAgreed: { version: input.agreeTerms, at: new Date().toISOString() },
     };
     if (await this.db.insertIfAbsent<WaitlistEntry>("system", "waitlist", entry)) return;
     const existing = await this.db.get<WaitlistEntry>("system", "waitlist", phone);
@@ -581,6 +604,7 @@ export class Accounts {
       phone: entry.id,
       passwordHash: entry.passwordHash,
       invitedBy: parentId,
+      termsAgreed: entry.termsAgreed,
     });
     const { passwordHash: _moved, ...rest } = entry;
     const decided: WaitlistEntry = {

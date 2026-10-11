@@ -13,6 +13,7 @@ import {
   publicAccountRoutes,
 } from "../apps/server/src/osiri/account-routes.ts";
 import { Accounts, normalizePhone } from "../apps/server/src/osiri/accounts.ts";
+import { TERMS_VERSION } from "../packages/domain/src/osiri.ts";
 import { fakeOtp } from "./helpers/otp.ts";
 
 let db: Store, directory: string, accounts: Accounts;
@@ -104,12 +105,14 @@ test("초대 수락 e2e — 관리자만 발급, 잘못된·재사용 토큰 거
     token: "nope",
     phone: "01011112222",
     password: "pass1234",
+    agreeTerms: TERMS_VERSION,
   });
   assert.equal(wrongToken.status, 400);
   const wrongPhone = await json("/api/auth/invite/accept", {
     token: inviteToken,
     phone: "01099999999",
     password: "pass1234",
+    agreeTerms: TERMS_VERSION,
   });
   assert.equal(wrongPhone.status, 400);
 
@@ -117,6 +120,7 @@ test("초대 수락 e2e — 관리자만 발급, 잘못된·재사용 토큰 거
     token: inviteToken,
     phone: "010-1111-2222",
     password: "pass1234",
+    agreeTerms: TERMS_VERSION,
   });
   assert.equal(accepted.status, 200);
   const member = (await accepted.json()) as { token: string; user: { id: string; role: string } };
@@ -126,6 +130,7 @@ test("초대 수락 e2e — 관리자만 발급, 잘못된·재사용 토큰 거
     token: inviteToken,
     phone: "01011112222",
     password: "pass1234",
+    agreeTerms: TERMS_VERSION,
   });
   assert.equal(reused.status, 400);
 

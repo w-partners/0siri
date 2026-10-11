@@ -24,6 +24,9 @@ import {
   PASSWORD_MIN,
   PASSWORD_RESET_HINT,
   PERSONAL_TIER_LABEL,
+  TERMS_SECTIONS,
+  TERMS_TITLE,
+  TERMS_VERSION,
   WAITLIST_PURPOSE_MAX,
   WAITLIST_PURPOSE_MIN,
 } from "../../../../packages/domain/src/osiri";
@@ -32,7 +35,18 @@ import type { Accounts } from "../../../server/src/osiri/accounts.ts";
 import type { Room } from "../../../server/src/osiri/rooms.ts";
 import { apiBase, type MuseApi, plainFetch } from "../api";
 import { ApiError, readApiPayload } from "../api-response";
-import { Button, Card, colors, ErrorNotice, Field, fonts, Skeleton, s, useWide } from "../ui";
+import {
+  Button,
+  Card,
+  CheckRow,
+  colors,
+  ErrorNotice,
+  Field,
+  fonts,
+  Skeleton,
+  s,
+  useWide,
+} from "../ui";
 import {
   GOAL_STEP,
   GoalStep,
@@ -101,6 +115,11 @@ const text = {
   inviteGuide:
     "초대받은 전화번호 전체를 입력해 본인임을 확인하고, 앞으로 쓸 비밀번호를 정해 주세요.",
   inviteSubmit: "확인하고 시작하기",
+  termsAgree: `${TERMS_TITLE}에 동의합니다 (필수)`,
+  termsShow: "약관 보기",
+  termsHide: "약관 접기",
+  termsVersion: `시행 ${TERMS_VERSION}`,
+  termsRequired: "이용약관에 동의해야 가입할 수 있습니다",
   tokenLoadFailed: (reason: string) => `저장된 로그인 정보를 읽지 못했습니다: ${reason}`,
   tokenSaveFailed: (reason: string) =>
     `로그인 정보를 기기에 저장하지 못했습니다. 앱을 다시 열면 로그인이 필요합니다: ${reason}`,
@@ -643,6 +662,37 @@ function LoginScreen({
   );
 }
 
+/** 가입 화면 두 곳(초대 수락·가입 신청)의 약관 동의 — 체크해야 버튼이 눌린다. 서버도 동의 판(TERMS_VERSION)을 다시 확인한다 */
+function TermsAgree({ agreed, onAgree }: { agreed: boolean; onAgree: (next: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6, marginBottom: 12 }}>
+      {open && (
+        <View
+          style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.line, borderRadius: 8 }}
+        >
+          <Text style={[s.text, { fontWeight: "600" }]}>{TERMS_TITLE}</Text>
+          {TERMS_SECTIONS.map((section) => (
+            <View key={section.title} style={{ gap: 2 }}>
+              <Text style={[s.small, { fontWeight: "600" }]}>{section.title}</Text>
+              <Text style={s.small}>{section.body}</Text>
+            </View>
+          ))}
+          <Text style={[s.small, { fontFamily: fonts.mono }]}>{text.termsVersion}</Text>
+        </View>
+      )}
+      <View style={[s.between, { gap: 8 }]}>
+        <View style={{ flex: 1 }}>
+          <CheckRow label={text.termsAgree} checked={agreed} onPress={() => onAgree(!agreed)} />
+        </View>
+        <Button small onPress={() => setOpen(!open)}>
+          {open ? text.termsHide : text.termsShow}
+        </Button>
+      </View>
+    </View>
+  );
+}
+
 // --- 초대 수락: 전화번호 확인 · 비밀번호 등록 ---
 function InviteAcceptScreen({
   token,
@@ -660,6 +710,7 @@ function InviteAcceptScreen({
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [code, setCode] = useState("");
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { signIn, pending } = useSignIn(onToken);
@@ -681,6 +732,7 @@ function InviteAcceptScreen({
   const submit = async () => {
     const problem = newAccountProblem(phone, password, confirm, code);
     if (problem) return setError(problem);
+    if (!agreed) return setError(text.termsRequired);
     setBusy(true);
     setError("");
     try {
@@ -689,6 +741,7 @@ function InviteAcceptScreen({
         phone: normalizePhone(phone),
         password,
         code,
+        agreeTerms: TERMS_VERSION,
       });
       await signIn(result.token);
     } catch (e) {
@@ -743,7 +796,8 @@ function InviteAcceptScreen({
                 onConfirm={setConfirm}
                 onSubmit={() => void submit()}
               />
-              <Button primary busy={busy} onPress={() => void submit()}>
+              <TermsAgree agreed={agreed} onAgree={setAgreed} />
+              <Button primary busy={busy} disabled={!agreed} onPress={() => void submit()}>
                 {text.inviteSubmit}
               </Button>
             </>
@@ -822,6 +876,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
   const [confirm, setConfirm] = useState("");
   const [purpose, setPurpose] = useState("");
   const [code, setCode] = useState("");
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -832,6 +887,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
   const submit = async () => {
     const problem = newAccountProblem(phone, password, confirm, code);
     if (problem) return setError(problem);
+    if (!agreed) return setError(text.termsRequired);
     setBusy(true);
     setError("");
     try {
@@ -840,6 +896,7 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
         password,
         purpose: purpose.trim(),
         code,
+        agreeTerms: TERMS_VERSION,
       });
       setDone(true);
     } catch (e) {
@@ -900,8 +957,14 @@ function WaitlistScreen({ onBack }: { onBack: () => void }) {
                 {short > 0 ? text.purposeShort(short) : text.purposeOk}
               </Text>
             </View>
-            {/* 글자 수가 모자라면 누를 수 없다 — 사유는 바로 위 글자 수 줄이 말한다 */}
-            <Button primary busy={busy} disabled={short > 0} onPress={() => void submit()}>
+            <TermsAgree agreed={agreed} onAgree={setAgreed} />
+            {/* 글자 수가 모자라거나 약관 동의 전이면 누를 수 없다 — 사유는 바로 위 줄들이 말한다 */}
+            <Button
+              primary
+              busy={busy}
+              disabled={short > 0 || !agreed}
+              onPress={() => void submit()}
+            >
               {text.waitlistSubmit}
             </Button>
             <BackToLogin onPress={onBack} />

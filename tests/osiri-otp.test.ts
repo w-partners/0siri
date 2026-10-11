@@ -10,6 +10,7 @@ import { AppError } from "../apps/server/src/errors.ts";
 import { publicAccountRoutes } from "../apps/server/src/osiri/account-routes.ts";
 import { Accounts } from "../apps/server/src/osiri/accounts.ts";
 import { otpGateway } from "../apps/server/src/osiri/otp.ts";
+import { TERMS_VERSION } from "../packages/domain/src/osiri.ts";
 import { fakeOtp, sentOtps, WRONG_OTP_CODE } from "./helpers/otp.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "osiri-otp-"));
@@ -63,6 +64,7 @@ test("가입 신청도 틀린 인증번호면 남지 않는다", async () => {
     password: "password-1",
     purpose: "상속 상담 기록을 정리하고 고객별 진행 상황을 추적하려고 합니다",
     code: WRONG_OTP_CODE,
+    agreeTerms: TERMS_VERSION,
   });
   assert.equal(r.status, 400);
 });

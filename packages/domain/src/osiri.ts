@@ -546,6 +546,30 @@ export const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" } as const;
  * 토크나이저(tokenizer.json 32,170,510바이트 ≈ 31MiB)를 따로 받는다 — 2026-10-10 HF 허브 파일 목록 실측.
  */
 export const EMBED_TOKENIZER_MB = 31;
+/**
+ * 이용약관 — 가입(초대 수락·가입 신청) 때 동의를 받는다. 서버는 이 버전 문자열에 동의한 요청만 받고, 동의 시각과 함께 남긴다.
+ * 문구를 바꾸면 버전도 바꾼다 (누가 어느 판에 동의했는지 갈리게).
+ */
+export const TERMS_VERSION = "2026-10-11";
+export const TERMS_TITLE = "0Siri 이용약관";
+export const TERMS_SECTIONS: readonly { title: string; body: string }[] = [
+  {
+    title: "1. 서비스",
+    body: "0Siri(영시리)는 대화로 일을 맡기는 AI 에이전트 서비스입니다. 초대받았거나 가입 신청이 승인된 회원만 씁니다.",
+  },
+  {
+    title: "2. 사용자 내용의 기록·조회",
+    body: "회원에게 최적화된 활동을 돕고 반복 입력을 줄여 주기 위해, 그리고 AI 학습을 위해 회원이 입력한 내용(대화·기억·첨부·사용 내역)이 기록되고 조회될 수 있습니다.",
+  },
+  {
+    title: "3. 회원의 권리",
+    body: "회원은 설정에서 자기 기억을 보고 지울 수 있고, 탈퇴를 요청할 수 있습니다. 탈퇴하면 정해진 기간 뒤 계정과 데이터가 지워집니다.",
+  },
+  {
+    title: "4. 금지",
+    body: "불법적인 목적이나 다른 사람의 권리를 해치는 용도로 쓸 수 없습니다. 어기면 이용이 제한될 수 있습니다.",
+  },
+];
 /** 로그인 실패가 이만큼 쌓이면 비밀번호 재설정 경로를 안내한다 (기획 화면 1 «3회 실패 시 우회») */
 export const LOGIN_FAILS_BEFORE_RESET_HINT = 3;
 export const PASSWORD_RESET_HINT =
