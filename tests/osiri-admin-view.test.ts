@@ -67,3 +67,62 @@ test("관리자 열람: 사용량·감사·방은 열고 본문은 설정 뒤에
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("관리자 정지(E): 사유 필수·자기 정지 불가, 정지하면 세션이 끊기고 로그인 403, 해제하면 다시 로그인", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "osiri-suspend-"));
+  const db = await createStore({ dataDir: join(directory, "db") });
+  try {
+    const accounts = new Accounts(db);
+    const audits: string[] = [];
+    const audit = async (_owner: string, input: { action: string }) => audits.push(input.action);
+    const admin = (
+      await accounts.createUser({ phone: "01012345672", password: "1234", role: "admin" })
+    ).id;
+    const user = (await accounts.createUser({ phone: "01012345673", password: "1234" })).id;
+    await accounts.login("01012345673", "1234");
+    await assert.rejects(accounts.suspend(admin, user, true, " ", audit), /사유/);
+    await assert.rejects(accounts.suspend(admin, admin, true, "x", audit), /자기 계정/);
+    await assert.rejects(accounts.suspend(user, admin, true, "x", audit), /권한/);
+    const view = await accounts.suspend(admin, user, true, "불법 이용", audit);
+    assert.equal(view.suspended?.reason, "불법 이용");
+    assert.equal(
+      (await db.listByField("system", "sessions", "owner", user)).length,
+      0,
+      "세션 끊김",
+    );
+    await assert.rejects(accounts.login("01012345673", "1234"), /정지한 계정입니다: 불법 이용/);
+    await accounts.suspend(admin, user, false, "", audit);
+    assert.ok((await accounts.login("01012345673", "1234")).token);
+    assert.deepEqual(
+      [...new Set(audits)],
+      [`user.suspend user=${user} reason=불법 이용`, `user.unsuspend user=${user}`],
+    );
+
+    // 팀 실행 중지는 YAML 다시 올리기(upsert)로 풀리지 않는다
+    const rooms = new Rooms(db, new EventBus());
+    const catalog = new Catalog(db, rooms, async () => undefined);
+    const role = (name: string) => ({ name, title: name, description: name });
+    const pkg = await catalog.upsertPackage({
+      slug: "t",
+      name: "t",
+      character: "c",
+      category: "office",
+      summary: "s",
+      roles: ["root", "reviewer", "publisher", "analyst", "monitor", "drafter", "geo"].map(role),
+      approvalPoints: ["발송"],
+      reportCadence: "weekly",
+      verified: false,
+      metrics: { published: 0, indexed: 0, ai_citations: 0 },
+      runtime: { teamYaml: "t.yaml", image: "i" },
+    } as unknown as Parameters<Catalog["upsertPackage"]>[0]);
+    await catalog.setHalted(pkg.id, true, admin, "점검");
+    const { halted: _h, ...again } = await catalog.packageById(pkg.id);
+    await catalog.upsertPackage(again);
+    assert.equal((await catalog.packageById(pkg.id)).halted?.reason, "점검");
+    await catalog.setHalted(pkg.id, false, admin, "");
+    assert.equal((await catalog.packageById(pkg.id)).halted, undefined);
+  } finally {
+    await db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

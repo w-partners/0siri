@@ -26,13 +26,14 @@ import {
 } from "../../../../packages/domain/src/osiri.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
+import { requireNotSuspended } from "./accounts.ts";
 import { AlreadyDecidedError, type Approvals, approvalKind } from "./approvals.ts";
 import { type EventBus, toUserStreamEvent } from "./events.ts";
 import type { Mcp } from "./mcp.ts";
 import { assertProposed, type Room, type Rooms, type TaskStage, type TeamGoal } from "./rooms.ts";
 import type { Routing } from "./routing.ts";
 import type { Skills } from "./skills.ts";
-import type { Catalog } from "./store.ts";
+import type { Catalog, TeamPackage } from "./store.ts";
 import { gatewayLlm, type Llm, loadTeam, TeamRuntime } from "./team-runtime.ts";
 
 type Env = { Variables: { owner: string } };
@@ -666,6 +667,12 @@ export function workerRoutes({ db, rooms, approvals, bus, mcp, skills }: RoomDep
       sha(header.slice(7)),
     );
     if (!grant) throw new AppError("워커 토큰이 유효하지 않습니다", 401);
+    // 관리자 제한(E): 정지된 사람·실행 중지된 팀의 워커는 여기서 막힌다
+    await requireNotSuspended(db, grant.userId);
+    if (grant.packageId) {
+      const halted = (await db.get<TeamPackage>("system", "packages", grant.packageId))?.halted;
+      if (halted) throw new AppError(`관리자가 이 팀의 실행을 중지했습니다: ${halted.reason}`, 403);
+    }
     c.set("owner", grant.userId);
     c.set("roomId", grant.roomId);
     c.set("packageId", grant.packageId);

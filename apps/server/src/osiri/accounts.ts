@@ -54,6 +54,14 @@ export interface User {
   deleteAfter?: string;
   /** 가입 때 동의한 이용약관 판과 시각 (TERMS_VERSION). 약관 도입 전 계정은 없다 */
   termsAgreed?: TermsAgreed;
+  /** 관리자 이용 정지 — 있으면 로그인·워커(팀)·0Siri MCP 열쇠가 모두 막힌다 (wgolf RPT-02 E) */
+  suspended?: { at: string; by: string; reason: string };
+}
+/** 정지된 계정이면 403. 사용자 토큰 밖의 입구(워커 토큰·MCP 열쇠)도 이 함수 하나로 막는다 */
+export async function requireNotSuspended(db: Store, userId: string) {
+  const user = await db.get<User>("system", "users", userId);
+  if (user?.suspended)
+    throw new AppError(`관리자가 이용을 정지한 계정입니다: ${user.suspended.reason}`, 403);
 }
 export interface TermsAgreed {
   version: string;
@@ -335,6 +343,7 @@ export class Accounts {
         `탈퇴를 요청한 계정입니다. ${user.deleteAfter.slice(0, 10)} 이후 삭제되며 다시 로그인할 수 없습니다`,
         403,
       );
+    await requireNotSuspended(this.db, user.id);
     this.attempts.delete(phone);
     return { token: await this.issueSession(user.id), user: publicUser(user) };
   }
@@ -691,6 +700,32 @@ export class Accounts {
     }
     await this.revokeSessions(userId);
     return { deleteAfter };
+  }
+  /** 관리자 이용 정지·해제. 정지하면 열린 세션을 모두 끊는다. 자기 자신은 정지할 수 없다(관리자가 0명이 되는 것을 막음) */
+  async suspend(
+    adminId: string,
+    userId: string,
+    suspended: boolean,
+    reason: string,
+    audit: AuditWriter,
+  ) {
+    await this.requireRole(adminId, "admin");
+    if (adminId === userId) throw new AppError("자기 계정은 정지할 수 없습니다", 409);
+    const user = await this.userById(userId);
+    if (!user) throw new AppError("사용자를 찾을 수 없습니다", 404);
+    if (suspended && !reason.trim()) throw new AppError("정지 사유가 필요합니다", 422);
+    const next: User = { ...user };
+    if (suspended)
+      next.suspended = { at: new Date().toISOString(), by: adminId, reason: reason.trim() };
+    else delete next.suspended;
+    await this.auditDecision(
+      adminId,
+      `${suspended ? "user.suspend" : "user.unsuspend"} user=${userId}${suspended ? ` reason=${reason.trim()}` : ""}`,
+      audit,
+    );
+    await this.db.put<User>("system", "users", next);
+    if (suspended) await this.revokeSessions(userId);
+    return publicUser(next);
   }
   private async revokeSessions(userId: string): Promise<number> {
     const sessions = await this.db.listByField<Session>("system", "sessions", "owner", userId);

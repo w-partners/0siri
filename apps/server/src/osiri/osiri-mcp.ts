@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
+import { requireNotSuspended } from "./accounts.ts";
 import type { Approvals } from "./approvals.ts";
 import type { History } from "./history.ts";
 import type { Mcp } from "./mcp.ts";
@@ -95,6 +96,11 @@ export class OsiriMcp {
     const a = Buffer.from(stored.hash);
     const b = Buffer.from(sha(token));
     return a.length === b.length && timingSafeEqual(a, b) ? id.split("|")[0] : undefined;
+  }
+
+  /** 관리자 이용 정지(E) — 정지된 사람의 열쇠는 맞아도 막는다 */
+  requireActive(owner: string) {
+    return requireNotSuspended(this.db, owner);
   }
 
   /** 한 요청마다 서버를 새로 만든다(무상태) — 소유자·방은 요청에서 정해진다 */
@@ -236,6 +242,7 @@ export function osiriMcpRoutes(osiriMcp: OsiriMcp) {
       ? await osiriMcp.verify(header.slice(7))
       : undefined;
     if (!owner) throw new AppError("0Siri MCP 열쇠가 맞지 않습니다", 401);
+    await osiriMcp.requireActive(owner);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

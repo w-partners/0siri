@@ -31,7 +31,12 @@ import {
 } from "../apps/server/src/osiri/room-routes.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import { Routing, routingRoutes } from "../apps/server/src/osiri/routing.ts";
-import { Catalog, storeRoutes, type TeamPackage } from "../apps/server/src/osiri/store.ts";
+import {
+  BLOCKED_TOOLS_SETTING,
+  Catalog,
+  storeRoutes,
+  type TeamPackage,
+} from "../apps/server/src/osiri/store.ts";
 import {
   gatewayLlm,
   TeamRuntime,
@@ -721,4 +726,40 @@ test("#13 B1 RELEASES_DIR 없으면 /releases/* 는 404 · 채팅은 라우팅�
   });
   answersRoute.route("/", routingRoutes(server.osiri.routing));
   assert.equal((await answersRoute.request("/usage/answers?threadId=thread-b")).status, 200);
+});
+
+test("관리자 제한(E): 정지된 사람·실행 중지된 팀의 워커는 입구에서 403, 차단된 도구는 MCP 호출 입구에서 403", async () => {
+  const worker = (token: string) =>
+    app.request("/api/worker/skills/active", { headers: { Authorization: `Bearer ${token}` } });
+  // 정지된 사람
+  const suspendedId = `suspended-${randomUUID()}`;
+  await db.put("system", "users", {
+    id: suspendedId,
+    phone: "01012345678",
+    suspended: { at: "2026-10-11T00:00:00Z", by: "admin", reason: "불법 이용" },
+  });
+  const suspendedRoom = await rooms.ensurePersonalRoom(suspendedId);
+  const blockedRes = await worker(await issueWorkerToken(db, suspendedId, suspendedRoom.id, null));
+  assert.equal(blockedRes.status, 403);
+  assert.match(((await blockedRes.json()) as { error: string }).error, /불법 이용/);
+  // 실행 중지된 팀
+  const pkgId = `pkg-${randomUUID()}`;
+  await db.put("system", "packages", {
+    id: pkgId,
+    halted: { at: "2026-10-11T00:00:00Z", by: "admin", reason: "점검" },
+  });
+  const room = await rooms.ensurePersonalRoom(OWNER);
+  assert.equal((await worker(await issueWorkerToken(db, OWNER, room.id, pkgId))).status, 403);
+  assert.equal((await worker(await issueWorkerToken(db, OWNER, room.id, null))).status, 200);
+  // 도구 차단
+  const catalog = new Catalog(db, rooms, async () => undefined);
+  await assert.rejects(catalog.setSetting(BLOCKED_TOOLS_SETTING, ["publish"]), /서버 이름/);
+  const site = (await mcp.list(OWNER)).find((s) => s.name === "site");
+  assert.ok(site, "앞 테스트가 연결한 site");
+  await catalog.setSetting(BLOCKED_TOOLS_SETTING, ["site:*"]);
+  await assert.rejects(
+    mcp.call(OWNER, { roomId: room.id, serverId: site.id, tool: "publish", args: draft }),
+    /관리자가 차단한 도구입니다: site:publish/,
+  );
+  await catalog.setSetting(BLOCKED_TOOLS_SETTING, []);
 });

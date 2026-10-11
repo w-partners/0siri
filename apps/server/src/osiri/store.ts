@@ -63,6 +63,8 @@ export interface TeamPackage {
   thirdParty?: boolean;
   /** 구독 직후 팀장이 새 방에 건네는 첫 인사. 없으면 DEFAULT_TEAM_GREETING */
   greeting?: string;
+  /** 관리자 실행 중지 (wgolf RPT-02 E) — 있으면 그 팀 워커가 API 를 못 쓴다. 판매 중지는 reviewing */
+  halted?: { at: string; by: string; reason: string };
   /** 비공개: 팀 YAML 경로·실행 이미지. 응답에 내보내지 않는다. */
   runtime: { teamYaml: string; image: string };
   createdAt: string;
@@ -102,6 +104,12 @@ export interface Provisioning {
   createdAt: string;
 }
 type Setting = { id: string; value: unknown; updatedAt: string };
+/** 관리자 설정 한 값 — Catalog 밖(MCP 호출 입구 등)에서도 같은 길로 읽는다 */
+export async function settingValue<T = unknown>(db: Store, key: string): Promise<T | undefined> {
+  return (await db.get<Setting>("system", "settings", key))?.value as T | undefined;
+}
+/** 관리자 도구 차단 (wgolf RPT-02 E): ["<서버 이름>:<도구>" 또는 "<서버 이름>:*"] — MCP 호출 입구에서 거절 */
+export const BLOCKED_TOOLS_SETTING = "blockedTools";
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -144,7 +152,7 @@ export class Catalog {
 
   // ---- settings (§24) ----
   async setting<T = unknown>(key: string): Promise<T | undefined> {
-    return (await this.db.get<Setting>("system", "settings", key))?.value as T | undefined;
+    return settingValue<T>(this.db, key);
   }
   async setSetting(key: string, value: unknown) {
     if (value === undefined) throw new AppError("설정 값이 필요합니다", 422);
@@ -153,6 +161,14 @@ export class Catalog {
     if (key.startsWith(LIMITS_PREFIX) && !limitsSchema.safeParse(value).success)
       throw new AppError(
         "사용 제한은 { approvalsPerMonth, publishesPerMonth, blockedKinds, blockedRoles } 중 필요한 것만 넣은 객체여야 합니다",
+        422,
+      );
+    if (
+      key === BLOCKED_TOOLS_SETTING &&
+      !z.array(z.string().regex(/^[^:\s]+:[^:\s]+$/)).safeParse(value).success
+    )
+      throw new AppError(
+        '도구 차단은 ["<서버 이름>:<도구>" 또는 "<서버 이름>:*"] 목록이어야 합니다',
         422,
       );
     await this.db.put<Setting>("system", "settings", {
@@ -192,9 +208,20 @@ export class Catalog {
       ...input,
       id: existing?.id ?? input.id ?? randomUUID(),
       createdAt: existing?.createdAt ?? new Date().toISOString(),
+      // 관리자 실행 중지는 YAML 다시 올리기로 풀리지 않는다 — 관리자만 푼다
+      ...(existing?.halted ? { halted: existing.halted } : {}),
     };
     await this.db.put("system", "packages", pkg);
     return pkg;
+  }
+  /** 관리자: 팀 실행 중지·재개. 중지된 팀은 워커 입구(워커 토큰)에서 막힌다 */
+  async setHalted(id: string, halted: boolean, by: string, reason: string) {
+    const pkg = await this.packageById(id);
+    const next: TeamPackage = { ...pkg };
+    if (halted) next.halted = { at: new Date().toISOString(), by, reason };
+    else delete next.halted;
+    await this.db.put("system", "packages", next);
+    return next;
   }
   // --- 사용 허용: 관리자가 회원별로 정한다. 허용이 없으면 구독도 해지 취소도 할 수 없다 ---
   /** 이 회원에게 허용된 패키지 id 들 */
@@ -754,6 +781,33 @@ export function storeRoutes(
     await audit("system", entry);
     return pkg;
   };
+  // 관리자 제한 (wgolf RPT-02 E): 판매 중지(reviewing — 새 구독 막음)·실행 중지(halted — 그 팀 워커 막음). 감사 store.restrict
+  app.patch("/admin/packages/:id", async (c) => {
+    const owner = c.get("owner");
+    await admin(owner);
+    const body = z
+      .object({
+        reviewing: z.boolean().optional(),
+        halted: z.boolean().optional(),
+        reason: z.string().max(500).default(""),
+      })
+      .parse(await c.req.json());
+    if (body.halted && !body.reason.trim()) throw new AppError("실행 중지 사유가 필요합니다", 422);
+    let pkg = await catalog.packageById(c.req.param("id"));
+    await audit(owner, {
+      packageId: null,
+      actor: `user:${owner}`,
+      action: `store.restrict ${pkg.slug} reviewing=${body.reviewing ?? "-"} halted=${body.halted ?? "-"} reason=${body.reason.trim()}`,
+      result: "ok",
+    });
+    if (body.reviewing !== undefined) {
+      pkg = { ...pkg, reviewing: body.reviewing };
+      await catalog.upsertPackage(pkg);
+    }
+    if (body.halted !== undefined)
+      pkg = await catalog.setHalted(pkg.id, body.halted, owner, body.reason.trim());
+    return c.json({ ...publicPackage(pkg, await catalog.price(pkg)), halted: pkg.halted ?? null });
+  });
   app.post("/admin/packages/yaml", async (c) => {
     const owner = c.get("owner");
     await admin(owner);

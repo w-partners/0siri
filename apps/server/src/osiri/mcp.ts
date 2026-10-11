@@ -18,6 +18,7 @@ import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { Approvals } from "./approvals.ts";
 import type { Rooms } from "./rooms.ts";
+import { BLOCKED_TOOLS_SETTING, settingValue } from "./store.ts";
 
 export type Risk = McpRisk;
 const RISKS: readonly Risk[] = MCP_RISKS;
@@ -296,6 +297,9 @@ export class Mcp {
     if (!tool) throw new AppError("도구를 찾을 수 없습니다", 404);
     const actor = input.actor ?? "chat";
     const toolName = `${server.name}:${tool.name}`;
+    const blocked = (await settingValue<string[]>(this.db, BLOCKED_TOOLS_SETTING)) ?? [];
+    if (blocked.includes(toolName) || blocked.includes(`${server.name}:*`))
+      throw new AppError(`관리자가 차단한 도구입니다: ${toolName}`, 403);
     if (tool.risk === "external") {
       if (!input.approval) {
         const approval = await this.approvals.request(owner, {

@@ -191,6 +191,15 @@ export function privateAccountRoutes(accounts: Accounts, publicUrl: string, audi
     const body = z.object({ role: z.enum(USER_ROLES) }).parse(await c.req.json());
     return c.json(await accounts.setRole(c.get("owner"), c.req.param("id"), body.role, audit));
   });
+  // 관리자 이용 정지·해제 (wgolf RPT-02 E) — 운영자 계정 정지도 같은 것. 감사 user.suspend
+  app.put("/admin/users/:id/suspension", async (c) => {
+    const body = z
+      .object({ suspended: z.boolean(), reason: z.string().max(500).default("") })
+      .parse(await c.req.json());
+    return c.json(
+      await accounts.suspend(c.get("owner"), c.req.param("id"), body.suspended, body.reason, audit),
+    );
+  });
   app.get("/admin/users", async (c) => {
     await accounts.requireRole(c.get("owner"), "admin");
     return c.json(await accounts.listUsers(c.req.query("q")));
