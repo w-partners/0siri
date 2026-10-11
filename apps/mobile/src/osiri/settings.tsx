@@ -360,6 +360,23 @@ const text = {
   roomsLine: (titles: string[]) =>
     `대화방 ${titles.length}개${titles.length ? `: ${titles.join(", ")}` : ""}`,
   noAudit: "감사 기록이 없습니다",
+  restrict: "팀 제한 (판매·실행 중지)",
+  restrictHint:
+    "판매 중지는 새 구독만 막습니다. 실행 중지는 그 팀이 지금 도는 것까지 멈추고, YAML 을 다시 올려도 풀리지 않습니다. 모두 감사 기록에 남습니다.",
+  restrictReason: "사유 (실행 중지에는 필수)",
+  stopSale: "판매 중지",
+  resumeSale: "판매 재개",
+  halt: "실행 중지",
+  resume: "실행 재개",
+  haltedNow: (reason: string) => `실행 중지 중 — ${reason}`,
+  saleStopped: "판매 중지(심사 중)",
+  restricted: (name: string) => `${name} 의 제한을 바꿨습니다`,
+  blocked: "차단 도구",
+  blockedHint: "여기 적은 도구는 어떤 팀도 부를 수 없습니다. 형식: 서버:도구",
+  noBlocked: "차단한 도구가 없습니다",
+  blockedField: "차단할 도구 (예: wgolf:send_message)",
+  block: "차단",
+  unblock: "풀기",
 };
 
 export function SettingsScreen({ onLogout }: { onLogout: () => void }) {
@@ -1749,6 +1766,86 @@ function ServerModels() {
   );
 }
 
+// 관리자 제한 (wgolf RPT-02 E) — 판매 중지 = reviewing, 실행 중지 = halted. 서버가 감사 store.restrict 를 남긴다
+function PackageRestrict({ pkg, onChanged }: { pkg: StorePkg; onChanged: () => void }) {
+  const { api, notify } = useWorkspace();
+  const [reason, setReason] = useState("");
+  const act = useAction();
+  const patch = (body: { reviewing?: boolean; halted?: boolean }) =>
+    act.run(async () => {
+      await api.request(
+        `/api/admin/packages/${pkg.id}`,
+        { ...body, reason: reason.trim() },
+        "PATCH",
+      );
+      notify(text.restricted(pkg.name));
+      setReason("");
+      onChanged();
+    });
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={s.label}>{pkg.name}</Text>
+      {pkg.reviewing && <Text style={s.small}>{text.saleStopped}</Text>}
+      {pkg.halted && <Text style={s.small}>{text.haltedNow(pkg.halted.reason)}</Text>}
+      <Field label={text.restrictReason} value={reason} onChangeText={setReason} />
+      <ErrorNotice error={act.error} />
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+        <Button small busy={act.busy} onPress={() => patch({ reviewing: !pkg.reviewing })}>
+          {pkg.reviewing ? text.resumeSale : text.stopSale}
+        </Button>
+        <Button
+          small
+          busy={act.busy}
+          disabled={!pkg.halted && !reason.trim()}
+          onPress={() => patch({ halted: !pkg.halted })}
+        >
+          {pkg.halted ? text.resume : text.halt}
+        </Button>
+      </View>
+    </View>
+  );
+}
+
+function BlockedTools({ value, onChanged }: { value: unknown; onChanged: () => void }) {
+  const { api } = useWorkspace();
+  const [tool, setTool] = useState("");
+  const act = useAction();
+  const list = Array.isArray(value) ? (value as string[]) : [];
+  const save = (next: string[]) =>
+    act.run(async () => {
+      await api.request("/api/admin/settings", { key: "blockedTools", value: next }, "PATCH");
+      setTool("");
+      onChanged();
+    });
+  return (
+    <Block title={text.blocked}>
+      <Text style={s.small}>{text.blockedHint}</Text>
+      {list.length === 0 ? (
+        <Text style={s.small}>{text.noBlocked}</Text>
+      ) : (
+        list.map((t) => (
+          <View key={t} style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+            <Text style={[s.small, { flex: 1 }]}>{t}</Text>
+            <Button small busy={act.busy} onPress={() => save(list.filter((x) => x !== t))}>
+              {text.unblock}
+            </Button>
+          </View>
+        ))
+      )}
+      <Field label={text.blockedField} autoCapitalize="none" value={tool} onChangeText={setTool} />
+      <ErrorNotice error={act.error} />
+      <Button
+        small
+        busy={act.busy}
+        disabled={!tool.trim() || list.includes(tool.trim())}
+        onPress={() => save([...list, tool.trim()])}
+      >
+        {text.block}
+      </Button>
+    </Block>
+  );
+}
+
 function Admin({ meId }: { meId: string }) {
   const { api, notify } = useWorkspace();
   const users = useLoad(() => api.request<AdminUser[]>("/api/admin/users"));
@@ -1838,6 +1935,30 @@ function Admin({ meId }: { meId: string }) {
               {text.save}
             </Button>
           </Block>
+        </Card>
+        <Card style={{ gap: 12 }}>
+          <Block title={text.restrict}>
+            <Text style={s.small}>{text.restrictHint}</Text>
+            <Loaded state={packages}>
+              {(items) =>
+                items.length === 0 ? (
+                  <Text style={s.small}>{text.noPackages}</Text>
+                ) : (
+                  items.map((p) => (
+                    <PackageRestrict key={p.id} pkg={p} onChanged={packages.retry} />
+                  ))
+                )
+              }
+            </Loaded>
+          </Block>
+          <Loaded state={settings}>
+            {(data) => (
+              <BlockedTools
+                value={data.settings.find((x) => x.id === "blockedTools")?.value}
+                onChanged={settings.retry}
+              />
+            )}
+          </Loaded>
         </Card>
       </View>
     </View>
