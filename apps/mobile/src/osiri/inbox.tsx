@@ -27,6 +27,7 @@ import { useWorkspace } from "../workspace";
 import { CharacterAvatar } from "./eve";
 import {
   ApprovalCard,
+  decideApproval,
   decidePending,
   isConflict,
   type PendingApproval,
@@ -74,6 +75,7 @@ const text = {
   reasonRequired: "반려 사유(톤·사실·주제)를 골라 주세요",
   // 토스트는 서버가 돌려준 status 로만 고른다
   done: { approved: "승인했습니다", rejected: "반려했습니다" } as Record<string, string>,
+  delegatedHeading: "맡은 결재 (다른 회원이 나를 결재자로 둔 방)",
 };
 
 /**
@@ -81,6 +83,44 @@ const text = {
  * label 은 스킬 초안의 결과 이름(스킬 상태는 승인 상태표에 없다).
  */
 type Settled = { item: InboxApproval; status: string | null; label?: string };
+
+type DelegatedApproval = PendingApproval & { owner: string };
+// 지정 결재자(wgolf RPT-02 C 다) — 맡은 건이 없으면 아무것도 그리지 않는다
+function Delegated() {
+  const { api, notify } = useWorkspace();
+  const list = useLoad(() => api.request<DelegatedApproval[]>("/api/approvals/delegated"));
+  useUserEvent("inbox", () => list.retry());
+  if (list.error) return <LoadError error={list.error} onRetry={list.retry} />;
+  if (!list.data?.length) return null;
+  return (
+    <View style={{ gap: 10 }}>
+      <Text style={s.heading}>{text.delegatedHeading}</Text>
+      {list.data.map((a) => (
+        <ApprovalCard
+          key={a.id}
+          title={a.title}
+          summary={a.summary}
+          evidence={a.evidence}
+          status={a.status}
+          onDecide={async (decision, reason) => {
+            if (decision === "reject" && !reason) throw new Error(text.reasonRequired);
+            const { status } = await decideApproval(
+              api,
+              a.id,
+              decision,
+              a.inputHash,
+              reason,
+              a.owner,
+            );
+            const done = text.done[status];
+            if (done) notify(done);
+            list.retry();
+          }}
+        />
+      ))}
+    </View>
+  );
+}
 
 export function InboxScreen({
   roomId,
@@ -219,6 +259,7 @@ export function InboxScreen({
             </Card>
           ))}
 
+          {roomId ? null : <Delegated />}
           <View style={[s.row, { gap: 6 }]}>
             <Text style={s.heading}>{text.pendingHeading}</Text>
             <Text style={[s.heading, { fontFamily: fonts.mono }]}>{pending?.length}</Text>

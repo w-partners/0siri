@@ -1356,9 +1356,14 @@ export async function decideApproval(
   decision: Decision,
   frozenHash: unknown,
   reason?: RejectReason,
+  /** 지정 결재자로 남의 방 승인을 결재할 때 — 그 방 주인 id (wgolf RPT-02 C 다) */
+  delegatedOwner?: string,
 ) {
   if (typeof frozenHash !== "string" || !frozenHash) throw new Error(text.hashMissing);
-  return api.request<{ status: string }>(`/api/approvals/${approvalId}/decide`, {
+  const path = delegatedOwner
+    ? `/api/approvals/delegated/${delegatedOwner}/${approvalId}/decide`
+    : `/api/approvals/${approvalId}/decide`;
+  return api.request<{ status: string }>(path, {
     decision,
     frozenHash,
     reasonKind: reason?.kind,

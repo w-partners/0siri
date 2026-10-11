@@ -3,7 +3,7 @@
     "name": "0Siri",
     "slug": "osiri",
     "scheme": "osiri",
-    "version": "0.37.0",
+    "version": "0.38.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
