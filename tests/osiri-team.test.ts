@@ -16,7 +16,13 @@ import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Mcp, mcpRoutes } from "../apps/server/src/osiri/mcp.ts";
 import { roomRoutes, workerRoutes } from "../apps/server/src/osiri/room-routes.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
-import { loadTeam, TeamRuntime } from "../apps/server/src/osiri/team-runtime.ts";
+import {
+  everyMs,
+  loadTeam,
+  rolePrompt,
+  TeamRuntime,
+  type TeamSpec,
+} from "../apps/server/src/osiri/team-runtime.ts";
 
 let db: Store, directory: string;
 let app: Hono<{ Variables: { owner: string } }>;
@@ -378,4 +384,102 @@ test("x-osiri-flow·x-osiri-principal — 선언한 역할을 순서대로, 앞 
     tasks.length && tasks.every((t) => t.assignee === "plan"),
     "작업은 결과물을 내는 역할이 맡는다",
   );
+});
+
+test("역할 프롬프트: 도구 사용 지침·출력 템플릿 칸이 지시 뒤에 붙는다(없으면 빠진다)", () => {
+  const base = { title: "처리안", description: "설명", instruction: "지시" };
+  assert.equal(rolePrompt(base), "설명\n\n지시");
+  const full = rolePrompt(
+    { ...base, "x-osiri-tool-guide": "조회 먼저", "x-osiri-template": "| 날짜 | 시간 |" },
+    "\n\n[장착된 스킬]\n- a: b",
+  );
+  assert.ok(full.indexOf("[도구 사용 지침]\n조회 먼저") > full.indexOf("지시"));
+  assert.ok(full.indexOf("[출력 템플릿") > full.indexOf("[도구 사용 지침]"));
+  assert.ok(full.endsWith("- a: b"));
+});
+
+test("감시(x-osiri-watch): read 도구를 주기마다 불러, 바뀌었을 때만 역할 템플릿으로 알린다", async () => {
+  let rows = ["07:40 4명"];
+  const calls: { path: string; body?: Record<string, unknown> }[] = [];
+  const messages: string[] = [];
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    const path = url.replace("http://w/api/worker", "");
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ path, body });
+    const reply = (data: unknown) => new Response(JSON.stringify(data));
+    if (path === "/tools")
+      return reply([
+        {
+          id: "srv-1",
+          name: "wgolf",
+          tools: [
+            { name: "search_teetimes", risk: "read" },
+            { name: "book", risk: "external" },
+          ],
+        },
+      ]);
+    if (path === "/tools/call") return reply({ status: "done", result: { content: rows } });
+    if (path === "/skills/active") return reply([]);
+    if (path === "/messages") {
+      messages.push(body.text);
+      return reply({ ok: true });
+    }
+    throw new Error(`예상 밖 호출 ${path}`);
+  }) as unknown as typeof fetch;
+  const team = {
+    version: 1,
+    package: {
+      slug: "t",
+      name: "t",
+      character: "c",
+      approval_points: [],
+      "x-osiri-watch": [
+        {
+          id: "tee",
+          tool: "wgolf:search_teetimes",
+          args: { date: "+1d" },
+          every: "5m",
+          role: "plan",
+        },
+        { id: "bad", tool: "book", every: "5m", role: "plan" },
+      ],
+    },
+    agents: {
+      plan: {
+        title: "p",
+        description: "d",
+        instruction: "i",
+        "x-osiri-template": "| 시간 | 인원 |",
+      },
+    },
+  } as unknown as TeamSpec;
+  const prompts: string[] = [];
+  const runtime = new TeamRuntime({
+    apiUrl: "http://w/api/worker",
+    workerToken: "t",
+    team,
+    fetchFn,
+    llm: async (_role, _tier, system, user) => {
+      prompts.push(system);
+      return `알림: ${user.includes("08:10") ? "08:10 추가" : "?"}`;
+    },
+  });
+  const t0 = Date.parse("2026-10-11T03:00:00Z");
+  assert.deepEqual(await runtime.watch(t0), [], "첫 회는 기준만 잡는다");
+  const firstArgs = calls.find((c) => c.path === "/tools/call")?.body?.args as
+    | { date?: string }
+    | undefined;
+  assert.equal(firstArgs?.date, "2026-10-12", "+1d → 서울 기준 내일");
+  assert.ok(
+    messages.some((m) => m.includes("read 도구만")),
+    "external 도구는 감시하지 않고 실패를 알린다",
+  );
+  assert.deepEqual(await runtime.watch(t0 + 60_000), [], "주기가 안 됐으면 부르지 않는다");
+  assert.deepEqual(await runtime.watch(t0 + 5 * 60_000), [], "같은 결과면 조용히");
+  rows = ["07:40 4명", "08:10 2명"];
+  assert.deepEqual(await runtime.watch(t0 + 10 * 60_000), ["tee"]);
+  assert.ok(messages.includes("알림: 08:10 추가"));
+  assert.ok(prompts.at(-1)?.includes("| 시간 | 인원 |"), "역할의 출력 템플릿이 프롬프트에 실린다");
+  assert.equal(everyMs("1h"), 3_600_000);
+  assert.throws(() => everyMs("5 minutes"));
 });

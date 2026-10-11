@@ -45,9 +45,9 @@ const injected = Object.fromEntries(
 ) as Record<ReviewItem, ReviewCheck>;
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 
-const call = (path: string, owner: string, body?: unknown) =>
+const call = (path: string, owner: string, body?: unknown, method?: string) =>
   app.request(path, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${owner}` },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -179,6 +179,13 @@ test("권한 — 운영자·관리자가 아니면 전부 403(문장), 운영자
   assert.deepEqual(new Set(all.map((pkg) => pkg.id)), new Set([legalId, contentId]));
   // 일반 사용자는 패키지 담당이 될 수 없다
   await assert.rejects(strict.assignOperator(legalId, subscriberA), /운영자/);
+  // 담당 지정은 관리자 API 로만 — 운영자가 스스로 남의 팀 담당이 될 수 없다
+  const assign = (owner: string) =>
+    call(`/api/admin/packages/${contentId}/operators`, owner, { userId: operatorId }, "PUT");
+  assert.equal((await assign(operatorId)).status, 403);
+  assert.equal((await assign(adminId)).status, 200);
+  const assigned = await json<{ id: string }[]>(await call("/api/operator/packages", operatorId));
+  assert.ok(assigned.some((pkg) => pkg.id === contentId));
 });
 
 test("기본 심사 — 확인 못 하는 항목은 통과가 아니라 «수동 심사 필요», 탈락하면 배포가 없다", async () => {

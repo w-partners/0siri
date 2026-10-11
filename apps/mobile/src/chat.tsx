@@ -30,7 +30,7 @@ import {
   View,
 } from "react-native";
 import { z } from "zod";
-import { CAP_REACHED_NOTICE } from "../../../packages/domain/src/osiri";
+import { type AnswerMode, CAP_REACHED_NOTICE } from "../../../packages/domain/src/osiri";
 import { ArtifactCard } from "./agent-ui";
 import { useAgentWorkspace } from "./agent-workspace";
 import { AssistantResponse } from "./assistant-response";
@@ -43,6 +43,13 @@ import {
   showsRunError,
   threadLocked,
 } from "./conversation-run";
+import { chatOnDevice, stopDeviceChat } from "./osiri/device-chat";
+import {
+  deviceAnswerLabel,
+  deviceAnswerMetadata,
+  deviceChatMessages,
+  withContent,
+} from "./osiri/device-chat-logic";
 import type { Mood } from "./osiri/eve";
 import { shareLocation } from "./osiri/location";
 import { PaneFileButton } from "./osiri/pane-send";
@@ -220,6 +227,13 @@ function ServerToolCard({
     </Card>
   );
 }
+// 기기 대화(큰 층) 안내 — 실패하면 사유를 보이고 서버로 넘긴다
+const deviceText = {
+  fallback: (reason: string) => `기기에서 답하지 못했습니다 (${reason}) — 이번 답은 서버가 합니다`,
+  empty: "기기 모델이 빈 답을 냈습니다",
+  richThreads: "이 서버는 대화를 서버 스레드로 보관해 기기 답을 저장할 수 없습니다",
+};
+
 export function ChatScreen({
   prompt,
   thread,
@@ -234,7 +248,10 @@ export function ChatScreen({
   anchor,
   online = true,
   readOnly,
+  deviceChat = false,
 }: {
+  /** 0Siri 영시리 기본 대화: 답변 방식이 «항상 기기» 면 이 기기의 큰 층(Gemma 4 E2B)이 답한다. 팀 방은 늘 서버 */
+  deviceChat?: boolean;
   /** 0Siri 팀 방: 이 자리로 스크롤한다. y = header 안에서의 세로 위치, "end" = 대화 끝(지금 결정할 카드). 새 객체를 줄 때마다 다시 간다. */
   anchor?: { y: number | "end" };
   /** 0Siri: 실시간 연결이 살아 있는가. 끊겨 있으면 입력을 큐에 쌓아 두고 «연결 대기» 로 보이며, 다시 붙으면 보낸다. */
@@ -324,6 +341,10 @@ export function ChatScreen({
   const [awayFromLatest, setAwayFromLatest] = useState(false);
   const runLock = useRef(false);
   const [saveError, setSaveError] = useState("");
+  // 기기 답변이 실패해 서버로 넘겼을 때의 안내 — 조용히 넘기지 않는다
+  const [deviceNotice, setDeviceNotice] = useState("");
+  const deviceRunning = useRef(false);
+  const deviceStopped = useRef(false);
   const [historyError, setHistoryError] = useState("");
   const [historyAttempt, setHistoryAttempt] = useState(0);
   // Loads still replaying history. A count, so an old load finishing does not end a newer one.
@@ -433,6 +454,39 @@ export function ChatScreen({
     if (!richThreads) await api.request(conversationPath, { messages: agent.messages }, "PUT");
     setSaveError("");
   }, [agent, api, conversationPath, richThreads]);
+  /**
+   * 답변 방식이 «항상 기기» 면 이 기기에서 답한다. "server" = 기기 차례가 아니다, "answered" = 기기가 답했다(또는 멈췄다),
+   * 그 밖의 문자열 = 기기가 실패한 사유 — 호출자가 화면에 보이고 서버로 넘긴다.
+   */
+  const answerOnDevice = useCallback(async (): Promise<string> => {
+    const { answerMode } = await api.request<{ answerMode?: AnswerMode }>("/api/settings");
+    if (answerMode !== "device") return "server";
+    // 서버 스레드(richThreads)는 대화를 서버가 들고 있다 — 기기 답을 끼워 저장할 길이 없다
+    if (richThreads) return deviceText.fallback(deviceText.richThreads);
+    const id = `device-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const history = deviceChatMessages(agent.messages);
+    agent.addMessage({ id, role: "assistant", content: "", metadata: deviceAnswerMetadata() });
+    deviceRunning.current = true;
+    deviceStopped.current = false;
+    try {
+      const answer = await chatOnDevice(history, (text) =>
+        agent.setMessages(withContent(agent.messages, id, text)),
+      );
+      if (!answer && !deviceStopped.current) throw new Error(deviceText.empty);
+      // 멈췄는데 아무것도 안 나왔으면 빈 말풍선을 남기지 않는다
+      agent.setMessages(
+        answer
+          ? withContent(agent.messages, id, answer)
+          : agent.messages.filter((m) => m.id !== id),
+      );
+      return "answered";
+    } catch (e) {
+      agent.setMessages(agent.messages.filter((m) => m.id !== id));
+      return deviceText.fallback(e instanceof Error ? e.message : String(e));
+    } finally {
+      deviceRunning.current = false;
+    }
+  }, [agent, api, richThreads]);
   /** Runs one turn; "held" means a queued message was refused by a lock and put back on hold. */
   const run = useCallback(
     async (message?: QueuedMessage): Promise<"held" | undefined> => {
@@ -442,11 +496,22 @@ export function ChatScreen({
       queuedTurn.current = Boolean(message);
       setBusy(true);
       setError("");
+      setDeviceNotice("");
       if (message) agent.addMessage({ id: message.id, role: "user", content: message.text });
       try {
+        let forwardedProps: Record<string, unknown> | undefined;
+        if (message && deviceChat) {
+          const device = await answerOnDevice();
+          if (device === "answered") return; // 저장은 아래 finally 가 한다 (PUT /api/conversation)
+          if (device !== "server") {
+            setDeviceNotice(device);
+            // 서버가 answeredBy.reason 에 «기기 실패 — 서버로 답했습니다» 를 싣는다
+            forwardedProps = { deviceFailed: true };
+          }
+        }
         await runConversationTurn(
           agentId,
-          () => copilotkit.runAgent({ agent }),
+          () => copilotkit.runAgent({ agent, forwardedProps }),
           (onError) => copilotkit.subscribe({ onError }),
         );
         await Promise.all([refresh(), refreshAgent()]);
@@ -484,6 +549,8 @@ export function ChatScreen({
       refreshAgent,
       saveHistory,
       queue,
+      deviceChat,
+      answerOnDevice,
     ],
   );
   const runQueued = useCallback(
@@ -527,6 +594,16 @@ export function ChatScreen({
   }, [copilotkit, agentId, queue]);
   async function stop() {
     queue.pause();
+    if (deviceRunning.current) {
+      // 기기 답변: 런타임에 멈추라고 한다 — 그때까지 나온 답은 남기고 저장한다
+      deviceStopped.current = true;
+      try {
+        await stopDeviceChat();
+      } catch (e) {
+        setError(t.chat.errors.stopFailed(e instanceof Error ? e.message : String(e)));
+      }
+      return;
+    }
     try {
       await copilotkit.stopAgent({ agent });
     } catch (e) {
@@ -655,6 +732,10 @@ export function ChatScreen({
             const user = message.role === "user";
             const text = typeof message.content === "string" ? message.content : "";
             const toolCalls = "toolCalls" in message ? message.toolCalls || [] : [];
+            // 서버가 기록한 «누가 답했는지» 가 먼저, 없으면 기기 답변 표시(metadata)
+            const label = user
+              ? undefined
+              : (answerLabel?.(message.id) ?? deviceAnswerLabel(message));
             return (
               <View
                 key={message.id}
@@ -685,8 +766,8 @@ export function ChatScreen({
                     )}
                   </View>
                 )}
-                {!user && !!text && !!answerLabel?.(message.id) && (
-                  <Text style={[s.small, { marginLeft: 6 }]}>{answerLabel(message.id)}</Text>
+                {!user && !!text && !!label && (
+                  <Text style={[s.small, { marginLeft: 6 }]}>{label}</Text>
                 )}
                 {toolCalls.map((toolCall) => {
                   const toolMessage = messages.find(
@@ -752,6 +833,9 @@ export function ChatScreen({
               />
             ))}
           </View>
+        )}
+        {!!deviceNotice && (
+          <Text style={[s.small, { color: colors.warn, marginLeft: 6 }]}>{deviceNotice}</Text>
         )}
         <ErrorNotice error={error} />
         {!!error && (

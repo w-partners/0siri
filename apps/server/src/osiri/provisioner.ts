@@ -1,7 +1,7 @@
 // 팀 런타임 프로비저너 (0SIRI-SPEC §15.3 · §22-8). `system/worker-provisioning` 큐를 비우며
 // 팀 구독 1건 = 서버 안 팀 루프 1개를 띄운다. 팀마다 컨테이너를 만들지 않는다 — 한 사람 = 컨테이너 1개
 // (그 사람 구독 컨테이너·PC 안에서 역할마다 ACP 세션, 공용키면 게이트웨이). 팀 정의는 서버를 떠나지 않는다.
-import { RETENTION_DAYS } from "../../../../packages/domain/src/osiri.ts";
+import { REPORT_CADENCE_DAYS, RETENTION_DAYS } from "../../../../packages/domain/src/osiri.ts";
 import type { DockerRunner } from "../computer.ts";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
@@ -136,7 +136,12 @@ export class Provisioner {
     if (this.loops.has(worker.id)) return;
     const runtime = await this.options.runtime(worker.userId, worker.id, worker.packageId);
     const every = this.options.tickMs ?? tickInterval();
-    const weeklyEvery = Math.max(1, Math.round((7 * 24 * 3600 * 1000) / every));
+    // 보고 주기는 팀 YAML `report_cadence`(없으면 주간)
+    const cadence = (await this.catalog.packageById(worker.packageId)).reportCadence ?? "weekly";
+    const weeklyEvery = Math.max(
+      1,
+      Math.round((REPORT_CADENCE_DAYS[cadence] * 24 * 3600 * 1000) / every),
+    );
     let ticks = 0;
     let busy = false;
     const tick = async () => {

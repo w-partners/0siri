@@ -17,7 +17,55 @@ export interface TeamAgent {
   description: string;
   instruction: string;
   "x-osiri-tier"?: 2 | 3 | 4;
+  /** 출력 템플릿 — 팀 제작자가 정한 결과 형식(예: 티타임 목록 열 순서). 역할 지시 뒤에 붙는다 */
+  "x-osiri-template"?: string;
+  /** 도구 사용 지침 — 어떤 도구를 언제·어떻게 쓰는지. 역할 지시 뒤에 붙는다 */
+  "x-osiri-tool-guide"?: string;
   sub_agents?: string[];
+}
+export interface WatchSpec {
+  id: string;
+  /** "<MCP 서버 이름>:<도구>" 또는 도구 이름(연결된 서버 중 그 이름의 read 도구) */
+  tool: string;
+  /** 값의 "+Nd" 는 서울 날짜 YYYY-MM-DD 로 바꿔 넣는다 (예: "+1d" = 내일) */
+  args?: Record<string, unknown>;
+  /** "30s"·"5m"·"1h"·"1d". 팀 tick 간격보다 짧으면 tick 마다 */
+  every: string;
+  /** 알림 글을 쓰는 역할 — 그 역할의 x-osiri-template 형식을 따른다 */
+  role: string;
+  /** changes = 바뀐 것만, full = 전체 다시 */
+  notify?: "changes" | "full";
+}
+const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+export function everyMs(every: string): number {
+  const match = /^(\d+)([smhd])$/.exec(every.trim());
+  if (!match) throw new Error(`감시 주기 형식이 아닙니다: "${every}" (예: 5m·1h·1d)`);
+  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
+}
+/** args 안의 "+Nd" 를 서울 날짜로 (감시 기준일이 날마다 넘어가게) */
+export function resolveArgs(args: Record<string, unknown> = {}, now = Date.now()) {
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => {
+      const match = typeof value === "string" ? /^\+(\d+)d$/.exec(value) : null;
+      if (!match) return [key, value];
+      const day = new Date(now + Number(match[1]) * UNIT_MS.d);
+      return [key, day.toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" })];
+    }),
+  );
+}
+
+/** 역할 시스템 프롬프트: 설명 + 지시 + (도구 사용 지침) + (출력 템플릿) + (장착 스킬) */
+export function rolePrompt(agent: TeamAgent, equipped = ""): string {
+  const guide = agent["x-osiri-tool-guide"]?.trim();
+  const template = agent["x-osiri-template"]?.trim();
+  return [
+    `${agent.description}\n\n${agent.instruction}`,
+    guide && `[도구 사용 지침]\n${guide}`,
+    template && `[출력 템플릿 — 이 형식을 따른다]\n${template}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .concat(equipped);
 }
 export interface TeamSpec {
   version: number;
@@ -30,6 +78,8 @@ export interface TeamSpec {
     "x-osiri-principal"?: string;
     /** 검수 앞 단계. 각 단계는 앞 단계 출력을 받고, 마지막 출력이 승인 카드 입력 {title, body, sources}. 없으면 DEFAULT_TEAM_FLOW */
     "x-osiri-flow"?: { role: string }[];
+    /** 감시: read 도구를 주기적으로 불러 이전 결과와 다르면 그 역할의 템플릿 형식으로 방에 알린다 */
+    "x-osiri-watch"?: WatchSpec[];
   };
   agents: Record<string, TeamAgent>;
 }
@@ -104,6 +154,8 @@ export class TeamRuntime {
   private readonly flow: readonly string[];
   /** 결과물을 내는 역할(흐름의 마지막) — 수정 요청을 고치고, 분해한 작업을 맡는다 */
   private readonly maker: string;
+  /** 감시별 마지막 결과·실행 시각. ponytail: 메모리에만 — 서버가 다시 뜨면 첫 회는 기준만 잡고 알리지 않는다(재시작 사이 변동은 놓친다). 놓치면 안 되면 워커 API 에 저장 */
+  private readonly watched = new Map<string, { at: number; snapshot: string }>();
   constructor(private readonly options: RuntimeOptions) {
     this.flow = teamFlow(declaredFlow(options.team.package));
     this.maker = this.flow[this.flow.length - 1] as string;
@@ -158,12 +210,7 @@ export class TeamRuntime {
     const equipped = skills.length
       ? `\n\n[장착된 스킬]\n${skills.map((s) => `- ${s.name}: ${s.appliesTo}`).join("\n")}`
       : "";
-    return this.options.llm(
-      role,
-      tier,
-      `${agent.description}\n\n${agent.instruction}${equipped}`,
-      user,
-    );
+    return this.options.llm(role, tier, rolePrompt(agent, equipped), user);
   }
 
   /**
@@ -485,8 +532,70 @@ export class TeamRuntime {
     return { completed, pendingApprovals };
   }
 
-  /** 한 사이클: 승인 단계에 멈춘 목표의 승인 상태를 먼저 확인해 이어 가고, 없으면 열린 단기 목표를 하나 진행. */
+  /**
+   * 감시(x-osiri-watch) — 주기가 된 것만 read 도구를 부르고, 결과가 바뀌었으면 역할이 템플릿 형식으로 방에 알린다.
+   * read 가 아닌 도구는 감시하지 않는다(external 은 승인 뒤 발행 단계에서만 — fail-closed). 실패는 방에 오류로 남긴다.
+   */
+  async watch(now = Date.now()): Promise<string[]> {
+    const specs = this.options.team.package["x-osiri-watch"] ?? [];
+    const due = specs.filter((spec) => {
+      const last = this.watched.get(spec.id);
+      return !last || now - last.at >= everyMs(spec.every);
+    });
+    if (!due.length) return [];
+    const servers =
+      await this.api<{ id: string; name: string; tools: { name: string; risk: string }[] }[]>(
+        "/tools",
+      );
+    const notified: string[] = [];
+    for (const spec of due) {
+      try {
+        const [serverName, toolName] = spec.tool.includes(":")
+          ? (spec.tool.split(":", 2) as [string, string])
+          : [undefined, spec.tool];
+        const server = servers.find(
+          (s) => (!serverName || s.name === serverName) && s.tools.some((t) => t.name === toolName),
+        );
+        const tool = server?.tools.find((t) => t.name === toolName);
+        if (!server || !tool)
+          throw new Error(`감시 도구 ${spec.tool} 이(가) 연결되어 있지 않습니다`);
+        if (tool.risk !== "read")
+          throw new Error(`감시는 read 도구만 — ${spec.tool} 은(는) ${tool.risk} 입니다`);
+        const called = await this.api<{
+          status: string;
+          result?: { content?: unknown };
+          error?: string;
+        }>("/tools/call", {
+          serverId: server.id,
+          tool: toolName,
+          args: resolveArgs(spec.args, now),
+          actor: spec.role,
+        });
+        if (called.status !== "done") throw new Error(called.error ?? `도구 상태 ${called.status}`);
+        const snapshot = JSON.stringify(called.result?.content ?? null);
+        const last = this.watched.get(spec.id);
+        this.watched.set(spec.id, { at: now, snapshot });
+        if (!last || last.snapshot === snapshot) continue; // 첫 회는 기준만, 같으면 조용히
+        const full = spec.notify === "full";
+        const text = await this.ask(
+          spec.role,
+          `감시 «${spec.id}» 결과가 바뀌었습니다.\n이전:\n${last.snapshot.slice(0, 6000)}\n\n지금:\n${snapshot.slice(0, 6000)}\n\n${
+            full ? "지금 결과 전체를" : "바뀐 항목만(추가·삭제·변경 표시)"
+          } 출력 템플릿 형식으로 쓰세요. 결과에 없는 내용은 쓰지 마세요.`,
+        );
+        await this.say(text, spec.role);
+        notified.push(spec.id);
+      } catch (error) {
+        this.watched.set(spec.id, { at: now, snapshot: this.watched.get(spec.id)?.snapshot ?? "" });
+        await this.say(`감시 «${spec.id}» 실패: ${(error as Error).message}`, "root");
+      }
+    }
+    return notified;
+  }
+
+  /** 한 사이클: 감시를 먼저 돌리고, 승인 단계에 멈춘 목표의 승인 상태를 확인해 이어 가고, 없으면 열린 단기 목표를 하나 진행. */
   async tick(publishTool?: PublishTool): Promise<ShortGoalOutcome | "idle"> {
+    await this.watch();
     const goals = await this.api<Goal[]>("/goals");
     const open = goals.filter((g) => g.level === "short" && g.status === "active");
     let waiting = false;

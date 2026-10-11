@@ -3,7 +3,7 @@
 //  - 가격은 코드 상수가 아니라 관리자 설정값(settings `price:<slug>`). 설정이 없으면 파일럿 무료(0).
 //  - 수수료율만 상수 한 곳: MARKET_FEE_RATE.
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
@@ -14,6 +14,7 @@ import {
   DEFAULT_TEAM_GREETING,
   missingTeamRoles,
   PLATFORM_DATA_HANDLING,
+  REPORT_CADENCE_DAYS,
   REPORT_CADENCE_LABELS,
   RETENTION_DAYS,
   type ReportCadence,
@@ -28,7 +29,7 @@ import { AppError } from "../errors.ts";
 import { type Accounts, type AuditWriter, KindError } from "./accounts.ts";
 import { LIMITS_PREFIX, limitsSchema } from "./limits.ts";
 import type { Rooms } from "./rooms.ts";
-import type { TeamSpec } from "./team-runtime.ts";
+import { everyMs, type TeamSpec } from "./team-runtime.ts";
 
 export const MARKET_FEE_RATE = 0.3; // 앱스토어 벤치마크 30% (§18 결정). 변경은 여기 한 곳.
 export type Category = StoreCategory;
@@ -542,6 +543,8 @@ export function storeRoutes(
   audit: AuditWriter,
   /** 관리자가 등록한 팀 YAML 을 두는 곳 (`<DATA_DIR>/teams`) */
   teamsDir: string,
+  /** 운영자가 이 패키지의 담당인지 확인하고 패키지를 돌려준다(아니면 403) — Operator.requirePackage */
+  canOperate?: (owner: string, packageId: string) => Promise<TeamPackage>,
 ) {
   const app = new Hono<{ Variables: { owner: string } }>();
   app.get("/store/packages", async (c) =>
@@ -636,24 +639,22 @@ export function storeRoutes(
     return c.json({ packageIds });
   });
   /**
-   * 스토어 등록(관리자 화면): 팀 YAML 이 이름·캐릭터·분야·승인 지점·역할의 정본이다.
+   * 팀 YAML 반영 — 관리자 등록과 팀 제작자(운영자) 수정이 같은 검사를 탄다(플랫폼 규칙이 둘로 갈리지 않게).
+   * 팀 YAML 이 이름·캐릭터·분야·승인 지점·역할·흐름·보고 주기의 정본이다.
    * 화면은 YAML 에 없는 것(소개·실행 이미지·심사 중 여부·필요 등급)만 따로 받는다.
+   * onlySlug: 운영자 수정이면 자기 패키지 slug 만 — 남의 팀을 덮지 못하게.
    */
-  app.post("/admin/packages/yaml", async (c) => {
-    const owner = c.get("owner");
-    await admin(owner);
-    const body = z
-      .object({
-        yaml: z.string().min(1).max(200_000),
-        summary: z.string().trim().min(1).max(500),
-        image: z.string().trim().min(1).max(200),
-        reviewing: z.boolean(),
-        requiredTier: z.enum(ACCOUNT_TIERS).optional(),
-      })
-      .parse(await c.req.json());
+  const REPORT_CADENCES = Object.keys(REPORT_CADENCE_DAYS) as [ReportCadence, ...ReportCadence[]];
+  const applyYaml = async (
+    owner: string,
+    yaml: string,
+    meta: { summary: string; image: string; reviewing: boolean; requiredTier?: AccountTier },
+    action: string,
+    onlySlug?: string,
+  ) => {
     let spec: TeamSpec & { package: { category?: string } };
     try {
-      spec = parseYaml(body.yaml);
+      spec = parseYaml(yaml);
     } catch (error) {
       throw new AppError(`팀 YAML 을 읽지 못했습니다: ${(error as Error).message}`, 422);
     }
@@ -664,18 +665,53 @@ export function storeRoutes(
         character: z.string().min(1).max(40),
         category: z.enum(STORE_CATEGORY_IDS),
         approval_points: z.array(z.string()),
+        report_cadence: z.enum(REPORT_CADENCES).optional(),
         "x-osiri-principal": z.string().min(1).max(20).optional(),
         "x-osiri-flow": z
           .array(z.object({ role: z.string().min(1) }))
           .min(1)
           .optional(),
+        "x-osiri-watch": z
+          .array(
+            z.object({
+              id: z.string().min(1).max(60),
+              tool: z.string().min(1).max(200),
+              args: z.record(z.string(), z.unknown()).optional(),
+              every: z.string().refine((value) => {
+                try {
+                  return everyMs(value) > 0;
+                } catch {
+                  return false;
+                }
+              }),
+              role: z.string().min(1),
+              notify: z.enum(["changes", "full"]).optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
       })
       .safeParse(spec?.package);
     if (!head.success)
       throw new AppError(
-        "팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다 (x-osiri-flow 는 [{role}] 목록, x-osiri-principal 은 20자 이내)",
+        `팀 YAML 의 package 에 slug·name·character·category·approval_points 가 있어야 합니다 (x-osiri-flow 는 [{role}] 목록, x-osiri-principal 은 20자 이내, x-osiri-watch 는 [{id, tool, every: 5m·1h·1d, role, notify?}], report_cadence 는 ${REPORT_CADENCES.join("·")})`,
         422,
       );
+    for (const watch of head.data["x-osiri-watch"] ?? [])
+      if (!spec.agents?.[watch.role])
+        throw new AppError(`감시 ${watch.id}: 역할 ${watch.role} 이(가) agents 에 없습니다`, 422);
+    if (onlySlug && head.data.slug !== onlySlug)
+      throw new AppError(`slug 는 바꿀 수 없습니다 — 이 팀은 ${onlySlug} 입니다`, 422);
+    const slots = z.object({
+      "x-osiri-template": z.string().max(8000).optional(),
+      "x-osiri-tool-guide": z.string().max(8000).optional(),
+    });
+    for (const [name, agent] of Object.entries(spec.agents ?? {}))
+      if (!slots.safeParse(agent ?? {}).success)
+        throw new AppError(
+          `역할 ${name}: x-osiri-template·x-osiri-tool-guide 는 8000자 이내 글이어야 합니다`,
+          422,
+        );
     const roles = Object.entries(spec.agents ?? {}).map(([name, agent]) => ({
       name,
       title: String(agent?.title ?? name),
@@ -689,28 +725,102 @@ export function storeRoutes(
       name: head.data.name,
       character: head.data.character,
       category: head.data.category,
-      summary: body.summary,
+      summary: meta.summary,
       roles,
       flow: head.data["x-osiri-flow"]?.map((step) => step.role),
       approvalPoints: head.data.approval_points,
-      reportCadence: "weekly",
+      reportCadence: head.data.report_cadence ?? "weekly",
       verified: existing?.verified ?? false,
       metrics: existing?.metrics ?? { published: 0, indexed: 0, ai_citations: 0 },
-      reviewing: body.reviewing,
-      requiredTier: body.requiredTier,
-      runtime: { teamYaml, image: body.image },
+      reviewing: meta.reviewing,
+      requiredTier: meta.requiredTier,
+      runtime: { teamYaml, image: meta.image },
     });
     await mkdir(teamsDir, { recursive: true });
-    await writeFile(teamYaml, body.yaml);
+    // 직전 판을 한 벌 남긴다 — 운영자 되돌리기용
+    if (existing)
+      await copyFile(teamYaml, `${teamYaml}.prev`).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    await writeFile(teamYaml, yaml);
     const entry = {
       packageId: null,
       actor: `user:${owner}`,
-      action: `store.register ${pkg.slug} reviewing=${body.reviewing}`,
+      action: action.replace("{slug}", pkg.slug),
       result: "ok",
     } as const;
     await audit(owner, entry);
     await audit("system", entry);
+    return pkg;
+  };
+  app.post("/admin/packages/yaml", async (c) => {
+    const owner = c.get("owner");
+    await admin(owner);
+    const body = z
+      .object({
+        yaml: z.string().min(1).max(200_000),
+        summary: z.string().trim().min(1).max(500),
+        image: z.string().trim().min(1).max(200),
+        reviewing: z.boolean(),
+        requiredTier: z.enum(ACCOUNT_TIERS).optional(),
+      })
+      .parse(await c.req.json());
+    const pkg = await applyYaml(
+      owner,
+      body.yaml,
+      body,
+      `store.register {slug} reviewing=${body.reviewing}`,
+    );
     return c.json(publicPackage(pkg, await catalog.price(pkg)));
+  });
+
+  // 팀 제작자 셀프서비스 — 자기 팀 YAML(지시문·도구 사용 지침·출력 템플릿·흐름·승인 지점·보고 주기)을 직접 보고 고친다.
+  // 소개·이미지·심사 여부·필요 등급은 그대로 둔다(입점 심사는 관리자 몫). 담당이 아니면 403.
+  const operated = async (owner: string, packageId: string) => {
+    if (!canOperate) throw new AppError("운영자 콘솔이 연결되어 있지 않습니다", 503);
+    return canOperate(owner, packageId);
+  };
+  app.get("/operator/packages/:id/yaml", async (c) => {
+    const pkg = await operated(c.get("owner"), c.req.param("id"));
+    const read = (path: string) => readFile(path, "utf8").catch(() => null);
+    return c.json({
+      yaml: await read(pkg.runtime.teamYaml),
+      previous: await read(`${pkg.runtime.teamYaml}.prev`),
+    });
+  });
+  const keepMeta = (pkg: TeamPackage) => ({
+    summary: pkg.summary,
+    image: pkg.runtime.image,
+    reviewing: pkg.reviewing ?? false,
+    requiredTier: pkg.requiredTier,
+  });
+  app.put("/operator/packages/:id/yaml", async (c) => {
+    const owner = c.get("owner");
+    const pkg = await operated(owner, c.req.param("id"));
+    const { yaml } = z.object({ yaml: z.string().min(1).max(200_000) }).parse(await c.req.json());
+    const next = await applyYaml(
+      owner,
+      yaml,
+      keepMeta(pkg),
+      "store.yaml.operator {slug}",
+      pkg.slug,
+    );
+    return c.json(publicPackage(next, await catalog.price(next)));
+  });
+  // 직전 판으로 되돌리기 (한 단계)
+  app.post("/operator/packages/:id/yaml/rollback", async (c) => {
+    const owner = c.get("owner");
+    const pkg = await operated(owner, c.req.param("id"));
+    const previous = await readFile(`${pkg.runtime.teamYaml}.prev`, "utf8").catch(() => null);
+    if (!previous) throw new AppError("되돌릴 직전 판이 없습니다", 409);
+    const next = await applyYaml(
+      owner,
+      previous,
+      keepMeta(pkg),
+      "store.yaml.rollback {slug}",
+      pkg.slug,
+    );
+    return c.json(publicPackage(next, await catalog.price(next)));
   });
   app.post("/admin/packages", async (c) => {
     await admin(c.get("owner"));

@@ -75,7 +75,8 @@ export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
 export const PROPOSAL_DECISIONS = ["accept", "hold"] as const;
 export type ProposalDecision = (typeof PROPOSAL_DECISIONS)[number];
 /** 팀이 약속한 보고 주기(일). 이 주기를 넘기면 "멈춘 팀" 이다. */
-export const REPORT_CADENCE_DAYS = { weekly: 7 } as const;
+/** 팀 YAML `package.report_cadence` 값 → 며칠마다 보고하나. 없으면 weekly */
+export const REPORT_CADENCE_DAYS = { daily: 1, weekly: 7, monthly: 30 } as const;
 export type ReportCadence = keyof typeof REPORT_CADENCE_DAYS;
 
 // ---- 방 목록·현황판 캐릭터 (화면 2·3) ----
@@ -346,7 +347,11 @@ export const PERSONAL_ROOM_TITLE = "영시리";
 export const ACCOUNT_TIERS = ["free", "package"] as const;
 export type AccountTier = (typeof ACCOUNT_TIERS)[number];
 /** 스토어에 내는 보고 주기 문구 */
-export const REPORT_CADENCE_LABELS: Record<ReportCadence, string> = { weekly: "주간" };
+export const REPORT_CADENCE_LABELS: Record<ReportCadence, string> = {
+  daily: "매일",
+  weekly: "주간",
+  monthly: "월간",
+};
 /** 패키지가 따로 적지 않았을 때의 플랫폼 공통 데이터 처리 방식 (소유자 격리 · 해지 후 보존 기간) */
 export const PLATFORM_DATA_HANDLING = `구독자별로 분리 보관하며, 해지하면 ${RETENTION_DAYS}일 뒤 삭제합니다`;
 export const SUBSCRIPTION_STATUSES = ["active", "cancelled", "ended"] as const;
@@ -539,8 +544,24 @@ export const DEVICE_LAYER_STATE_LABELS: Record<DeviceLayerState, string> = {
   oom: "메모리 부족",
   off: "꺼짐",
 };
-/** 큰 층(티어 1 기기 대화 모델) 표기 — 기획 화면 11 의 값. 아직 내려받을 실물이 없다 */
-export const BIG_LAYER = { name: "Gemma 4 E2B", size: "2.0GB" } as const;
+/**
+ * 큰 층(티어 1 기기 대화 모델) — 앱이 [켜기] 를 눌러야만 받는 GGUF 한 파일 (Android: llama.rn).
+ * unsloth QAT 모바일 Q2_K_XL 을 고른 이유: google 공식 q4_0 GGUF 는 3.35GB 라 8GB 램 폰에 무겁다.
+ * 저장소 판(revision)을 못 박아 둔다 — 허브 쪽 파일이 바뀌어도 받은 크기가 bytes 와 달라 «다시 받기» 로 드러난다.
+ * bytes 는 2026-10-11 HF 허브 파일 목록(`/api/models/<repo>/tree/main`) 실측.
+ */
+export const BIG_LAYER = {
+  name: "Gemma 4 E2B",
+  repo: "unsloth/gemma-4-E2B-it-qat-mobile-GGUF",
+  revision: "46af839dc23aceb4b965ab640dae7fc1bea39bba",
+  file: "gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf",
+  bytes: 2_186_186_784,
+} as const;
+export const BIG_LAYER_URL = `https://huggingface.co/${BIG_LAYER.repo}/resolve/${BIG_LAYER.revision}/${BIG_LAYER.file}`;
+/** 화면 표기용 크기 (십진 GB) — bytes 에서만 계산한다 */
+export const BIG_LAYER_SIZE = `${(BIG_LAYER.bytes / 1e9).toFixed(2)}GB`;
+/** 기기에서 답한 메시지 아래 한 줄 — 서버 기록(answered_by)이 없으므로 앱이 메시지 metadata 로 붙인다 */
+export const DEVICE_ANSWER_LABEL = `${ANSWER_SOURCE_LABELS.device} · ${BIG_LAYER.name}`;
 /**
  * EMBED_DOWNLOAD_MB 는 가중치 파일(onnx/model_quantized.onnx + .onnx_data = 314,220,093바이트 ≈ 299MiB)만 센 값이다.
  * 토크나이저(tokenizer.json 32,170,510바이트 ≈ 31MiB)를 따로 받는다 — 2026-10-10 HF 허브 파일 목록 실측.

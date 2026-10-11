@@ -367,6 +367,7 @@ export async function createApp(
       accounts,
       (owner, input) => rooms.audit(owner, input),
       join(config.dataDir, "teams"),
+      (owner, packageId) => operator.requirePackage(owner, packageId),
     ),
   );
   app.route("/api", routingRoutes(routing));

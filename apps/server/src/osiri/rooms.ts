@@ -25,6 +25,7 @@ import {
   type ProposalStatus,
   REPORT_CADENCE_DAYS,
   type RejectReasonKind,
+  type ReportCadence,
   type TaskStage,
   TEAM_TIER_LABEL,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -836,7 +837,19 @@ export class Rooms {
     const nextReportAt =
       room.packageId === null || room.archived
         ? undefined
-        : new Date(Date.parse(lastReportAt) + REPORT_CADENCE_DAYS.weekly * DAY_MS).toISOString();
+        : new Date(
+            Date.parse(lastReportAt) +
+              REPORT_CADENCE_DAYS[
+                (
+                  await this.db.get<{ reportCadence?: ReportCadence }>(
+                    "system",
+                    "packages",
+                    room.packageId,
+                  )
+                )?.reportCadence ?? "weekly"
+              ] *
+                DAY_MS,
+          ).toISOString();
     const roles = await this.rolesOf(room);
     const openWork = goals.filter(
       (g) => (g.level === "task" || g.level === "short") && g.status === "active",

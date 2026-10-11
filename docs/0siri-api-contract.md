@@ -100,6 +100,9 @@
 - `GET /operator/versions?package_id=` → `{ id, version, source: { imageDigest? , mcpUrl? }, review: { item, pass, reason? }[], canary: { stage: "profile"|"partial"|"all"|"stopped", percent }, status: "review_failed"|"canary"|"live"|"rolled_back", createdAt }[]`
 - `POST /operator/versions` `{ packageId, imageDigest?, mcpUrl? }` → 심사 체크리스트 9항(§15.5) 자동 재시험. 하나라도 실패면 `status: "review_failed"`, 배포 없음.
 - `POST /operator/versions/:id/canary` `{ action: "advance"|"stop" }` · `POST /operator/rollback` `{ packageId }`(심사 없이 즉시 이전 버전).
+- 팀 제작자 셀프서비스: `GET /operator/packages/:id/yaml` → `{ yaml, previous }` · `PUT /operator/packages/:id/yaml` `{ yaml }` → 패키지(관리자 등록과 같은 검사, slug 변경 422, 소개·이미지·심사 여부·필요 등급은 유지, 감사 `store.yaml.operator`) · `POST /operator/packages/:id/yaml/rollback`(직전 판 한 단계, 없으면 409). 담당이 아니면 403.
+- `PUT /admin/packages/:id/operators` `{ userId }` — 관리자만. 그 운영자를 팀 담당으로 지정(감사 `operator.assign`).
+- `GET·PUT·PATCH /location` — 사용자 위치(본인 것만). PUT `{ lat, lng, accuracy?, address? }`, PATCH `{ enabled }`(끄면 좌표 삭제, 꺼진 동안 PUT 은 저장 안 함). 6시간 안의 위치만 대화 프롬프트에 실린다. 채팅 도구 `weather`(Open-Meteo).
 - `GET /operator/metrics?package_id=` → `{ approvalRate: number|null, topRejectReason: string|null, citations: number|null }` (집계만).
   (v0.4.0) 추가: `degraded: boolean`, `canaryApprovalRate: number|null`, `previousApprovalRate: number|null` — 카나리 배포 중(멈춤 제외)인 최신 버전의 `createdAt` 을 기준으로 결재(`decidedAt`)를 앞뒤로 나눠 승인율을 견준다. 뒤가 낮으면 `degraded: true`. 카나리가 없거나 한쪽에 결재가 없으면 `false`·`null`. 결재가 버전별로 표시되지 않아 시각 기준의 근사다.
 - `GET /operator/skills?package_id=` · `POST /operator/skills/:id/decide` `{ decision: "approve"|"reject", reason? }`
@@ -154,7 +157,7 @@
   - `PATCH /admin/users/:id/role` `{ role: "user"|"operator"|"admin" }` → 갱신된 회원. 관리자만. 자기 역할은 409(`ROLE_SELF_MESSAGE`) — 바꾸는 사람이 늘 관리자로 남아 관리자 0명이 되지 않는다. 없는 회원 404. 감사 로그 `role.set`.
   - `GET /admin/grants/:userId` → `{ packageIds: string[] }` — 그 회원에게 관리자가 사용을 허용한 팀.
   - `PUT /admin/grants` `{ userId, packageId, allowed }` → `{ packageIds }`. 허용을 거두면 쓰고 있던 구독은 해지 예약된다. 감사 로그 `store.grant`.
-  - `POST /admin/packages/yaml` `{ yaml, summary, image, reviewing, requiredTier? }` → 등록된 패키지. 스토어 등록(관리자 화면). 팀 YAML 의 `package`(slug·name·character·category·approval_points, 선택 `x-osiri-flow: [{role}]`·`x-osiri-principal`)와 `agents` 가 정본이고, 필수 역할은 root·reviewer·publisher·analyst + 흐름 역할(선언 없으면 monitor·drafter·geo), YAML 은 `<DATA_DIR>/teams/<slug>.yaml` 에 저장된다. 같은 slug 면 갱신. 읽지 못한 YAML·필수 역할 누락은 422. 감사 로그 `store.register`.
+  - `POST /admin/packages/yaml` `{ yaml, summary, image, reviewing, requiredTier? }` → 등록된 패키지. 스토어 등록(관리자 화면). 팀 YAML 의 `package`(slug·name·character·category·approval_points, 선택 `x-osiri-flow: [{role}]`·`x-osiri-principal`·`report_cadence: daily|weekly|monthly`·`x-osiri-watch: [{id, tool, args?, every, role, notify?: changes|full}]`(read 도구만 주기 감시, 바뀌면 role 의 템플릿으로 방에 알림)), 역할별 선택 `x-osiri-template`(출력 템플릿)·`x-osiri-tool-guide`(도구 사용 지침)와 `agents` 가 정본이고, 필수 역할은 root·reviewer·publisher·analyst + 흐름 역할(선언 없으면 monitor·drafter·geo), YAML 은 `<DATA_DIR>/teams/<slug>.yaml` 에 저장된다. 같은 slug 면 갱신. 읽지 못한 YAML·필수 역할 누락은 422. 감사 로그 `store.register`.
   - 승인·반려는 감사 로그에 남는다(`waitlist.approve …` · `waitlist.reject …`, 관리자 본인 것과 system 것).
   - 기존 `POST /admin/invites` · `GET /admin/invites` 는 그대로 동작한다.
 - **가입 네트워크**

@@ -2287,6 +2287,7 @@ export function RoomScreen({
               }
               placeholder={plain ? undefined : text.composer}
               welcome={home}
+              deviceChat={home}
               answerLabel={answerLabel}
               anchor={anchor}
               online={!offline}

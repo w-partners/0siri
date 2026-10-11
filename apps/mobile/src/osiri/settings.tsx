@@ -22,6 +22,7 @@ import {
   ANSWER_MODES,
   type AnswerMode,
   BIG_LAYER,
+  BIG_LAYER_SIZE,
   CHARACTER_INTENSITIES,
   CHARACTER_INTENSITY_LABELS,
   DEVICE_LAYER_STATE_LABELS,
@@ -69,6 +70,15 @@ import {
 import { useWorkspace } from "../workspace";
 import { takeAuthIssues } from "./auth";
 import { Confirm, ConnectionsScreen, column, columns, Loaded, mono } from "./connections";
+import {
+  bigModel,
+  clearBigCrash,
+  deviceChatAvailable,
+  downloadBigModel,
+  networkKind,
+  removeBigModel,
+} from "./device-chat";
+import { downloadGate } from "./device-chat-logic";
 import {
   DOWNLOADS_ON_FIRST_USE,
   deviceAvailable,
@@ -164,11 +174,13 @@ const text = {
   answerMode: "답변 방식",
   answerModeHints: {
     auto: "자동: 티어 0 임베딩 신호 → 티어 1 기기 답변 → 서버 경량·주력·최고로 상향",
-    device:
-      "항상 기기: 가능한 작업은 기기에서 끝내고, 도구·웹·긴 작업은 실행 전에 서버 상향 확인을 띄웁니다",
+    device: `항상 기기: 영시리 대화를 이 기기의 ${BIG_LAYER.name} 가 답합니다. 기기가 실패하면 그 사유를 보이고 서버가 답합니다`,
     server: "항상 서버: 기기 답변을 쓰지 않습니다",
   } satisfies Record<AnswerMode, string>,
-  deviceModeNotReady: `${ANSWER_MODE_LABELS.device}는 ${NOT_READY_LABEL}입니다 — 기기 대화 모델(큰 층 · ${BIG_LAYER.name})이 아직 없어 고를 수 없습니다`,
+  deviceModeNotReady: `${ANSWER_MODE_LABELS.device}는 아래 «기기 모델» 에서 큰 층(${BIG_LAYER.name})을 켜서 받은 뒤에 고를 수 있습니다`,
+  deviceModeMissing: `${ANSWER_MODE_LABELS.device}로 두었지만 이 기기에 큰 층(${BIG_LAYER.name})이 없습니다 — 대화는 서버가 답하고, 답마다 그 사유를 보입니다`,
+  deviceModeScope:
+    "기기 답변은 영시리 기본 대화에만 씁니다. 날씨·기억 같은 도구는 기기에서 쓸 수 없고, 팀 방은 서버가 답합니다.",
   autoEconomy: "가성비 자동 라우팅",
   fixedModel: "모델 직접 고르기",
   fixedNone: "고르지 않음",
@@ -196,12 +208,25 @@ const text = {
     off: "기기 검색을 꺼 두었습니다 — 기억 검색은 서버 임베딩으로 하고, 모델을 다시 받지 않습니다",
   } satisfies Record<LayerState, string>,
   bigLayer: `큰 층 · ${BIG_LAYER.name}`,
-  bigLayerHint: `${BIG_LAYER.size} · 사용자가 켜면 Wi-Fi로 다운로드 · 기기 대화 답변`,
-  bigUnavailable: "이 빌드에서는 아직 받을 수 없습니다",
-  bigReason:
-    "기기 LLM 런타임(LiteRT-LM)이 아직 앱에 들어 있지 않습니다. 그때까지 대화 답변은 서버가 합니다.",
-  bigRule:
-    "받을 수 있게 되면 [켜기]를 눌러야만 내려받고, Wi-Fi 가 아니면 시작 전에 확인을 요구합니다.",
+  bigLayerHint: `${BIG_LAYER_SIZE} (${BIG_LAYER.file}) · 사용자가 켜면 Wi-Fi로 다운로드 · 기기 대화 답변`,
+  bigRule: "[켜기]를 눌러야만 내려받고, Wi-Fi 가 아니면 시작 전에 확인을 요구합니다.",
+  turnOn: "켜기",
+  retryLoad: "다시 올려 보기",
+  meteredConfirm: (kind: "metered" | "unknown") =>
+    `${kind === "metered" ? "지금 Wi-Fi 가 아니라 모바일 데이터입니다" : "지금 연결이 Wi-Fi 인지 확인하지 못했습니다"} — ${BIG_LAYER_SIZE} 를 받으면 데이터 요금이 나올 수 있습니다. 그래도 받을까요?`,
+  downloadAnyway: "그래도 받기",
+  offline: "인터넷에 연결되어 있지 않아 받을 수 없습니다",
+  removeBig: `큰 층(${BIG_LAYER.name})을 지우면 ${BIG_LAYER_SIZE} 를 다시 받기 전까지 대화는 서버가 답합니다. 지울까요?`,
+  bigStates: {
+    unknown: "아직 확인하지 않았습니다",
+    none: "내려받지 않았습니다 — 대화는 서버가 답합니다",
+    downloading:
+      "내려받는 중입니다 — 화면을 떠나도 받기는 이어지지만, 앱을 닫으면 멈춥니다(다음 [켜기] 가 이어 받습니다)",
+    ready: `이 기기에 있습니다 — 위 «답변 방식» 에서 [${ANSWER_MODE_LABELS.device}] 를 고르면 대화를 기기에서 답합니다`,
+    unsupported: "이 기기·빌드에서는 쓸 수 없습니다 — 대화는 서버가 답합니다",
+    oom: "메모리가 모자라 올리지 못했습니다 — 대화는 서버가 답합니다",
+    off: "꺼 두었습니다",
+  } satisfies Record<LayerState, string>,
   usageTitle: "이번 달 사용량 (공용 열쇠 기준)",
   percentOfCap: (n: number) => `상한의 ${Math.round(n)}%`,
   spent: (cost: string, cap: string) => `${cost} / ${cap}`,
@@ -408,6 +433,8 @@ function Main({
   const { api } = useWorkspace();
   const settings = useLoad(() => api.request<SettingsView>("/api/settings"));
   const usage = useLoad(() => api.request<BillingUsage>("/api/billing/usage"));
+  // 큰 층 상태 — «기기 모델» 카드가 확인·받기·지우기로 바꾸고, «답변 방식» 이 [기기] 를 열지 정한다
+  const [big, setBig] = useState<LayerState>("unknown");
   return (
     <View style={columns}>
       <View style={column}>
@@ -423,11 +450,12 @@ function Main({
                 }}
                 usage={usage}
                 openConnections={() => open("connections")}
+                bigReady={big === "ready"}
               />
             </>
           )}
         </Loaded>
-        <DeviceCard />
+        <DeviceCard big={big} setBig={setBig} />
       </View>
       <View style={column}>
         <KeysCard openConnections={() => open("connections")} />
@@ -469,11 +497,14 @@ function ModelCard({
   onSaved,
   usage,
   openConnections,
+  bigReady,
 }: {
   settings: SettingsView;
   onSaved: (next: SettingsView) => void;
   usage: UsageState;
   openConnections: () => void;
+  /** 큰 층(기기 대화 모델)이 이 기기에 받아져 있는가 — 아니면 [기기] 를 고를 수 없다 */
+  bigReady: boolean;
 }) {
   const { api, notify } = useWorkspace();
   const act = useAction();
@@ -507,16 +538,22 @@ function ModelCard({
                   key={mode}
                   label={ANSWER_MODE_LABELS[mode]}
                   selected={settings.answerMode === mode}
-                  // 기기 대화 모델(티어 1)이 아직 없다 — 고를 수 없게 두고 아래에 사유를 적는다
-                  disabled={mode === "device"}
+                  // 큰 층을 받기 전에는 고를 수 없게 두고 아래에 사유를 적는다 (이미 기기면 다른 쪽으로 바꿀 수 있게 둔다)
+                  disabled={mode === "device" && !bigReady && settings.answerMode !== "device"}
                   onPress={() => patch({ answerMode: mode })}
                 />
               ))}
             </View>
-            {settings.answerMode !== "device" && (
-              <Text style={s.small}>{text.answerModeHints[settings.answerMode]}</Text>
+            <Text style={s.small}>{text.answerModeHints[settings.answerMode]}</Text>
+            {settings.answerMode === "device" && (
+              <Text style={s.small}>{text.deviceModeScope}</Text>
             )}
-            <Text style={s.small}>{text.deviceModeNotReady}</Text>
+            {!bigReady &&
+              (settings.answerMode === "device" ? (
+                <Text style={[s.small, { color: colors.warn }]}>{text.deviceModeMissing}</Text>
+              ) : (
+                <Text style={s.small}>{text.deviceModeNotReady}</Text>
+              ))}
           </Block>
           <CheckRow
             label={text.autoEconomy}
@@ -693,11 +730,10 @@ function KeysCard({ openConnections }: { openConnections: () => void }) {
   );
 }
 
-function DeviceCard() {
+function DeviceCard({ big, setBig }: { big: LayerState; setBig: (state: LayerState) => void }) {
   const [state, setState] = useState<LayerState>("unknown");
   const [detail, setDetail] = useState("");
   const [confirming, setConfirming] = useState(false);
-  const [bigOpen, setBigOpen] = useState(false);
   const act = useAction();
   const check = async () => {
     setDetail("");
@@ -797,27 +833,119 @@ function DeviceCard() {
             </View>
           )}
         </View>
-        <View style={{ gap: 6, paddingTop: 14, borderTopWidth: 1, borderColor: colors.line }}>
-          <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
-            <Text style={[s.text, { fontWeight: "600" }]}>{text.bigLayer}</Text>
-            <Chip tint={colors.warnBg}>{NOT_READY_LABEL}</Chip>
-          </View>
-          <Text style={[s.small, mono]}>{text.bigLayerHint}</Text>
-          <Text style={[s.small, { color: colors.warn }]}>{text.bigUnavailable}</Text>
-          {bigOpen && (
-            <>
-              <Text style={s.small}>{text.bigReason}</Text>
-              <Text style={s.small}>{text.bigRule}</Text>
-            </>
-          )}
-          {/* 받을 실물이 없다 — [켜기] 버튼을 두지 않고 «준비 중» 칩과 사유만 보인다 */}
-          <View style={[s.row, { gap: 8 }]}>
-            <Button small onPress={() => setBigOpen(!bigOpen)}>
-              {text.status}
-            </Button>
-          </View>
-        </View>
+        <BigLayer state={big} setState={setBig} />
       </Card>
+    </View>
+  );
+}
+
+/** 큰 층(기기 대화 모델): [켜기] → (Wi-Fi 가 아니면 확인) → 내려받기·진행률 → 준비됨 · [삭제] */
+function BigLayer({
+  state,
+  setState,
+}: {
+  state: LayerState;
+  setState: (state: LayerState) => void;
+}) {
+  const [detail, setDetail] = useState("");
+  // 받기 전 확인 (모바일 데이터·연결 종류 모름) / 지우기 전 확인
+  const [asking, setAsking] = useState<"metered" | "unknown" | "remove">();
+  const act = useAction();
+  const check = async () => {
+    setDetail("");
+    if (!deviceChatAvailable()) {
+      const model = await bigModel(); // 쓸 수 없는 이유를 기기 쪽에서 받아 그대로 보인다
+      setState("unsupported");
+      setDetail(model.reason ?? "");
+      return;
+    }
+    const model = await bigModel();
+    setState(model.state);
+    setDetail(model.reason ?? "");
+  };
+  const inspect = () => act.run(check);
+  useEffect(() => {
+    void inspect();
+  }, []);
+  const fetchModel = async () => {
+    setAsking(undefined);
+    setDetail("");
+    setState("downloading");
+    try {
+      await downloadBigModel(({ receivedBytes, totalBytes }) =>
+        setDetail(text.downloadProgress(receivedBytes, totalBytes)),
+      );
+      await check();
+    } catch (e) {
+      setState("none");
+      throw e; // 사유는 아래 ErrorNotice 에 보인다
+    }
+  };
+  const download = () => act.run(fetchModel);
+  // [켜기]: Wi-Fi 면 바로 받고, 아니면 먼저 묻는다
+  const turnOn = () =>
+    act.run(async () => {
+      const kind = await networkKind();
+      const gate = downloadGate(kind);
+      if (gate === "offline") throw new Error(text.offline);
+      if (gate === "start") await fetchModel();
+      else setAsking(kind === "metered" ? "metered" : "unknown");
+    });
+  const retryLoad = () =>
+    act.run(async () => {
+      await clearBigCrash();
+      await check();
+    });
+  const remove = () =>
+    act.run(async () => {
+      await removeBigModel();
+      setAsking(undefined);
+      await check();
+    });
+  return (
+    <View style={{ gap: 6, paddingTop: 14, borderTopWidth: 1, borderColor: colors.line }}>
+      <View style={[s.row, { gap: 6, flexWrap: "wrap" }]}>
+        <Text style={[s.text, { fontWeight: "600" }]}>{text.bigLayer}</Text>
+        <Chip tint={layerTint[state]}>{DEVICE_LAYER_STATE_LABELS[state]}</Chip>
+      </View>
+      <Text style={[s.small, mono]}>{text.bigLayerHint}</Text>
+      <Text style={s.small}>{text.bigStates[state]}</Text>
+      {!!detail && <Text style={s.small}>{detail}</Text>}
+      {(state === "none" || state === "unknown") && <Text style={s.small}>{text.bigRule}</Text>}
+      <ErrorNotice error={act.error} />
+      {asking ? (
+        <Confirm
+          message={asking === "remove" ? text.removeBig : text.meteredConfirm(asking)}
+          action={asking === "remove" ? text.remove : text.downloadAnyway}
+          busy={act.busy}
+          onCancel={() => setAsking(undefined)}
+          onConfirm={asking === "remove" ? remove : download}
+        />
+      ) : (
+        <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Button small busy={act.busy && state !== "downloading"} onPress={inspect}>
+            {text.status}
+          </Button>
+          {(state === "none" || state === "downloading") && (
+            <Button small primary busy={state === "downloading"} onPress={turnOn}>
+              {text.turnOn}
+            </Button>
+          )}
+          {state === "oom" && (
+            <Button small primary busy={act.busy} onPress={retryLoad}>
+              {text.retryLoad}
+            </Button>
+          )}
+          <Button
+            small
+            danger
+            disabled={state !== "ready" && state !== "oom"}
+            onPress={() => setAsking("remove")}
+          >
+            {text.remove}
+          </Button>
+        </View>
+      )}
     </View>
   );
 }

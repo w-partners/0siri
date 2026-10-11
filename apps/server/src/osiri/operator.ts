@@ -230,7 +230,19 @@ export class Operator {
       throw new AppError("운영자 콘솔은 운영자·관리자 계정만 쓸 수 있습니다", 403);
     return user;
   }
-  /** 패키지 담당 지정. 관리자가 정한다 — ponytail: 이것을 부르는 관리자 라우트는 계약에 아직 없다. */
+  /** 관리자가 패키지 담당 운영자를 지정한다 (`PUT /admin/packages/:id/operators`). 감사 기록을 남긴다 */
+  async assignByAdmin(adminId: string, packageId: string, userId: string): Promise<void> {
+    const admin = await this.accounts.userById(adminId);
+    if (admin?.role !== "admin") throw new AppError("관리자만 담당을 지정할 수 있습니다", 403);
+    await this.assignOperator(packageId, userId);
+    await this.rooms.audit(adminId, {
+      packageId,
+      actor: `user:${adminId}`,
+      action: `operator.assign user=${userId}`,
+      result: "ok",
+    });
+  }
+  /** 패키지 담당 지정 */
   async assignOperator(packageId: string, userId: string): Promise<void> {
     await this.catalog.packageById(packageId);
     await this.operator(userId);
@@ -251,7 +263,7 @@ export class Operator {
     return Promise.all(assigned.map((entry) => this.catalog.packageById(entry.id)));
   }
   /** 자기 패키지가 아니면 403. 없는 패키지와 남의 패키지를 구분해 알려 주지 않는다. */
-  private async requirePackage(userId: string, packageId: string): Promise<TeamPackage> {
+  async requirePackage(userId: string, packageId: string): Promise<TeamPackage> {
     const user = await this.operator(userId);
     if (user.role !== "admin") {
       const entry = await this.db.get<PackageOperators>(PLATFORM, OPERATOR_KIND, packageId);
@@ -628,6 +640,12 @@ export function operatorRoutes(operator: Operator) {
     return raw;
   };
   app.get("/operator/packages", async (c) => c.json(await operator.packages(c.get("owner"))));
+  // 관리자: 팀(패키지) 담당 운영자 지정 — 그 사람은 운영자 콘솔에서 자기 팀 YAML 을 직접 고친다
+  app.put("/admin/packages/:id/operators", async (c) => {
+    const { userId } = z.object({ userId: z.string().min(1) }).parse(await c.req.json());
+    await operator.assignByAdmin(c.get("owner"), c.req.param("id"), userId);
+    return c.json({ ok: true });
+  });
   app.get("/operator/versions", async (c) =>
     c.json(await operator.versions(c.get("owner"), packageId(c.req.query("package_id")))),
   );

@@ -80,6 +80,11 @@ before(async () => {
         audits.push(`${owner} ${input.action}`);
       },
       join(directory, "teams"),
+      // 운영자 담당 확인(Operator.requirePackage 대역): op-1 만 모든 패키지의 담당
+      async (owner, packageId) => {
+        if (owner !== "op-1") throw new AppError("내 패키지가 아닙니다", 403);
+        return catalog.packageById(packageId);
+      },
     ),
   );
 });
@@ -286,4 +291,60 @@ test("스토어 등록(관리자 화면): 팀 YAML 이 이름·역할·승인 �
   await catalog.setGrant("user-3", pkg.id, true);
   assert.equal((await call("/api/subscriptions", "user-3", { packageId: pkg.id })).status, 409);
   assert.ok(audits.some((line) => line.includes("store.register legal-marketing reviewing=true")));
+});
+
+test("팀 제작자 셀프서비스: 담당 운영자가 자기 팀 YAML 을 고치고(관리자와 같은 검사), 직전 판으로 되돌린다", async () => {
+  const yaml = await readFile("teams/legal-marketing.yaml", "utf8");
+  const form = { summary: "소개", image: "osiri/team:1", reviewing: true };
+  const pkg = (await (
+    await call("/api/admin/packages/yaml", adminId, { ...form, yaml })
+  ).json()) as {
+    id: string;
+  };
+  const path = `/api/operator/packages/${pkg.id}/yaml`;
+  assert.equal((await call(path, "user-1")).status, 403, "담당이 아니면 못 본다");
+  const current = (await (await call(path, "op-1")).json()) as { yaml: string };
+  assert.equal(current.yaml, yaml);
+
+  // 지침·템플릿 칸과 보고 주기를 고친다 — 소개·이미지·심사 여부는 그대로
+  const edited = yaml
+    .replace("report_cadence: weekly", "report_cadence: daily")
+    .replace(
+      /\n {2}drafter:\n/,
+      '\n  drafter:\n    x-osiri-template: "| 날짜 | 시간 | 인원 |"\n    x-osiri-tool-guide: "조회 도구를 먼저 부른다"\n',
+    );
+  assert.notEqual(edited, yaml);
+  const put = await call(path, "op-1", { yaml: edited }, "PUT");
+  assert.equal(put.status, 200);
+  const saved = await catalog.packageById(pkg.id);
+  assert.equal(saved.reportCadence, "daily");
+  assert.equal(saved.reviewing, true, "입점 심사 여부는 운영자가 바꾸지 못한다");
+  assert.equal(saved.summary, "소개");
+  assert.ok(audits.some((line) => line === "op-1 store.yaml.operator legal-marketing"));
+
+  // 남의 팀 slug 로 바꾸기·플랫폼 규칙 위반·잘못된 주기는 관리자 등록과 똑같이 거절
+  for (const bad of [
+    edited.replace("slug: legal-marketing", "slug: someone-else"),
+    edited.replace(/\n {2}reviewer:/, "\n  checker:"),
+    edited.replace("report_cadence: daily", "report_cadence: hourly"),
+    edited.replace(
+      "report_cadence: daily",
+      "report_cadence: daily\n  x-osiri-watch:\n    - { id: w, tool: t, every: 5 minutes, role: drafter }",
+    ),
+    edited.replace(
+      "report_cadence: daily",
+      "report_cadence: daily\n  x-osiri-watch:\n    - { id: w, tool: t, every: 5m, role: nobody }",
+    ),
+  ])
+    assert.equal((await call(path, "op-1", { yaml: bad }, "PUT")).status, 422);
+
+  const watching = edited.replace(
+    "report_cadence: daily",
+    "report_cadence: daily\n  x-osiri-watch:\n    - { id: w, tool: t, every: 5m, role: drafter, notify: full }",
+  );
+  assert.equal((await call(path, "op-1", { yaml: watching }, "PUT")).status, 200);
+  const back = await call(`${path}/rollback`, "op-1", {});
+  assert.equal(back.status, 200);
+  const restored = (await (await call(path, "op-1")).json()) as { yaml: string };
+  assert.equal(restored.yaml, edited, "한 단계 전 판(감시 넣기 전)으로 돌아간다");
 });
