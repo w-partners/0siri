@@ -53,6 +53,7 @@ import {
 import type { Mood } from "./osiri/eve";
 import { shareBeforeSend, shareLocation } from "./osiri/location";
 import { PaneFileButton } from "./osiri/pane-send";
+import { PhotoAttachButton, showPhotoMarkers } from "./osiri/photo-attach";
 import { VoiceButton } from "./osiri/voice";
 import { SearchToolCard } from "./search-tool-card";
 import { t } from "./strings";
@@ -761,7 +762,7 @@ export function ChatScreen({
                   >
                     {user ? (
                       <Text selectable style={[s.text, { fontSize: 16, lineHeight: 24 }]}>
-                        {text}
+                        {showPhotoMarkers(text)}
                       </Text>
                     ) : (
                       <AssistantResponse content={text} />
@@ -936,6 +937,12 @@ export function ChatScreen({
           {picking && (
             <Card style={{ marginBottom: 12, padding: 15 }}>
               <Text style={s.heading}>{t.chat.attach.title}</Text>
+              <PhotoAttachButton
+                onAttached={(marker) => {
+                  setDraft((d) => `${d}${d ? " " : ""}${marker} `);
+                  setPicking(false);
+                }}
+              />
               {roomId && (
                 <PaneFileButton
                   roomId={roomId}

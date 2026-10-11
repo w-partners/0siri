@@ -39,6 +39,7 @@ import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
 import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { History, historyRoutes } from "./osiri/history.ts";
+import { Images, imageRoutes } from "./osiri/images.ts";
 import { UsageLimits } from "./osiri/limits.ts";
 import { locationRoutes } from "./osiri/location.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
@@ -195,7 +196,8 @@ export async function createApp(
   };
   // 채팅·작업 엔진이 같은 기억 저장소와 라우팅을 쓴다 (remember_fact → Memories, 모델 선택 → Routing)
   const tmux = new Tmux(db, config.publicUrl);
-  agent.osiri = { memories, routing, subscriptions, tmux, panes, history };
+  const images = new Images(db, config.dataDir);
+  agent.osiri = { memories, routing, subscriptions, tmux, panes, history, images };
   await accounts.ensureAdmin(config.adminPhone, config.adminPassword);
   // 채팅 threadId = 방 id → 방·팀 페르소나를 프롬프트 앞에 붙인다.
   const runtime = makeRuntime(config, agent, auth, intelligence, roomPersona(rooms, catalog));
@@ -353,6 +355,7 @@ export async function createApp(
   app.route("/api", memoryRoutes(memories));
   app.route("/api", historyRoutes(history));
   app.route("/api", locationRoutes(db));
+  app.route("/api", imageRoutes(images));
   app.route("/api", mcpRoutes(mcp));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));

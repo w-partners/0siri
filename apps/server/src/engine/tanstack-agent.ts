@@ -87,6 +87,29 @@ function adapter(spec: string, apiKey?: string) {
   }
 }
 
+/**
+ * 0Siri: 게이트웨이 뒤 일부 백엔드는 도구 호출을 보내 놓고 종료 사유를 "stop" 으로 준다 — TanStack 은 그러면
+ * 도구를 실행하지 않고 답 없이 끝낸다(2026-10-11 실측: «내일 일정» 4번 중 1~2번 빈 답). 도구 호출이 나온
+ * 모델 호출의 종료 사유 stop/null 은 tool_calls 로 바로잡는다. length(잘림)는 건드리지 않는다.
+ */
+export function toolCallsFinish<T>(model: T): T {
+  const a = model as unknown as { chatStream: (...args: unknown[]) => AsyncIterable<unknown> };
+  const stream = a.chatStream.bind(a);
+  a.chatStream = async function* (...args: unknown[]) {
+    let called = false;
+    for await (const chunk of stream(...args)) {
+      const c = chunk as { type?: string; finishReason?: unknown };
+      if (c.type === "TOOL_CALL_END") called = true;
+      yield c.type === "RUN_FINISHED" &&
+      called &&
+      (c.finishReason === "stop" || c.finishReason == null)
+        ? { ...c, finishReason: "tool_calls" }
+        : chunk;
+    }
+  };
+  return model;
+}
+
 /** With OPENAI_BASE_URL set, a gateway model ID most likely needs the openai/ prefix. */
 export function unknownProvider(
   provider: string,
@@ -179,7 +202,7 @@ export function tanstackAgent(options: {
         await options.onUsage?.(total);
       };
       return chat({
-        adapter: adapter(options.model, options.apiKey),
+        adapter: toolCallsFinish(adapter(options.model, options.apiKey)),
         ...(options.onUsage
           ? {
               middleware: [

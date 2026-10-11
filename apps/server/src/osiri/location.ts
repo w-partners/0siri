@@ -25,6 +25,19 @@ export async function readLocation(db: Store, owner: string): Promise<UserLocati
   return (await db.get<UserLocation>(owner, KIND, "me")) ?? { id: "me", enabled: true };
 }
 
+/**
+ * 대화 프롬프트의 «지금» 한 줄 — 한국 시각 기준.
+ * ponytail: 지인 앱이라 시간대는 Asia/Seoul 고정 — 해외 사용자가 생기면 폰이 올리는 시간대로
+ */
+export function nowNote(now = new Date()) {
+  const kst = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    dateStyle: "full",
+    timeStyle: "short",
+  }).format(now);
+  return `Now: ${kst} (Korea time, Asia/Seoul). Resolve relative dates like 오늘·내일·이번 주 in Korea time without asking the user for a time zone.`;
+}
+
 /** 대화 프롬프트에 붙일 한 줄. 꺼졌거나 오래됐거나 없으면 undefined */
 export async function locationNote(
   db: Store,

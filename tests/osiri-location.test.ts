@@ -11,6 +11,7 @@ import {
   LOCATION_FRESH_MS,
   locationNote,
   locationRoutes,
+  nowNote,
   weatherAt,
 } from "../apps/server/src/osiri/location.ts";
 
@@ -107,4 +108,10 @@ test("좌표만 오면(웹) 서버가 주소로 바꿔 두고, 실패하면 좌�
   const down = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
   assert.equal((await (await put(down)).json()).address, undefined);
   assert.match((await locationNote(db, "geo")) ?? "", /do not guess a town/);
+});
+
+test("지금 한 줄은 한국 시각·요일이고 시간대를 되묻지 말라고 한다", () => {
+  const note = nowNote(new Date("2026-10-11T15:00:00Z")); // 한국 10월 12일 0시
+  assert.match(note, /2026년 10월 12일 월요일/);
+  assert.match(note, /without asking the user for a time zone/);
 });

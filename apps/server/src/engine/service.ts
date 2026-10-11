@@ -32,6 +32,7 @@ import { AppError } from "../errors.ts";
 import type { Files } from "../files.ts";
 import { backgroundFailure } from "../log.ts";
 import type { History } from "../osiri/history.ts";
+import type { Images } from "../osiri/images.ts";
 import type { Memories } from "../osiri/memories.ts";
 import type { Panes } from "../osiri/panes.ts";
 import type { Routing } from "../osiri/routing.ts";
@@ -66,6 +67,7 @@ export class AgentService {
     tmux?: Tmux;
     panes?: Panes;
     history?: History;
+    images?: Images;
   };
   private maintenance?: ReturnType<typeof setInterval>;
   private refreshing = false;
