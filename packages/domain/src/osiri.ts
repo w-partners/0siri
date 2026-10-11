@@ -745,5 +745,7 @@ export const GROUP_BOT_TRIGGER_LABELS: Record<GroupBotTrigger, string> = {
   command: "/명령어",
   cron: "크론",
 };
+/** 푸시 알림 채널 — 앱이 만들고 서버(FCM)가 이 채널로 보낸다 */
+export const PUSH_CHANNEL = "messages";
 /** 봇 답 한 번의 최대 글자 — 넘으면 자른다 */
 export const GROUP_BOT_REPLY_MAX = 1500;

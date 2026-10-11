@@ -54,12 +54,17 @@ export type GroupListener = (group: Group, message: GroupMessage) => Promise<voi
 
 export class Groups {
   private readonly listeners: GroupListener[] = [];
+  private readonly posted: GroupListener[] = [];
   constructor(
     private readonly db: Store,
     private readonly accounts: Accounts,
   ) {}
   onMessage(listener: GroupListener) {
     this.listeners.push(listener);
+  }
+  /** 사람·봇이 쓴 모든 줄(안내 제외) — 푸시 알림이 듣는다 */
+  onPosted(listener: GroupListener) {
+    this.posted.push(listener);
   }
 
   async get(groupId: string): Promise<Group> {
@@ -252,6 +257,11 @@ export class Groups {
       createdAt: new Date().toISOString(),
     };
     await this.db.put("system", "group-messages", message);
+    if (authorId !== "system")
+      for (const listener of this.posted)
+        void listener(fresh, message).catch((error) =>
+          console.error(`[osiri] 단체 톡 ${group.id} 알림 실패: ${(error as Error).message}`),
+        );
     return message;
   }
 }

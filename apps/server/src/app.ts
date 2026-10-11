@@ -58,6 +58,7 @@ import {
 import { otpGateway } from "./osiri/otp.ts";
 import { Panes, paneFileRoutes, paneRoutes } from "./osiri/panes.ts";
 import { roomPersona } from "./osiri/persona.ts";
+import { Push, pushRoutes } from "./osiri/push.ts";
 import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
@@ -96,6 +97,18 @@ export async function createApp(
   const accounts = new Accounts(db);
   const bus = new EventBus();
   const groups = new Groups(db, accounts);
+  // 단체 톡 새 줄 → 쓴 사람 말고 멤버들의 폰으로 (FCM v1, 자격증명 없으면 꺼짐을 알리고 건너뜀)
+  const push = new Push(db);
+  groups.onPosted(async (group, message) => {
+    await push.notify(
+      group.members.filter((m) => m.userId !== message.authorId).map((m) => m.userId),
+      {
+        title: group.title,
+        body: `${message.nickname}: ${message.text}`.slice(0, 200),
+        data: { groupId: group.id },
+      },
+    );
+  });
   const rooms = new Rooms(db, bus);
   const approvals = new Approvals(db, rooms, bus);
   const mcp = new Mcp(db, rooms, approvals);
@@ -442,6 +455,7 @@ export async function createApp(
     }),
   );
   app.route("/api", botRoutes(bots));
+  app.route("/api", pushRoutes(push));
   app.route("/api", subscriptionRoutes(subscriptions));
   app.route("/api", paneRoutes(panes));
   app.route(

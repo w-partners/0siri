@@ -45,6 +45,7 @@ import { type CharacterPref, setCharacterPref } from "./src/osiri/eve";
 import { FeedScreen } from "./src/osiri/feed";
 import { GroupList, GroupScreen, type GroupView } from "./src/osiri/groups";
 import { InboxScreen } from "./src/osiri/inbox";
+import { onPushOpen, registerPush } from "./src/osiri/push";
 import { ReportHost } from "./src/osiri/report";
 import {
   LiveChip,
@@ -128,6 +129,9 @@ const text = {
   menu: "메뉴",
   noPersonal: "개인 방(영시리)을 찾지 못했습니다. 다시 시도해 주세요.",
   settingsFailed: "캐릭터 설정을 읽지 못해 기본 모습으로 보여 드려요",
+  pushDenied:
+    "알림 권한이 꺼져 있어 단체 톡 알림을 받을 수 없어요 — 폰의 설정 앱에서 0Siri 알림을 켜 주세요",
+  pushFailed: "이 폰을 알림 받을 기기로 등록하지 못했어요",
   noRoom: "그 방을 찾지 못했습니다. 해지됐거나 주소가 바뀌었을 수 있어요.",
 };
 // 옛 openmuse 섹션 → 0Siri 탭 (agent-ui 등이 navigate("chat") 을 부를 때)
@@ -489,6 +493,19 @@ function Shell({
       .then((v) => setCharacterPref(v.character))
       .catch((e) => notify(`${text.settingsFailed}: ${e instanceof Error ? e.message : e}`));
   }, [api, notify]);
+  // 푸시: 로그인해 있으면 이 폰을 등록하고, 알림을 누르면 그 단체 톡을 연다. 실패는 화면에 알린다(조용히 꺼지지 않게)
+  useEffect(() => {
+    void registerPush(api)
+      .then((r) => r === "denied" && notify(text.pushDenied))
+      .catch((e) => notify(`${text.pushFailed}: ${e instanceof Error ? e.message : e}`));
+    return onPushOpen(
+      (groupId) =>
+        void api
+          .request<GroupView>(`/api/groups/${groupId}`)
+          .then(setGroup)
+          .catch((e) => notify(e instanceof Error ? e.message : String(e))),
+    );
+  }, [api, notify, setGroup]);
   const { width } = useWindowDimensions();
   const desktop = width >= 900;
   const notices = workspace.actions.filter((a) => a.status === "awaiting_review").length;
