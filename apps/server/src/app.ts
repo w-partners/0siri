@@ -33,6 +33,7 @@ import {
   publicAccountRoutes,
 } from "./osiri/account-routes.ts";
 import { Accounts } from "./osiri/accounts.ts";
+import { adminViewRoutes } from "./osiri/admin-view.ts";
 import { Approvals } from "./osiri/approvals.ts";
 import { bugReportRoutes, noteServerError } from "./osiri/bug-report.ts";
 import { EventBus } from "./osiri/events.ts";
@@ -371,6 +372,7 @@ export async function createApp(
     ),
   );
   app.route("/api", routingRoutes(routing));
+  app.route("/api", adminViewRoutes(accounts, rooms, routing, catalog));
   app.route("/api", settingsRoutes(routing, catalog));
   app.route(
     "/api",

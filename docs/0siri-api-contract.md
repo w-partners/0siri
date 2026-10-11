@@ -102,6 +102,7 @@
 - `POST /operator/versions/:id/canary` `{ action: "advance"|"stop" }` · `POST /operator/rollback` `{ packageId }`(심사 없이 즉시 이전 버전).
 - 팀 제작자 셀프서비스: `GET /operator/packages/:id/yaml` → `{ yaml, previous }` · `PUT /operator/packages/:id/yaml` `{ yaml }` → 패키지(관리자 등록과 같은 검사, slug 변경 422, 소개·이미지·심사 여부·필요 등급은 유지, 감사 `store.yaml.operator`) · `POST /operator/packages/:id/yaml/rollback`(직전 판 한 단계, 없으면 409). 담당이 아니면 403.
 - `PUT /admin/packages/:id/operators` `{ userId }` — 관리자만. 그 운영자를 팀 담당으로 지정(감사 `operator.assign`).
+- 관리자 감독 열람(관리자만, 열람마다 관리자 감사 `admin.view <무엇> user=<id>`): `GET /admin/users/:id/usage?month=` (그 사람 월 사용량) · `GET /admin/users/:id/audit` · `GET /admin/users/:id/rooms` · `GET /admin/users/:id/rooms/:roomId/timeline` → `{room, messages}` — 본문은 설정 `adminConversationView` 가 `true` 일 때만(약관 열람 고지 마스터 확인 뒤 켬), 아니면 403. 열람은 사용자의 lastSeenAt 을 바꾸지 않는다. 팀 쪽(YAML·버전·승인)은 운영자 라우트가 관리자를 통과시킨다.
 - `GET·PUT·PATCH /location` — 사용자 위치(본인 것만). PUT `{ lat, lng, accuracy?, address? }`, PATCH `{ enabled }`(끄면 좌표 삭제, 꺼진 동안 PUT 은 저장 안 함). 6시간 안의 위치만 대화 프롬프트에 실린다. 채팅 도구 `weather`(Open-Meteo).
 - `GET /operator/metrics?package_id=` → `{ approvalRate: number|null, topRejectReason: string|null, citations: number|null }` (집계만).
   (v0.4.0) 추가: `degraded: boolean`, `canaryApprovalRate: number|null`, `previousApprovalRate: number|null` — 카나리 배포 중(멈춤 제외)인 최신 버전의 `createdAt` 을 기준으로 결재(`decidedAt`)를 앞뒤로 나눠 승인율을 견준다. 뒤가 낮으면 `degraded: true`. 카나리가 없거나 한쪽에 결재가 없으면 `false`·`null`. 결재가 버전별로 표시되지 않아 시각 기준의 근사다.
