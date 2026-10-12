@@ -8,6 +8,7 @@ import { AppState, Platform, Text, View } from "react-native";
 import appJson from "../../app.json";
 import { apiBase, plainFetch } from "../api";
 import { Button, colors, s } from "../ui";
+import { downloadDetail } from "./download-detail";
 
 type Latest = { version: string; url: string; sha256: string; size: number };
 
@@ -18,8 +19,10 @@ export function isNewer(candidate: string, current: string) {
   return false;
 }
 
+type Progress = { written: number; total: number; speed: number };
+
 const text = {
-  downloading: (v: string, pct: number) => `새 버전 v${v} 내려받는 중… ${pct}%`,
+  downloading: (v: string, pct: number) => `새 버전 v${v} 내려받는 중 · ${pct}%`,
   ready: (v: string) => `새 버전 v${v} 준비됨`,
   install: "설치",
   failed: (why: string) => `업데이트 확인 실패: ${why}`,
@@ -32,6 +35,7 @@ export function UpdateBanner() {
   const [file, setFile] = useState<string>();
   const [status, setStatus] = useState("");
   const [installError, setInstallError] = useState("");
+  const [progress, setProgress] = useState<Progress>();
 
   // 받는 중엔 다시 확인하지 않는다 — 앱에 돌아올 때마다(active) 새로 받기 시작해 같은 파일에 겹쳐 쓰던 것이
   // «10분 넘게 내려받는 중»의 원인이었다(마스터 2026-10-12)
@@ -60,19 +64,29 @@ export function UpdateBanner() {
         // .part 로 받고 다 받은 뒤에만 이름을 바꾼다 — 끊긴 반쪽 파일을 «준비됨»으로 보지 않는다
         const part = `${dest}.part`;
         await FileSystem.deleteAsync(part, { idempotent: true });
-        let shown = 0;
+        // 속도는 0.5초마다 그 사이 받은 양으로 잰다(평균이 아니라 지금 속도). 화면도 그때만 다시 그린다
+        let last = { at: Date.now(), bytes: 0 };
+        let speed = 0;
+        setProgress({ written: 0, total: next.size, speed: 0 });
         const dl = await FileSystem.createDownloadResumable(url, part, {}, (p) => {
-          const pct = Math.floor(
-            (p.totalBytesWritten / (p.totalBytesExpectedToWrite || next.size)) * 100,
+          const now = Date.now();
+          if (now - last.at < 500) return;
+          speed = ((p.totalBytesWritten - last.bytes) * 1000) / (now - last.at);
+          last = { at: now, bytes: p.totalBytesWritten };
+          const total = p.totalBytesExpectedToWrite > 0 ? p.totalBytesExpectedToWrite : next.size;
+          setProgress({ written: p.totalBytesWritten, total, speed });
+          setStatus(
+            text.downloading(next.version, Math.floor((p.totalBytesWritten / total) * 100)),
           );
-          if (pct !== shown) setStatus(text.downloading(next.version, (shown = pct)));
         }).downloadAsync();
         if (dl?.status !== 200) throw new Error(`다운로드 ${dl?.status ?? "중단"}`);
         await FileSystem.moveAsync({ from: part, to: dest });
       }
       setFile(dest);
       setStatus("");
+      setProgress(undefined);
     } catch (e) {
+      setProgress(undefined);
       setStatus(text.failed(e instanceof Error ? e.message : String(e)));
     } finally {
       busy.current = false;
@@ -119,12 +133,39 @@ export function UpdateBanner() {
         },
       ]}
     >
-      <Text
-        accessibilityRole={installError ? "alert" : undefined}
-        style={[s.small, { flex: 1 }, installError ? { color: colors.miss } : null]}
-      >
-        {installError || status || (latest ? text.ready(latest.version) : "")}
-      </Text>
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text
+          accessibilityRole={installError ? "alert" : undefined}
+          style={[s.small, installError ? { color: colors.miss } : null]}
+        >
+          {installError || status || (latest ? text.ready(latest.version) : "")}
+        </Text>
+        {progress && (
+          <>
+            <View
+              accessibilityRole="progressbar"
+              accessibilityValue={{ min: 0, max: progress.total, now: progress.written }}
+              style={{
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: colors.line,
+                overflow: "hidden",
+              }}
+            >
+              <View
+                style={{
+                  height: 6,
+                  width: `${Math.min(100, (progress.written / progress.total) * 100)}%`,
+                  backgroundColor: colors.accent,
+                }}
+              />
+            </View>
+            <Text style={s.small}>
+              {downloadDetail(progress.written, progress.total, progress.speed)}
+            </Text>
+          </>
+        )}
+      </View>
       {file && (
         <Button onPress={() => void install()}>{installError ? text.retry : text.install}</Button>
       )}
