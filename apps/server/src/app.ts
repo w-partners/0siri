@@ -761,6 +761,12 @@ export async function createApp(
       serveStatic({
         root: config.releasesDir,
         rewriteRequestPath: (path) => path.replace(/^\/releases/, ""),
+        // 버전이 붙은 APK 는 내용이 바뀌지 않는다 — Cloudflare 가장자리에 두게 해 터널(실측 2.5MB/s)을 매번 타지 않게 한다.
+        // latest.json 은 그대로 no-store(새 버전을 바로 봐야 한다)
+        onFound: (path, c) => {
+          if (/\/0siri-[\d.]+\.apk$/.test(path))
+            c.header("Cache-Control", "public, max-age=31536000, immutable");
+        },
       }),
     );
   else
