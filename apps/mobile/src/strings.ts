@@ -501,8 +501,8 @@ export const t = {
   threads: {
     sheet: {
       subtitleSample: "내 워크스페이스",
-      retryMain: "메인 대화 다시 시도",
-      mainChat: "메인 대화",
+      retryMain: "기본 대화 다시 시도",
+      mainChat: "기본 대화",
       mainChatDetail: "이어지는 기본 대화입니다",
       mainChatSaved: "이 워크스페이스에 저장됩니다",
       newSideChat: "새 사이드 대화",

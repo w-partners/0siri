@@ -24,6 +24,8 @@ export type GroupView = Group & { mine: boolean };
 const POLL_MS = 3000;
 const text = {
   title: "단체 톡",
+  /** 메뉴 대화 목록의 네 번째 묶음 — 기본·사이드·팀 에이전트 대화 다음(마스터 2026-10-12 «단체톡은 일반대화로») */
+  section: "일반 대화",
   create: "새 단체 톡",
   name: "방 이름",
   make: "만들기",
@@ -85,11 +87,8 @@ export function GroupList({
   const [title, setTitle] = useState("");
   const make = useAction();
   return (
-    <View style={{ gap: 6, marginTop: 10 }}>
-      <View style={[s.row, { gap: 6 }]}>
-        <MessagesSquare size={14} color={colors.muted} />
-        <Text style={s.label}>{text.title}</Text>
-      </View>
+    <View style={{ gap: 6 }}>
+      <Text style={[s.small, { marginTop: 8, paddingHorizontal: 4 }]}>{text.section}</Text>
       <ErrorNotice error={list.error} />
       {list.data?.map((g) => (
         <Pressable
@@ -102,7 +101,10 @@ export function GroupList({
             backgroundColor: g.id === activeId ? colors.card : "transparent",
           }}
         >
-          <Text style={[s.text, { fontWeight: "600" }]}>{g.title}</Text>
+          <View style={[s.row, { gap: 8 }]}>
+            <MessagesSquare size={16} color={colors.muted} />
+            <Text style={[s.text, { fontWeight: "600", flexShrink: 1 }]}>{g.title}</Text>
+          </View>
         </Pressable>
       ))}
       {making ? (

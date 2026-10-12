@@ -180,7 +180,10 @@ const text = {
   mainChat: "기본 대화",
   mainChatDetail: "늘 이어지는 영시리와의 대화",
   sideChats: "사이드 대화",
-  teamRooms: "팀 대화방",
+  teamRooms: "팀 에이전트 대화",
+  // 사이드 대화가 비어 있을 때 — 무엇이 들어오는지 (마스터 2026-10-12 «기본·사이드·팀에이전트·일반대화로 구성»)
+  sideChatDetail: "영시리와 따로 나눈 대화",
+  sideChatsEmpty: "말풍선의 분기 단추나 새 대화방이 여기 쌓입니다",
   progress: (n: number) => `진척 ${n}%`,
   pendingLine: (n: number) => (n > 0 ? `승인 대기 ${n}건` : "대기 없음"),
   stalled: "멈춘 팀",
@@ -1125,10 +1128,10 @@ export function RoomList({
   const q = query.trim().toLowerCase();
   const shown = q ? rooms.filter((r) => roomTitle(r).toLowerCase().includes(q)) : rooms;
   const hired = rooms.some((r) => r.packageId !== null);
-  const groups: [string, Room[]][] = [
-    [text.mainChat, shown.filter(isHomeRoom)],
-    [text.sideChats, shown.filter((r) => r.topic)],
-    [text.teamRooms, shown.filter((r) => r.packageId !== null)],
+  const groups: [string, Room[], string][] = [
+    [text.mainChat, shown.filter(isHomeRoom), ""],
+    [text.sideChats, shown.filter((r) => r.topic), text.sideChatsEmpty],
+    [text.teamRooms, shown.filter((r) => r.packageId !== null), ""], // 비면 아래 스토어 안내,
   ];
   return (
     <View style={{ gap: 6 }}>
@@ -1162,13 +1165,16 @@ export function RoomList({
         </View>
       )}
       <ErrorNotice error={actionError} />
-      {groups.map(([label, list]) =>
-        list.length === 0 ? null : (
+      {groups.map(([label, list, empty]) =>
+        list.length === 0 && (q || !empty) ? null : (
           <View key={label} style={{ gap: 6 }}>
             <Text style={[s.small, { marginTop: 8, paddingHorizontal: 4 }]}>{label}</Text>
+            {list.length === 0 && (
+              <Text style={[s.small, { paddingHorizontal: 4, opacity: 0.7 }]}>{empty}</Text>
+            )}
             {list.map((room) => {
               const active = room.id === activeId;
-              const personal = isHomeRoom(room);
+              const personal = isHomeRoom(room) || !!room.topic;
               const status =
                 room.lastReport ??
                 (isPresence(room.presence) ? PRESENCE_LABELS[room.presence] : "");
@@ -1230,7 +1236,7 @@ export function RoomList({
                     </View>
                     {personal ? (
                       <Text style={s.small} numberOfLines={1}>
-                        {text.mainChatDetail}
+                        {room.topic ? text.sideChatDetail : text.mainChatDetail}
                         {room.tierLabel ? ` · ${room.tierLabel}` : ""}
                       </Text>
                     ) : (
