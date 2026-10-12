@@ -52,6 +52,7 @@ import {
   ARCHIVED_ROOM_NOTICE,
   type BuiltinRoomTab,
   CHARACTER_STATE_OF,
+  type CharacterPrefs,
   type CharacterState,
   ESCALATION_LABEL,
   GOAL_LEVEL_LABELS,
@@ -73,6 +74,7 @@ import {
   ROOM_CHARACTER_PHOTO_MAX,
   ROOM_CHARACTER_PRESETS,
   ROOM_TITLE_MAX,
+  SIDE_CHAT_TITLE,
   SKILL_STATUS_LABELS,
   STAGE_LABELS,
   type TeamTab,
@@ -112,7 +114,14 @@ import {
   timeLabel,
 } from "../ui";
 import { useWorkspace } from "../workspace";
-import { CharacterAvatar, type Mood, selfAnimated, useCharacterPref, useStill } from "./eve";
+import {
+  CharacterAvatar,
+  type Mood,
+  selfAnimated,
+  setCharacterPref,
+  useCharacterPref,
+  useStill,
+} from "./eve";
 import type { GroupView } from "./groups";
 import { HtmlFrame } from "./html-frame";
 import { MESSAGE_ACTION_TEXT } from "./message-actions";
@@ -194,9 +203,9 @@ const text = {
   noMatch: "찾는 방이 없어요",
   back: "뒤로",
   newRoom: "새 사이드 대화",
-  newRoomPlaceholder: "예: 이사 준비, 이번 달 블로그",
-  createRoom: "만들기",
   roomSettings: "방 설정",
+  teamBubble: (n: number) => `팀 방 ${n}개`,
+  hideTeamIcons: "숨기기",
   roomName: "방 이름",
   saveName: "이름 저장",
   teamRoomNote: "팀 방 — 이름은 팀이 정합니다. 구독 해지는 «스토어 › 내 구독»에서.",
@@ -586,66 +595,141 @@ function EdgeFade() {
   );
 }
 
-/** 팀 아이콘을 «떠 있게»: 오른쪽에 세로로 쌓고 끌어서 옮긴다. 살짝 누르면 방을 연다(4px 넘게 움직여야 끌기). */
+const BUBBLE = 48;
+// 이 실행 동안 놓은 자리 — 방을 오가도 그 자리에 다시 뜬다. ponytail: 앱을 다시 켜면 처음 자리, 기억이 필요하면 설정에 저장
+let bubbleAt: { x: number; y: number } | null = null;
+
+/**
+ * 팀 방 바로가기 — 평소엔 동그라미 하나만 떠서 대화를 가리지 않는다 (마스터 2026-10-12
+ * «화면에 박혀서 움직이지 않는것 … 대화를 가리는 문제는?»). 끌어서 옮기면 가까운 옆 가장자리에 붙고,
+ * 누르면 그 옆으로 방 목록이 펼쳐진다. 목록 맨 아래 «아이콘 숨기기» — 다시 켜기는 설정.
+ */
 function FloatingRooms({ onOpen }: { onOpen: (room: Room) => void }) {
-  const pos = useRef(new Animated.ValueXY()).current;
-  // 웹은 끌고 놓아도 click 이 따로 온다 — 끈 직후의 누르기는 방 열기로 치지 않는다
-  const dragged = useRef(false);
+  const { rooms } = useRooms();
+  const { api } = useWorkspace();
+  const act = useAction();
+  const { width, height } = useWindowDimensions();
+  const size = useRef({ width, height });
+  size.current = { width, height };
+  const at = useRef(bubbleAt ?? { x: width - BUBBLE - 8, y: 230 }); // 머리·결재 요약 카드 아래 빈자리
+  const pos = useRef(new Animated.ValueXY(at.current)).current;
+  const [open, setOpen] = useState(false);
+  const [left, setLeft] = useState(at.current.x < width / 2);
+  // 동그라미가 터치를 처음부터 받는다(채팅 헤드 방식). 예전처럼 Pressable 안에서 끌기를 «가로채는» 방식은
+  // 협상이 일어나지 않아 끌리지 않았다(웹 실측: 처리기 호출 0건). 거의 안 움직이고 놓으면 누르기로 친다
   const drag = useRef(
     PanResponder.create({
-      // Capture: 얼굴(Pressable) 위에서 시작한 끌기도 부모가 가로채야 누르기로 방이 열리지 않는다
-      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) + Math.abs(g.dy) > 4,
-      onPanResponderGrant: () => {
-        dragged.current = true;
-        pos.extractOffset();
-      },
-      onPanResponderMove: Animated.event([null, { dx: pos.x, dy: pos.y }], {
-        useNativeDriver: false,
-      }),
-      onPanResponderRelease: () => {
-        pos.flattenOffset();
-        setTimeout(() => {
-          dragged.current = false;
-        }, 100);
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_e, g) =>
+        pos.setValue({ x: at.current.x + g.dx, y: at.current.y + g.dy }),
+      onPanResponderRelease: (_e, g) => {
+        if (Math.abs(g.dx) + Math.abs(g.dy) < 6) {
+          pos.setValue(at.current);
+          setOpen((v) => !v);
+          return;
+        }
+        setOpen(false);
+        const { width: w, height: h } = size.current;
+        const toLeft = at.current.x + g.dx + BUBBLE / 2 < w / 2;
+        // 가까운 옆 가장자리에 붙인다. 위는 머리, 아래는 입력창을 피한다
+        const next = {
+          x: toLeft ? 8 : w - BUBBLE - 8,
+          y: Math.min(Math.max(at.current.y + g.dy, 70), h - BUBBLE - 170),
+        };
+        at.current = bubbleAt = next;
+        setLeft(toLeft);
+        Animated.spring(pos, { toValue: next, useNativeDriver: false }).start();
       },
     }),
   ).current;
+  const teams = (rooms ?? []).filter((r) => !isHomeRoom(r) && !r.archived);
+  if (!teams.length) return null;
+  const pending = teams.reduce((n, r) => n + (r.pendingApprovals ?? 0), 0);
+  const hide = () =>
+    act.run(async () => {
+      await api.request("/api/settings", { character: { teamIcons: "hidden" } }, "PATCH");
+      setCharacterPref(
+        (await api.request<{ character: CharacterPrefs }>("/api/settings")).character,
+      );
+    });
   return (
     <Animated.View
-      {...drag.panHandlers}
       style={{
         position: "absolute",
-        right: 8,
-        top: 120,
+        left: 0,
+        top: 0,
         zIndex: 3,
-        borderRadius: 20,
-        backgroundColor: colors.surface,
-        borderWidth: 1,
-        borderColor: colors.line,
         transform: pos.getTranslateTransform(),
       }}
     >
-      <RoomStrip onOpen={(room) => !dragged.current && onOpen(room)} vertical />
+      <View
+        {...drag.panHandlers}
+        accessible
+        onAccessibilityTap={() => setOpen((v) => !v)}
+        accessibilityRole="button"
+        accessibilityLabel={
+          pending
+            ? `${text.teamBubble(teams.length)} · 승인 대기 ${pending}건`
+            : text.teamBubble(teams.length)
+        }
+        accessibilityState={{ expanded: open }}
+        style={{
+          width: BUBBLE,
+          height: BUBBLE,
+          borderRadius: BUBBLE / 2,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.line,
+          opacity: open ? 1 : 0.92,
+        }}
+      >
+        <Users size={22} color={colors.ink} />
+      </View>
+      {pending > 0 && (
+        <Badge count={pending} style={{ position: "absolute", top: -4, right: -4 }} />
+      )}
+      {open && (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            [left ? "left" : "right"]: BUBBLE + 6,
+            borderRadius: 20,
+            backgroundColor: colors.surface,
+            borderWidth: 1,
+            borderColor: colors.line,
+            paddingBottom: 6,
+          }}
+        >
+          <RoomStrip
+            teams={teams}
+            onOpen={(room) => {
+              setOpen(false);
+              onOpen(room);
+            }}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={hide}
+            accessibilityLabel="팀 아이콘 숨기기 — 설정에서 다시 켤 수 있습니다"
+            style={{ paddingHorizontal: 8, paddingTop: 4, maxWidth: 70 }}
+          >
+            <Text style={[s.small, { textAlign: "center" }]}>{text.hideTeamIcons}</Text>
+          </Pressable>
+        </View>
+      )}
     </Animated.View>
   );
 }
 
 /**
- * 홈(영시리 대화) 위 대화방 줄 — 팀을 붙일 때마다 방이 늘므로 목록이 늘 보이게 (마스터 2026-10-10).
- * 영시리 방은 지금 보고 있으므로 빼고, 팀 방을 동그란 얼굴로 가로로 나열한다. 결재 대기는 배지.
+ * 팀 방 얼굴 목록 — 영시리 방은 지금 보고 있으므로 빼고, 팀 방을 동그란 얼굴로 세로로 나열한다. 결재 대기는 배지.
  * 전체 목록·새 대화방·스토어는 왼쪽 위 ≡ 메뉴 한 곳에만 둔다(마스터 2026-10-10 «전체 부분의 버튼이 두개야???»).
- * 팀 방이 없으면 줄 자체를 그리지 않는다 — Muse 처럼 머리는 얼굴 하나만.
  */
-function RoomStrip({
-  onOpen,
-  vertical = false,
-}: {
-  onOpen: (room: Room) => void;
-  vertical?: boolean;
-}) {
-  const { rooms } = useRooms();
-  const teams = (rooms ?? []).filter((r) => !isHomeRoom(r) && !r.archived);
-  if (!teams.length) return null;
+function RoomStrip({ teams, onOpen }: { teams: Room[]; onOpen: (room: Room) => void }) {
   const cell = (key: string, label: string, onPress: () => void, face: ReactNode, badge = 0) => (
     <Pressable
       key={key}
@@ -677,11 +761,9 @@ function RoomStrip({
   );
   return (
     <ScrollView
-      horizontal={!vertical}
-      showsHorizontalScrollIndicator={false}
       showsVerticalScrollIndicator={false}
-      style={vertical ? { maxHeight: 300 } : { flexGrow: 0, alignSelf: "stretch" }}
-      contentContainerStyle={{ paddingHorizontal: vertical ? 4 : 10, paddingVertical: 6, gap: 4 }}
+      style={{ maxHeight: 300 }}
+      contentContainerStyle={{ paddingHorizontal: 4, paddingVertical: 6, gap: 4 }}
     >
       {teams.map((r) =>
         cell(
@@ -696,36 +778,28 @@ function RoomStrip({
   );
 }
 
-/** 새 대화방(주제방): 이름 하나로 영시리와 따로 이야기할 방을 연다 (마스터 2026-10-10 «대화방을 추가하는 것도 없고»). */
+/**
+ * 새 사이드 대화 — Muse 처럼 한 번 누르면 바로 빈 대화가 열린다. 이름은 첫 메시지로 서버가 붙이고(SIDE_CHAT_TITLE),
+ * 방 설정에서 고칠 수 있다 (마스터 2026-10-12 «사이드에서 방을 만드는 방식이 Meta Muse와 너무 달라»).
+ */
 export function NewRoomForm({ onCreated }: { onCreated: (room: Room) => void }) {
   const { api } = useWorkspace();
   const act = useAction();
-  const [title, setTitle] = useState("");
   return (
     <View style={{ gap: 8, paddingBottom: 8 }}>
-      <Field
-        label={text.newRoom}
-        placeholder={text.newRoomPlaceholder}
-        value={title}
-        maxLength={ROOM_TITLE_MAX}
-        onChangeText={setTitle}
-      />
       <Button
-        small
         primary
         icon={MessageSquarePlus}
         busy={act.busy}
-        disabled={!title.trim()}
         onPress={() =>
           act.run(async () => {
-            const room = await api.request<Room>("/api/rooms", { title: title.trim() });
+            const room = await api.request<Room>("/api/rooms", { title: SIDE_CHAT_TITLE });
             const list = await refreshRooms(api);
-            setTitle("");
             onCreated(list?.find((r) => r.id === room.id) ?? room);
           })
         }
       >
-        {text.createRoom}
+        {text.newRoom}
       </Button>
       <ErrorNotice error={act.error} />
     </View>
@@ -2050,7 +2124,7 @@ export function RoomScreen({
   const desktop = useWindowDimensions().width >= 900;
   // 팀 탭(현황판·목표·스킬…)은 채팅 위에 붙이지 않고 아래에서 올라오는 시트로 연다 (마스터 2026-10-12 «거기에 두려고 한 건데»)
   const [panel, setPanel] = useState<RoomTab | null>(null);
-  const teamIcons = useCharacterPref().teamIcons ?? "row";
+  const teamIcons = useCharacterPref().teamIcons;
   const [mood, setMood] = useState<Mood>("idle");
   const [headHeight, setHeadHeight] = useState(0);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -2365,9 +2439,6 @@ export function RoomScreen({
           </View>
           <Text style={s.small}>{statusLine}</Text>
         </View>
-        {home && !desktop && teamIcons === "row" && (
-          <RoomStrip onOpen={(next) => onOpenRoom?.(next)} />
-        )}
       </View>
       <View style={{ flex: 1 }}>
         <ChatScreen
@@ -2410,7 +2481,7 @@ export function RoomScreen({
           readOnly={room.archived ? ARCHIVED_ROOM_NOTICE : undefined}
         />
       </View>
-      {home && !desktop && teamIcons === "float" && (
+      {home && !desktop && teamIcons !== "hidden" && (
         <FloatingRooms onOpen={(next) => onOpenRoom?.(next)} />
       )}
       {settingsOpen && (

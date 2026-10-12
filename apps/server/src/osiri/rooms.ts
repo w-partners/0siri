@@ -26,6 +26,8 @@ import {
   REPORT_CADENCE_DAYS,
   type RejectReasonKind,
   type ReportCadence,
+  SIDE_CHAT_AUTO_TITLE_MAX,
+  SIDE_CHAT_TITLE,
   type TaskStage,
   TEAM_TIER_LABEL,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -239,6 +241,28 @@ export class Rooms {
     if (seed) await this.post(owner, room.id, { role: "user", kind: "text", text: seed });
     this.bus.publish(owner, { type: "board", roomId: room.id });
     return room;
+  }
+  /**
+   * 이름 없이 연 사이드 대화(SIDE_CHAT_TITLE)에 첫 사용자 메시지로 이름을 붙인다 — Muse·ChatGPT 처럼.
+   * 대화 저장(PUT /api/conversation)마다 부르지만, 기본 이름인 주제방에서만 한 번 바뀐다. 사용자가 고친 이름은 건드리지 않는다
+   */
+  async nameSideChat(owner: string, roomId: string, messages: unknown[]) {
+    const room = await this.db.get<Room>(owner, "rooms", roomId);
+    if (!room?.topic || room.title !== SIDE_CHAT_TITLE) return;
+    const first = messages.find(
+      (m): m is { role: string; content: unknown } => (m as { role?: string })?.role === "user",
+    );
+    const content = first?.content;
+    const raw =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.map((p) => (p as { text?: string })?.text ?? "").join(" ")
+          : "";
+    const title = raw.replace(/\s+/g, " ").trim().slice(0, SIDE_CHAT_AUTO_TITLE_MAX).trim();
+    if (!title) return;
+    await this.db.put(owner, "rooms", { ...room, title });
+    this.bus.publish(owner, { type: "board", roomId });
   }
   /** 주제방만 지운다 — 홈 방과 팀 방(구독)은 여기서 지우지 않는다. ponytail: 메시지는 남는다(방이 없어 보이지 않음) */
   async removeTopic(owner: string, roomId: string) {

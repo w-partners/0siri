@@ -614,6 +614,7 @@ export async function createApp(
     }
     await db.put(owner, "conversations", { id: conversationId(c), messages, times });
     history.indexLater(owner, conversationId(c), messages);
+    await rooms.nameSideChat(owner, conversationId(c), messages);
     return c.json({ ok: true, times });
   });
   app.post("/api/files", async (c) => {

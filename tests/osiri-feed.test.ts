@@ -8,7 +8,7 @@ import { createStore } from "../apps/server/src/db.ts";
 import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Feed } from "../apps/server/src/osiri/feed.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
-import { isHomeRoom } from "../packages/domain/src/osiri.ts";
+import { isHomeRoom, SIDE_CHAT_TITLE } from "../packages/domain/src/osiri.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "osiri-feed-"));
 after(() => rm(directory, { recursive: true, force: true }));
@@ -64,4 +64,29 @@ test("주제방은 홈 방으로 잡히지 않고, 주제방만 지울 수 있�
   await assert.rejects(rooms.removeTopic("u4", home.id), /직접 만든/);
   await rooms.removeTopic("u4", topic.id);
   await assert.rejects(rooms.get("u4", topic.id), /찾을 수 없/);
+});
+
+test("새 사이드 대화는 첫 메시지로 이름이 붙고, 고친 이름·다른 방은 그대로다", async () => {
+  const rooms = new Rooms(db, new EventBus());
+  const side = await rooms.createTopic("u5", SIDE_CHAT_TITLE);
+  const say = (content: unknown) => [
+    { id: "a", role: "assistant", content: "안녕" },
+    { id: "m", role: "user", content },
+  ];
+  await rooms.nameSideChat(
+    "u5",
+    side.id,
+    say("  다음 주   제주 여행\n일정 같이 짜 줘. 렌터카랑 숙소까지 전부"),
+  );
+  const named = (await rooms.get("u5", side.id)).title;
+  assert.equal(named, "다음 주 제주 여행 일정 같이 짜 줘. 렌터");
+  await rooms.nameSideChat("u5", side.id, say("다른 말"));
+  assert.equal((await rooms.get("u5", side.id)).title, named);
+  const fixed = await rooms.createTopic("u5", "이사 준비");
+  await rooms.nameSideChat("u5", fixed.id, say("바꾸면 안 됨"));
+  assert.equal((await rooms.get("u5", fixed.id)).title, "이사 준비");
+  const parts = await rooms.createTopic("u5", SIDE_CHAT_TITLE);
+  await rooms.nameSideChat("u5", parts.id, say([{ type: "text", text: "사진 정리" }]));
+  assert.equal((await rooms.get("u5", parts.id)).title, "사진 정리");
+  await rooms.nameSideChat("u5", "default", say("없는 방")); // 방이 아닌 대화는 조용히 지나간다
 });

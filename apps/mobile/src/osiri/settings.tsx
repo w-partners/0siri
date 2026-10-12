@@ -38,8 +38,8 @@ import {
   NOT_READY_LABEL,
   RETENTION_DAYS,
   ROLE_SELF_MESSAGE,
+  TEAM_ICON_CHOICES,
   TEAM_ICON_MODE_LABELS,
-  TEAM_ICON_MODES,
   TIER_LABELS,
   USER_ROLE_LABELS,
   USER_ROLES,
@@ -1088,11 +1088,11 @@ function PreferencesCard({
           )}
           <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
             <Text style={s.small}>{text.teamIcons}</Text>
-            {TEAM_ICON_MODES.map((teamIcons) => (
+            {TEAM_ICON_CHOICES.map((teamIcons) => (
               <Choice
                 key={teamIcons}
                 label={TEAM_ICON_MODE_LABELS[teamIcons]}
-                selected={(character.teamIcons ?? "row") === teamIcons}
+                selected={(character.teamIcons === "hidden" ? "hidden" : "float") === teamIcons}
                 onPress={() => patch({ character: { ...character, teamIcons } })}
               />
             ))}

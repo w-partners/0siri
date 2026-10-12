@@ -8,9 +8,9 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   GROUP_BOT_TRIGGER_LABELS,
   GROUP_BOT_TRIGGERS,
+  GROUP_DEFAULT_TITLE,
   GROUP_NICKNAME_MAX,
   GROUP_TEXT_MAX,
-  GROUP_TITLE_MAX,
   type GroupBotTrigger,
 } from "../../../../packages/domain/src/osiri";
 import type { GroupBot, TeamTools } from "../../../server/src/osiri/bots.ts";
@@ -27,9 +27,6 @@ const text = {
   /** 메뉴 대화 목록의 네 번째 묶음 — 기본·사이드·팀 에이전트 대화 다음(마스터 2026-10-12 «단체톡은 일반대화로») */
   section: "일반 대화",
   create: "새 단체 톡",
-  name: "방 이름",
-  make: "만들기",
-  cancel: "취소",
   members: (n: number) => `멤버 ${n}명`,
   owner: "방장",
   me: "나",
@@ -83,8 +80,6 @@ export function GroupList({
 }) {
   const { api } = useWorkspace();
   const list = useLoad(() => api.request<GroupView[]>("/api/groups"));
-  const [making, setMaking] = useState(false);
-  const [title, setTitle] = useState("");
   const make = useAction();
   return (
     <View style={{ gap: 6 }}>
@@ -107,43 +102,21 @@ export function GroupList({
           </View>
         </Pressable>
       ))}
-      {making ? (
-        <View style={{ gap: 6 }}>
-          <Field
-            label={text.name}
-            value={title}
-            maxLength={GROUP_TITLE_MAX}
-            onChangeText={setTitle}
-          />
-          <View style={[s.row, { gap: 8 }]}>
-            <Button
-              small
-              primary
-              busy={make.busy}
-              disabled={!title.trim()}
-              onPress={() =>
-                make.run(async () => {
-                  const g = await api.request<GroupView>("/api/groups", { title: title.trim() });
-                  setMaking(false);
-                  setTitle("");
-                  list.retry();
-                  onOpen(g);
-                })
-              }
-            >
-              {text.make}
-            </Button>
-            <Button small onPress={() => setMaking(false)}>
-              {text.cancel}
-            </Button>
-          </View>
-          <ErrorNotice error={make.error} />
-        </View>
-      ) : (
-        <Button small onPress={() => setMaking(true)}>
-          {text.create}
-        </Button>
-      )}
+      {/* 한 번 누르면 바로 열린다 — 이름은 묻지 않고, 들어온 사람 닉네임으로 보인다(서버 view). 열린 방에서 번호로 초대 */}
+      <Button
+        small
+        busy={make.busy}
+        onPress={() =>
+          make.run(async () => {
+            const g = await api.request<GroupView>("/api/groups", { title: GROUP_DEFAULT_TITLE });
+            list.retry();
+            onOpen(g);
+          })
+        }
+      >
+        {text.create}
+      </Button>
+      <ErrorNotice error={make.error} />
     </View>
   );
 }
@@ -156,7 +129,8 @@ export function GroupScreen({ group: initial, onBack }: { group: GroupView; onBa
   const [lines, setLines] = useState<GroupMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
-  const [membersOpen, setMembersOpen] = useState(false);
+  // 막 만든 방(나 혼자)은 초대부터 — 만들고 바로 사람을 고른다
+  const [membersOpen, setMembersOpen] = useState(initial.members.length <= 1);
   const last = useRef(0);
   const scroll = useRef<ScrollView>(null);
   const pull = useCallback(async () => {

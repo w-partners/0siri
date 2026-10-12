@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  GROUP_DEFAULT_TITLE,
   GROUP_NICKNAME_MAX,
   GROUP_TEXT_MAX,
   GROUP_TITLE_MAX,
@@ -124,8 +125,14 @@ export class Groups {
     ).filter((g): g is Group => !!g && g.members.some((m) => m.userId === userId));
     return groups.map((g) => this.view(g, userId));
   }
+  /** 이름 없이 만든 방(GROUP_DEFAULT_TITLE)은 보는 사람 말고 다른 멤버 닉네임으로 보인다 — 아무도 없으면 그 이름 그대로 */
   view(group: Group, userId: string) {
-    return { ...group, mine: group.ownerId === userId };
+    const others = group.members.filter((m) => m.userId !== userId).map((m) => m.nickname);
+    const title =
+      group.title === GROUP_DEFAULT_TITLE && others.length
+        ? others.join(", ").slice(0, GROUP_TITLE_MAX)
+        : group.title;
+    return { ...group, title, mine: group.ownerId === userId };
   }
 
   /** 구독자 ↔ 팀 운영자 방. 구독자·팀마다 하나(id 고정). 새로 지정된 운영자는 열 때 들어온다. */

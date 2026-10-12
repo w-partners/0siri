@@ -1,6 +1,6 @@
 {
   "name": "openmuse",
-  "version": "0.64.2",
+  "version": "0.66.0",
   "private": true,
   "type": "module",
   "license": "MIT",

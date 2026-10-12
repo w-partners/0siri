@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { createStore, type Store } from "../apps/server/src/db.ts";
 import { Accounts } from "../apps/server/src/osiri/accounts.ts";
 import { type GroupMessage, Groups } from "../apps/server/src/osiri/groups.ts";
+import { GROUP_DEFAULT_TITLE } from "../packages/domain/src/osiri.ts";
 
 let db: Store, directory: string, accounts: Accounts, groups: Groups;
 before(async () => {
@@ -133,4 +134,16 @@ test("운영자와 대화: 구독자·팀마다 방 하나, 운영자 자동 참
       /관리자가 받습니다/.test(m.text),
     ),
   );
+});
+
+test("이름 없이 만든 단체 톡은 보는 사람마다 다른 멤버 닉네임으로 보인다", async () => {
+  const a = await accounts.createUser({ phone: "01022223331", password: "pass1234" });
+  const b = await accounts.createUser({ phone: "01022223332", password: "pass1234" });
+  const group = await groups.create(a.id, GROUP_DEFAULT_TITLE);
+  assert.equal(groups.view(group, a.id).title, GROUP_DEFAULT_TITLE); // 혼자면 그 이름 그대로
+  await groups.invite(a.id, group.id, { phone: "01022223332", nickname: "민지" });
+  assert.equal((await groups.mine(a.id)).find((g) => g.id === group.id)?.title, "민지");
+  const seenByB = (await groups.mine(b.id)).find((g) => g.id === group.id);
+  assert.notEqual(seenByB?.title, "민지");
+  assert.notEqual(seenByB?.title, GROUP_DEFAULT_TITLE);
 });

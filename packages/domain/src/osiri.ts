@@ -431,12 +431,18 @@ export interface NotificationPrefs {
   approvals: boolean;
   weeklyReport: boolean;
 }
-/** 기본 채팅(영시리 방)에서 팀 아이콘을 어떻게 보일지 — 머리 아래 줄 · 화면 위에 떠 있게 · 숨김 */
+/**
+ * 기본 채팅(영시리 방)에서 팀 아이콘을 어떻게 보일지 — 떠 있는 버튼(끌어서 옮김) · 숨김.
+ * «row»(머리 아래 고정 줄)는 예전 값이라 저장된 것만 받아 둔다 — 화면은 떠 있게로 그린다
+ * (마스터 2026-10-12 «화면에 박혀서 움직이지 않는것 - 플로팅 버튼으로 이동이 가능하게»).
+ */
 export const TEAM_ICON_MODES = ["row", "float", "hidden"] as const;
+/** 설정에서 고를 수 있는 것 */
+export const TEAM_ICON_CHOICES = ["float", "hidden"] as const;
 export type TeamIconMode = (typeof TEAM_ICON_MODES)[number];
 export const TEAM_ICON_MODE_LABELS: Record<TeamIconMode, string> = {
   row: "머리 아래 줄",
-  float: "떠 있게",
+  float: "떠 있는 버튼",
   hidden: "숨김",
 };
 export interface CharacterPrefs {
@@ -452,7 +458,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 export const DEFAULT_CHARACTER_PREFS: CharacterPrefs = {
   enabled: true,
   intensity: "motion",
-  teamIcons: "row",
+  teamIcons: "float",
 };
 
 // ---- 서버·앱 공용 라벨·문턱 (화면 3·4·5·6·9·11) — 서버가 쓰던 표를 여기로 올렸다 ----
@@ -723,6 +729,13 @@ export const isHomeRoom = (room: { packageId: string | null; topic?: boolean }) 
   room.packageId === null && !room.topic;
 /** 대화방 이름 길이 상한 */
 export const ROOM_TITLE_MAX = 40;
+/**
+ * 새 사이드 대화의 첫 이름 — Muse 처럼 한 번 누르면 바로 열리고, 이름은 첫 메시지로 서버가 붙인다
+ * (마스터 2026-10-12 «사이드에서 방을 만드는 방식이 Meta Muse와 너무 달라»). 이 이름인 동안만 바꾼다
+ */
+export const SIDE_CHAT_TITLE = "새 사이드 대화";
+/** 첫 메시지에서 이름을 딸 때 길이 */
+export const SIDE_CHAT_AUTO_TITLE_MAX = 24;
 /** 문자 인증 용도 — 같은 번호라도 용도가 다르면 서로의 인증번호로 통과하지 않는다(공용 OTP 서비스 purpose) */
 /** 설정 «오류 보고·제안» — page-picker 로 함께 간다 */
 export const REPORT_KINDS = ["bug", "idea"] as const;
@@ -737,6 +750,8 @@ export const FEED_RESULTS_PER_RUN = 5;
 
 // 단체 톡 (마스터 2026-10-11) — 서버 osiri/groups.ts 와 화면 groups.tsx 가 같이 쓴다
 export const GROUP_TITLE_MAX = 40;
+/** 이름 없이 바로 연 단체 톡 — 보는 사람에겐 다른 멤버 닉네임으로 보인다(카카오톡처럼). 이 이름인 동안만 */
+export const GROUP_DEFAULT_TITLE = "새 단체 톡";
 export const GROUP_NICKNAME_MAX = 20;
 export const GROUP_TEXT_MAX = 4000;
 /** 단체 톡 봇 — 방장이 구독 팀의 도구 하나를 봇으로 (트리거: 특정 단어 · /명령어 · 크론) */
