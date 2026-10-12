@@ -88,7 +88,7 @@ export async function createWorkerServer(
         json(200, await browser.read(id));
       else if (action === "screenshot" && !downloadId && request.method === "GET") {
         const bytes = await browser.screenshot(id);
-        response.writeHead(200, { "content-type": "image/png", "content-length": bytes.length });
+        response.writeHead(200, { "content-type": "image/jpeg", "content-length": bytes.length });
         response.end(bytes);
       } else if (action === "downloads" && request.method === "GET") {
         if (!downloadId) json(200, await browser.downloads(id));

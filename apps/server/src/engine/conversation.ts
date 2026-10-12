@@ -13,6 +13,7 @@ import {
 import { calendarRangeSchema } from "../../../../packages/domain/src/index.ts";
 import { jevActionPrefix, parseJevAction } from "../../../../packages/domain/src/jev.ts";
 import {
+  BROWSER_HANDOFF_TOOL,
   SUBSCRIPTION_PLACE_LABELS,
   SUBSCRIPTION_PROVIDER_LABELS,
 } from "../../../../packages/domain/src/osiri.ts";
@@ -340,6 +341,29 @@ export class ConversationAgent extends AbstractAgent {
                   browserAbort.signal.throwIfAborted();
                   return {
                     error: error instanceof Error ? error.message : "Could not read the page",
+                  };
+                }
+              },
+            }),
+            // 사람이 해야 하는 단계(로그인·본인 확인·결제·캡차)는 넘기고 기다린다 — 대화 안 브라우저 카드에서 «영시리에게 돌려주기» (마스터 2026-10-12)
+            defineTool({
+              name: BROWSER_HANDOFF_TOOL,
+              description:
+                "Hand the chat browser to the user for a step only a person should do (login, identity check, payment, captcha, personal choice). Give a short Korean reason. Waits until the user hands it back (or 10 minutes pass), then returns outcome ('returned' or 'timeout') and the page as it is now. Open the page with browse_web first. Never ask for passwords in chat — the user types them in the browser.",
+              parameters: z.object({ reason: z.string().min(1).max(200) }),
+              execute: async ({ reason }) => {
+                browserAbort.signal.throwIfAborted();
+                try {
+                  return await this.service.browser.handoff(
+                    this.owner,
+                    reason,
+                    browserAbort.signal,
+                  );
+                } catch (error) {
+                  browserAbort.signal.throwIfAborted();
+                  return {
+                    error:
+                      error instanceof Error ? error.message : "Could not hand over the browser",
                   };
                 }
               },

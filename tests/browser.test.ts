@@ -67,7 +67,7 @@ test("browser API reopens an owned profile at the edited address and renews cons
   assert.notEqual(renewed.consoleUrl, previous.consoleUrl);
   const console = await app.request(renewed.consoleUrl);
   assert.equal(console.status, 200);
-  assert.match(await console.text(), /Text to type in browser/);
+  assert.match(await console.text(), /브라우저에 입력할 글/);
   assert.equal((await app.request(path)).status, 401);
   const hiddenId = "00000000-0000-4000-8000-000000000099";
   await db.put("someone-else", "browsers", { ...savedSession, id: hiddenId });
@@ -106,6 +106,8 @@ test("console input persists the worker's current page title and URL", async (t)
   const updated = { ...savedSession, title: "New page", url: "https://example.org/" };
   const { db, service } = await browserFixture(t, () => ({ data: updated }));
   await db.put("owner", "browsers", savedSession);
+  // 사람의 조작은 제어권을 넘겨받은 뒤에만 (browser-handoff.test.ts)
+  await service.setHolder("owner", sessionId, "user");
   const result = await service.input("owner", sessionId, { type: "key", key: "Enter" });
   assert.equal(result.title, updated.title);
   assert.deepEqual(await service.get("owner", sessionId), updated);

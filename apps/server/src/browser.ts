@@ -28,7 +28,17 @@ const failureSchema = z.object({
   message: z.string(),
   createdAt: z.string(),
 });
-type ChatBrowser = { id: string; sessionId: string };
+/** 브라우저 프로필 — 대화가 아니라 사람에게 붙는다(로그인이 대화를 넘어 남는다). id 가 곧 워커 세션 id (마스터 2026-10-12 «프로필도 저장») */
+export interface BrowserProfile {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+type ProfilePref = { id: string; profileId: string };
+/** 누가 화면을 조작하나 — 영시리(agent)가 넘기면 사람(user)만 클릭·입력하고, 돌려줄 때까지 영시리는 기다린다 */
+export type BrowserHolder = "agent" | "user";
+const PROFILES_MAX = 5;
+const DEFAULT_PROFILE_NAME = "기본";
 
 const BROWSER_SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -40,6 +50,11 @@ function assertSessionId(id: string): void {
 export class BrowserService {
   private readonly queues = new Map<string, Promise<unknown>>();
   private health?: { checkedAt: number; reachable: Promise<boolean> };
+  // ponytail: 제어권은 서버 메모리 — 재시작하면 영시리에게 돌아간다(기다리던 턴도 함께 끝나므로 맞다)
+  private readonly holders = new Map<
+    string,
+    { holder: BrowserHolder; reason: string; returned?: () => void }
+  >();
   constructor(
     private readonly db: Store,
     private readonly config: Config,
@@ -191,19 +206,11 @@ export class BrowserService {
       return { sessionId: id, ...(await this.readOwned(owner, id, signal)) };
     });
   }
-  async observeForThread(owner: string, threadId: string, url: string, signal?: AbortSignal) {
+  async observeForThread(owner: string, _threadId: string, url: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    // Persist the association before contacting the worker so failed/lost responses
-    // and later chat turns keep using the same profile instead of exhausting its limit.
-    const association =
-      (await this.db.get<ChatBrowser>(owner, "chat-browsers", threadId)) ??
-      (await this.db.insertIfAbsent(owner, "chat-browsers", {
-        id: threadId,
-        sessionId: randomUUID(),
-      })) ??
-      (await this.db.get<ChatBrowser>(owner, "chat-browsers", threadId));
-    if (!association) throw new AppError("Could not reserve the chat browser session", 500);
-    const id = association.sessionId;
+    // 대화마다가 아니라 사람의 «쓰는 중» 프로필 — 로그인·쿠키가 모든 대화에서 이어진다
+    const id = (await this.activeProfile(owner)).id;
+    this.assertAgentTurn(id);
     await this.db.insertIfAbsent(owner, "browsers", {
       id,
       url,
@@ -242,6 +249,11 @@ export class BrowserService {
   async input(owner: string, id: string, value: unknown) {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new AppError("A JSON object is required for browser input", 422);
+    if (this.holder(id).holder !== "user")
+      throw new AppError(
+        "영시리가 조작 중입니다 — «직접 조작» 을 눌러 넘겨받은 뒤 조작하세요",
+        409,
+      );
     return this.serial(id, async () => {
       await this.get(owner, id);
       return this.save(
@@ -291,5 +303,116 @@ export class BrowserService {
   }
   console(owner: string, id: string) {
     return browserConsole(this.auth.sign(owner, `/api/browsers/${id}/preview`));
+  }
+
+  holder(id: string) {
+    const current = this.holders.get(id);
+    return { holder: current?.holder ?? ("agent" as BrowserHolder), reason: current?.reason ?? "" };
+  }
+  private assertAgentTurn(id: string) {
+    if (this.holder(id).holder === "user")
+      throw new AppError("사용자가 브라우저를 조작 중입니다 — 돌려받은 뒤에 다시 하세요", 409);
+  }
+  /** 사람이 «직접 조작»(user) 또는 «영시리에게 돌려주기»(agent) */
+  async setHolder(owner: string, id: string, holder: BrowserHolder) {
+    await this.get(owner, id);
+    const current = this.holders.get(id);
+    if (holder === "agent") {
+      if (current?.returned) current.returned();
+      else this.holders.delete(id);
+    } else
+      this.holders.set(id, {
+        holder: "user",
+        reason: current?.reason ?? "",
+        returned: current?.returned,
+      });
+    return this.holder(id);
+  }
+  /**
+   * 영시리가 사람에게 넘기고(로그인·결제·본인 확인처럼 사람이 해야 하는 일) 돌려받을 때까지 기다린다.
+   * 돌려받으면 그때 화면을 읽어 돌려준다. 시간이 다 되면 "timeout" — 넘긴 채로 조용히 멈춰 있지 않는다.
+   */
+  async handoff(owner: string, reason: string, signal?: AbortSignal, timeoutMs = 10 * 60_000) {
+    const { id } = await this.activeProfile(owner);
+    await this.get(owner, id).catch(() => {
+      throw new AppError(
+        "넘길 브라우저가 아직 없습니다 — 먼저 browse_web 으로 페이지를 여세요",
+        409,
+      );
+    });
+    const outcome = await new Promise<"returned" | "timeout">((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        this.holders.delete(id);
+      };
+      const timer = setTimeout(() => {
+        finish();
+        resolve("timeout");
+      }, timeoutMs);
+      const onAbort = () => {
+        finish();
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.holders.set(id, {
+        holder: "user",
+        reason,
+        returned: () => {
+          finish();
+          resolve("returned");
+        },
+      });
+    });
+    const page = await this.read(owner, id);
+    return { outcome, sessionId: id, ...page, text: page.text.slice(0, 30_000) };
+  }
+  async activeProfile(owner: string): Promise<BrowserProfile> {
+    const pref =
+      (await this.db.get<ProfilePref>(owner, "browser-prefs", "active")) ??
+      (await this.db.insertIfAbsent(owner, "browser-prefs", {
+        id: "active",
+        profileId: randomUUID(),
+      })) ??
+      (await this.db.get<ProfilePref>(owner, "browser-prefs", "active"));
+    if (!pref) throw new AppError("브라우저 프로필을 정하지 못했습니다", 500);
+    const fresh = {
+      id: pref.profileId,
+      name: DEFAULT_PROFILE_NAME,
+      createdAt: new Date().toISOString(),
+    };
+    const profile =
+      (await this.db.get<BrowserProfile>(owner, "browser-profiles", pref.profileId)) ??
+      (await this.db.insertIfAbsent(owner, "browser-profiles", fresh)) ??
+      (await this.db.get<BrowserProfile>(owner, "browser-profiles", pref.profileId));
+    if (!profile) throw new AppError("브라우저 프로필을 정하지 못했습니다", 500);
+    return profile;
+  }
+  async profiles(owner: string) {
+    const active = await this.activeProfile(owner);
+    const profiles = (await this.db.list<BrowserProfile>(owner, "browser-profiles")).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    const session = await this.db.get<BrowserSession>(owner, "browsers", active.id);
+    return {
+      profiles,
+      active: active.id,
+      session: session ? { ...this.decorate(owner, session), ...this.holder(active.id) } : null,
+    };
+  }
+  async createProfile(owner: string, name: string) {
+    const list = await this.db.list<BrowserProfile>(owner, "browser-profiles");
+    if (list.length >= PROFILES_MAX)
+      throw new AppError(`브라우저 프로필은 ${PROFILES_MAX}개까지입니다`, 409);
+    const profile = { id: randomUUID(), name, createdAt: new Date().toISOString() };
+    await this.db.put(owner, "browser-profiles", profile);
+    return profile;
+  }
+  async useProfile(owner: string, id: string) {
+    assertSessionId(id);
+    if (!(await this.db.get(owner, "browser-profiles", id)))
+      throw new AppError("브라우저 프로필이 없습니다", 404);
+    await this.db.put(owner, "browser-prefs", { id: "active", profileId: id });
+    return this.profiles(owner);
   }
 }

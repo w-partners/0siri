@@ -7,8 +7,10 @@ const worker = await createWorkerServer({
   maxSessions: 3,
   idleTimeoutMs: 30 * 60_000,
 });
-worker.server.listen(8790, process.env.WORKER_HOST ?? "127.0.0.1", () => {
-  console.log("OpenMuse browser worker listening on port 8790");
+// 0Siri: seoul 은 8790 을 tailnet 주소에서 다른 것이 쓰고 있어 포트를 env 로 받는다
+const port = Number(process.env.WORKER_PORT ?? 8790);
+worker.server.listen(port, process.env.WORKER_HOST ?? "127.0.0.1", () => {
+  console.log(`OpenMuse browser worker listening on port ${port}`);
 });
 let stopping = false;
 async function stop() {

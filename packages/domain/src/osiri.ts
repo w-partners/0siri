@@ -791,3 +791,9 @@ export function parseChart(raw: string): ChartSpec | string {
     data: v.data.map((p) => ({ label: p.label, value: p.value })),
   };
 }
+
+/** 대화 안 브라우저 프로필 이름 길이 — 서버 /api/browser-profiles 와 화면이 같이 쓴다 */
+export const BROWSER_PROFILE_NAME_MAX = 30;
+/** 영시리가 사람에게 브라우저를 넘기는 도구 이름 — 서버 도구와 화면의 브라우저 카드가 같이 본다 */
+export const BROWSER_HANDOFF_TOOL = "browser_handoff";
+export const BROWSER_TOOLS = ["browse_web", BROWSER_HANDOFF_TOOL] as const;

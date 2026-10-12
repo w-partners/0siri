@@ -201,7 +201,11 @@ export async function createBrowserManager(
           "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
         ],
       });
-    } catch {
+    } catch (error) {
+      // 원인을 남긴다 — 503 문구만으로는 실행 파일 누락인지 자원 부족인지 알 수 없었다
+      console.error(
+        `[worker] Chromium 시작 실패 ${id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       if (!previous) await rm(directory(id), { recursive: true, force: true });
       await rm(tempDirectory, { recursive: true, force: true });
       throw new WorkerError(
@@ -303,7 +307,7 @@ export async function createBrowserManager(
     navigate: (id: string, url: string) => serial(id, () => navigate(id, url)),
     closeSession: (id: string) => serial(id, () => closeSession(id)),
     screenshot: (id: string) =>
-      serial(id, () => active(id).page.screenshot({ type: "png", timeout: 10_000 })),
+      serial(id, () => active(id).page.screenshot({ type: "jpeg", quality: 60, timeout: 10_000 })),
     read: (id: string) =>
       serial(id, async () => {
         const { page } = active(id);

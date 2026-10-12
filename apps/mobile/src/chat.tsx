@@ -30,7 +30,11 @@ import {
   View,
 } from "react-native";
 import { z } from "zod";
-import { type AnswerMode, CAP_REACHED_NOTICE } from "../../../packages/domain/src/osiri";
+import {
+  type AnswerMode,
+  BROWSER_HANDOFF_TOOL,
+  CAP_REACHED_NOTICE,
+} from "../../../packages/domain/src/osiri";
 import { ArtifactCard } from "./agent-ui";
 import { useAgentWorkspace } from "./agent-workspace";
 import { AssistantResponse } from "./assistant-response";
@@ -43,6 +47,7 @@ import {
   showsRunError,
   threadLocked,
 } from "./conversation-run";
+import { BrowserToolCard } from "./osiri/browser-card";
 import { chatOnDevice, stopDeviceChat } from "./osiri/device-chat";
 import {
   deviceAnswerLabel,
@@ -162,6 +167,27 @@ export function WorkspaceTools() {
         target="goals"
         result={result}
         loading={status !== "complete"}
+      />
+    ),
+  });
+  // 대화 안 브라우저 — 열기(browse_web)·넘기기(browser_handoff) 둘 다 같은 카드
+  useRenderTool({
+    name: "browse_web",
+    description: t.tools.render.browseWeb,
+    parameters: displayParameters,
+    render: ({ result, status }) => (
+      <BrowserToolCard result={result} running={status !== "complete"} />
+    ),
+  });
+  useRenderTool({
+    name: BROWSER_HANDOFF_TOOL,
+    description: t.tools.render.browserHandoff,
+    parameters: displayParameters,
+    render: ({ args, result, status }) => (
+      <BrowserToolCard
+        result={result}
+        running={status !== "complete"}
+        reason={typeof args?.reason === "string" ? args.reason : undefined}
       />
     ),
   });

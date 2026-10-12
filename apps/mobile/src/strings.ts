@@ -541,6 +541,8 @@ export const t = {
       createGoal: "저장된 목표를 표시합니다",
       watchPage: "저장된 페이지 추적을 표시합니다",
       rememberFact: "저장된 개인 컨텍스트를 표시합니다",
+      browseWeb: "영시리가 연 브라우저 화면을 보여 줍니다",
+      browserHandoff: "영시리가 넘긴 브라우저를 직접 조작하고 돌려줍니다",
     },
     /** ServerToolCard 의 name — 카드 제목이자 버튼 라벨에 들어가는 명사. */
     cards: {

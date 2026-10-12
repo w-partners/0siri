@@ -14,6 +14,7 @@ import {
   emailDraftSchema,
   proposalSchema,
 } from "../../../packages/domain/src/index.ts";
+import { BROWSER_PROFILE_NAME_MAX } from "../../../packages/domain/src/osiri.ts";
 import { ActionService } from "./actions.ts";
 import { agentConfigured, makeRuntime } from "./agent.ts";
 import { createAuth } from "./auth.ts";
@@ -685,7 +686,12 @@ export async function createApp(
   );
   app.get("/api/browsers/:id/preview", async (c) => {
     const response = await browser.preview(c.get("owner"), c.req.param("id"));
-    c.header("Content-Type", "image/png");
+    const control = browser.holder(c.req.param("id"));
+    // 0Siri 워커는 JPEG(폰으로 나가는 양을 줄인다) — 워커가 준 형식을 그대로 넘긴다
+    c.header("Content-Type", response.headers.get("content-type") ?? "image/png");
+    // 콘솔 화면이 2초마다 제어권도 같이 받는다 (머리글은 ASCII 만 — 사유는 인코딩)
+    c.header("X-Browser-Holder", control.holder);
+    c.header("X-Browser-Reason", encodeURIComponent(control.reason));
     return c.body(await response.arrayBuffer());
   });
   app.get("/api/browsers/:id/console", async (c) => {
@@ -697,9 +703,34 @@ export async function createApp(
     return c.html(browser.console(c.get("owner"), c.req.param("id")));
   });
   app.post("/api/browsers/:id/console", async (c) => {
-    await browser.input(c.get("owner"), c.req.param("id"), await c.req.json());
+    const body = await c.req.json();
+    // 콘솔 화면의 «직접 조작 / 영시리에게 돌려주기» 도 같은 서명 주소로 온다
+    if (body && typeof body === "object" && "control" in body) {
+      const holder = z.enum(["agent", "user"]).parse(body.control);
+      return c.json(await browser.setHolder(c.get("owner"), c.req.param("id"), holder));
+    }
+    await browser.input(c.get("owner"), c.req.param("id"), body);
     return c.json({ ok: true });
   });
+  app.get("/api/browsers/:id/control", async (c) => {
+    await browser.get(c.get("owner"), c.req.param("id"));
+    return c.json(browser.holder(c.req.param("id")));
+  });
+  app.post("/api/browsers/:id/control", async (c) => {
+    const body = z.object({ holder: z.enum(["agent", "user"]) }).parse(await c.req.json());
+    return c.json(await browser.setHolder(c.get("owner"), c.req.param("id"), body.holder));
+  });
+  // 브라우저 프로필 — 사람마다 여러 개, 하나를 «쓰는 중» 으로. 로그인은 프로필에 남는다
+  app.get("/api/browser-profiles", async (c) => c.json(await browser.profiles(c.get("owner"))));
+  app.post("/api/browser-profiles", async (c) => {
+    const body = z
+      .object({ name: z.string().trim().min(1).max(BROWSER_PROFILE_NAME_MAX) })
+      .parse(await c.req.json());
+    return c.json(await browser.createProfile(c.get("owner"), body.name), 201);
+  });
+  app.post("/api/browser-profiles/:id/use", async (c) =>
+    c.json(await browser.useProfile(c.get("owner"), c.req.param("id"))),
+  );
   app.all("/api/copilotkit/*", async (c) => {
     if (!agentConfigured(config))
       throw new AppError(
