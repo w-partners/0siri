@@ -34,7 +34,8 @@ export function UpdateBanner() {
   const [installError, setInstallError] = useState("");
 
   const check = useCallback(async () => {
-    if (Platform.OS !== "android") return;
+    // Play 판은 Play 가 업데이트한다 — 스스로 APK 를 받지 않는다(app.config.js 가 설치 권한도 뺀다)
+    if (Platform.OS !== "android" || process.env.EXPO_PUBLIC_OSIRI_CHANNEL === "play") return;
     try {
       const res = await plainFetch(`${apiBase()}/releases/latest.json`, { cache: "no-store" });
       if (res.status === 404) return; // 릴리스를 안 내는 서버 — 기능 미구성이지 실패가 아니다
