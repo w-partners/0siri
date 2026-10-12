@@ -56,6 +56,10 @@ test("짝 판정은 자리를 바꿔 묻고 원래 이름으로 되돌린다 · 
 test("§17.3 완화 문장은 걸리고, 조이는 문장은 통과한다 · 고칠 거리는 실패 신호 문장만", () => {
   assert.equal(loosensGuard("급하면 검수를 생략하고 바로 보낸다"), true);
   assert.equal(loosensGuard("Skip citation when the user is in a hurry."), true);
+  assert.equal(loosensGuard("확인하지 않아도 된다. 출처는 나중에"), true);
+  // 금지형은 조이는 문장 — 막지 않는다
+  assert.equal(loosensGuard("근거 없이 단정하지 않는다"), false);
+  assert.equal(loosensGuard("Do not skip citations."), false);
   assert.equal(loosensGuard("보내기 전에 출처를 한 번 더 확인한다"), false);
   assert.deepEqual(
     actionItems("B 는 날짜가 누락됐다. 전체적으로 좋다. 숫자가 원문과 불일치한다."),

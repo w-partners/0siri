@@ -67,7 +67,12 @@ export function loosensGuard(text: string) {
     /(검수|컴플라이언스|규정|승인|결재|확인|근거|출처|인용|review|approv|complian|citation|source)/i;
   const loosen =
     /(생략|건너뛰|없이|빼고|제거|완화|무시|하지\s*않아도|안\s*해도|skip|omit|without|bypass|ignore|relax)/i;
-  return text.split(/[.\n。!?]/).some((sentence) => target.test(sentence) && loosen.test(sentence));
+  // «근거 없이 단정하지 않는다» «Do not skip citations» 는 조이는 문장이다 — 금지형이면 통과(실모델 출력에서 오탐)
+  const forbids = /(않는다|않고|말고|말\s*것|하지\s*마|never|do not|don't|must not)/i;
+  const permits = /(않아도|안\s*해도|생략해도|없어도)/;
+  return text
+    .split(/[.\n。!?]/)
+    .some((s) => target.test(s) && loosen.test(s) && (!forbids.test(s) || permits.test(s)));
 }
 
 /** 판정 이유에서 고칠 거리(실패·누락·불일치…) 문장만 — 다음 변이의 입력 */
@@ -272,7 +277,8 @@ export class SkillEvolution {
       wins: r.wins,
       losses: r.losses,
       ties: r.blocked ? 0 : cases.length - r.wins - r.losses,
-      strength: strength[r.id] ?? null,
+      // 막힌 후보는 붙은 판이 없다 — prior 만으로 나온 강도를 점수처럼 보이지 않게
+      strength: r.blocked ? null : (strength[r.id] ?? null),
     }));
     if (!winner)
       return {
