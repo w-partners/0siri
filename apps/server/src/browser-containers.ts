@@ -93,10 +93,11 @@ export class BrowserContainers {
         "ALL",
         "--security-opt",
         "no-new-privileges",
+        // W브라우저 이미지(창 모드 Chrome + 엔진 + 워커)는 1g 에서 실측 897MiB 라 여유를 둔다. shm 은 Chrome 탭이 죽지 않게 1g
         "--memory",
-        "1g",
+        "1536m",
         "--shm-size",
-        "512m",
+        "1g",
         "--pids-limit",
         "512",
         "-e",

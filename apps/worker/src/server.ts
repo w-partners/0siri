@@ -36,6 +36,7 @@ export async function createWorkerServer(
     dataDir: string;
     maxSessions?: number;
     idleTimeoutMs?: number;
+    cdpUrl?: string;
   },
   createBrowser = createBrowserManager,
 ) {

@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import {
   capturePdfDownload,
   MAX_DOWNLOAD_BYTES,
@@ -24,6 +24,8 @@ type Running = {
   touched: number;
   pending: Set<Promise<void>>;
   downloadError?: boolean;
+  /** 사람의 Chrome 에 붙은 세션 — 닫을 때 우리 탭만 닫는다 */
+  shared?: boolean;
 };
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -38,10 +40,13 @@ export async function createBrowserManager(
     dataDir: string;
     maxSessions?: number;
     idleTimeoutMs?: number;
+    /** 있으면 새 Chromium 대신 이 CDP 주소의 Chrome(W브라우저 컨테이너)에 붙는다 */
+    cdpUrl?: string;
   },
   createProxy = startEgressProxy,
 ) {
-  const { dataDir, maxSessions = 3, idleTimeoutMs = 30 * 60_000 } = options;
+  const { dataDir, maxSessions = 3, idleTimeoutMs = 30 * 60_000, cdpUrl } = options;
+  let attached: Browser | undefined;
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const sessions = new Map<string, Session>();
   const running = new Map<string, Running>();
@@ -141,7 +146,8 @@ export async function createBrowserManager(
     const instance = running.get(id);
     const stored = sessions.get(id);
     if (!stored) throw new WorkerError("SESSION_NOT_FOUND", "Browser session not found.", 404);
-    if (instance) {
+    if (instance?.shared) await instance.page.close().catch(() => {});
+    else if (instance) {
       try {
         await instance.context.storageState({ path: join(directory(id), "storage.json") });
       } catch {
@@ -149,6 +155,8 @@ export async function createBrowserManager(
         // unreachable browser must still release its context and session slot.
       }
       await instance.context.close().catch(() => {});
+    }
+    if (instance) {
       await Promise.allSettled(instance.pending);
       running.delete(id);
     }
@@ -180,27 +188,36 @@ export async function createBrowserManager(
     let context: BrowserContext;
     try {
       const { chromium } = await import("playwright");
-      context = await chromium.launchPersistentContext(profileDir, {
-        // Chromium does not need the worker API credential in its environment.
-        env: {
-          HOME: process.env.HOME ?? "/tmp",
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-          LANG: "C.UTF-8",
-        },
-        headless: true,
-        viewport: { width: 1280, height: 800 },
-        proxy: { server: proxy.url, bypass: "<-loopback>" },
-        serviceWorkers: "block",
-        acceptDownloads: true,
-        downloadsPath: tempDirectory,
-        timeout: 25_000,
-        args: [
-          "--disable-quic",
-          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-          "--disable-extensions",
-          "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-        ],
-      });
+      // W브라우저 컨테이너: 사람이 noVNC 로 로그인해 둔 Chrome 에 붙는다(새로 띄우지 않는다).
+      // ponytail: 이 Chrome 은 egress 프록시를 거치지 않는다 — 페이지 route 검사만 남아 DNS rebinding 방어가 launch 모드보다 약하다
+      if (cdpUrl) {
+        if (!attached?.isConnected())
+          attached = await chromium.connectOverCDP(cdpUrl, { timeout: 25_000 });
+        const shared = attached.contexts()[0];
+        if (!shared) throw new Error(`CDP ${cdpUrl} 에 기본 컨텍스트가 없다`);
+        context = shared;
+      } else
+        context = await chromium.launchPersistentContext(profileDir, {
+          // Chromium does not need the worker API credential in its environment.
+          env: {
+            HOME: process.env.HOME ?? "/tmp",
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LANG: "C.UTF-8",
+          },
+          headless: true,
+          viewport: { width: 1280, height: 800 },
+          proxy: { server: proxy.url, bypass: "<-loopback>" },
+          serviceWorkers: "block",
+          acceptDownloads: true,
+          downloadsPath: tempDirectory,
+          timeout: 25_000,
+          args: [
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-extensions",
+            "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+          ],
+        });
     } catch (error) {
       // 원인을 남긴다 — 503 문구만으로는 실행 파일 누락인지 자원 부족인지 알 수 없었다
       console.error(
@@ -214,17 +231,24 @@ export async function createBrowserManager(
         503,
       );
     }
+    let page: Page | undefined;
     try {
-      const statePath = join(directory(id), "storage.json");
-      try {
-        const state = JSON.parse(await readFile(statePath, "utf8")) as Awaited<
-          ReturnType<BrowserContext["storageState"]>
-        >;
-        await context.addCookies(state.cookies);
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      // 붙은 Chrome 은 사람의 것이다 — 쿠키 주입·기존 탭 닫기·컨텍스트 전체 가로채기는 하지 않고 우리 탭에만 건다
+      if (!cdpUrl) {
+        const statePath = join(directory(id), "storage.json");
+        try {
+          const state = JSON.parse(await readFile(statePath, "utf8")) as Awaited<
+            ReturnType<BrowserContext["storageState"]>
+          >;
+          await context.addCookies(state.cookies);
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        }
+        for (const old of context.pages()) await old.close();
       }
-      await context.route("**/*", async (route) => {
+      page = await context.newPage();
+      const guard = cdpUrl ? page : context;
+      await guard.route("**/*", async (route) => {
         try {
           await validatePublicUrl(route.request().url());
           await route.continue();
@@ -232,15 +256,21 @@ export async function createBrowserManager(
           await route.abort("blockedbyclient").catch(() => {});
         }
       });
-      await context.routeWebSocket("**/*", (socket) => socket.close());
-      for (const old of context.pages()) await old.close();
-      const page = await context.newPage();
+      await guard.routeWebSocket("**/*", (socket) => socket.close());
       page.setDefaultTimeout(10_000);
-      const instance: Running = { context, page, touched: Date.now(), pending: new Set() };
+      const instance: Running = {
+        context,
+        page,
+        touched: Date.now(),
+        pending: new Set(),
+        shared: Boolean(cdpUrl),
+      };
       running.set(id, instance);
-      context.on("page", (popup) => {
-        void popup.close();
-      });
+      if (cdpUrl) page.on("popup", (popup) => void popup.close());
+      else
+        context.on("page", (popup) => {
+          void popup.close();
+        });
       page.on("dialog", (dialog) => {
         void dialog.dismiss();
       });
@@ -273,7 +303,8 @@ export async function createBrowserManager(
       await persist(initial);
       return await navigate(id, url);
     } catch (error) {
-      await context.close().catch(() => {});
+      if (cdpUrl) await page?.close().catch(() => {});
+      else await context.close().catch(() => {});
       await Promise.allSettled(running.get(id)?.pending ?? []);
       running.delete(id);
       if (previous) {
