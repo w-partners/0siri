@@ -512,6 +512,19 @@ export class Skills {
     // 한 구독자의 워커가 패키지 공통 스킬(모든 구독자 몫)을 움직이지 못한다 — 개인 스킬, 그것도 그 방 것만
     const skill = await this.personal(owner, id, "효과 보고");
     if (skill.roomId !== roomId) throw new AppError("다른 방의 스킬입니다", 403);
+    // M5 자동 롤백: 자기 개선이 승인 없이 장착한 버전이 나빠졌으면 사람을 기다리지 않고 이전 버전으로 되돌린다.
+    // 사람이 승인한 버전·이전 버전이 없는 1세대는 예전처럼 폐기 제안(결정은 사람)
+    if (input.worse && skill.decidedBy === SELF_IMPROVE_ACTOR && skill.supersedes) {
+      const restored = await this.rollback(owner, id);
+      await this.rooms.activity(owner, {
+        roomId,
+        kind: "skill",
+        actor: SELF_IMPROVE_ACTOR,
+        title: `스킬 자동 롤백: ${skill.name} v${skill.version} → v${restored.version}`,
+        detail: input.effect,
+      });
+      return restored;
+    }
     if (input.worse) return this.proposeRetire(owner, id, input.effect);
     if (skill.status !== "active")
       throw new AppError("장착된 스킬에만 효과를 보고할 수 있습니다", 409);

@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
-import type { RoomMessage } from "./rooms.ts";
+import type { RoomMessage, Rooms } from "./rooms.ts";
 import type { Skill, Skills } from "./skills.ts";
 import type { Llm } from "./team-runtime.ts";
 
@@ -193,9 +193,9 @@ export class SkillEvolution {
   ) {}
 
   /** 한 세대를 돌린다(개인 스킬). 결과는 감사·활동에 남고, 이긴 자식은 Skills.draft 로 들어가 자기 개선 설정대로 장착된다 */
-  async evolve(owner: string, skillId: string) {
+  /** 시작 전 검사(남의 스킬·한도·평가셋) — 202 를 돌려주기 전에 실패하게 */
+  async seed(owner: string, skillId: string) {
     const seed = await this.skills.getPersonal(owner, skillId);
-    const lineage = await this.skills.lineageOf(owner, seed);
     const since = Date.now() - 7 * 86_400_000;
     const recent = (await this.skills.listForUser(owner, { scope: "personal" })).filter(
       (s) => s.parentId && Date.parse(s.createdAt) >= since,
@@ -205,6 +205,22 @@ export class SkillEvolution {
         `이번 주 진화 한도(${EVOLVE_WEEKLY}개)를 다 썼습니다 — 다음 주에 다시 돌립니다`,
         429,
       );
+    if ((await this.cases(owner, seed.roomId)).length < 2)
+      throw new AppError("이 방의 요청이 2개 이상 쌓여야 새 버전을 시험할 수 있습니다", 409);
+    return seed;
+  }
+  /** 섀도우 평가셋: 그 방의 최근 사용자 요청 */
+  private async cases(owner: string, roomId: string | null) {
+    return (await this.db.list<RoomMessage>(owner, "messages"))
+      .filter((m) => m.roomId === roomId && m.role === "user" && (m.text ?? "").trim().length >= 6)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, EVOLVE_CASES)
+      .map((m) => (m.text ?? "").trim());
+  }
+
+  async evolve(owner: string, skillId: string) {
+    const seed = await this.seed(owner, skillId);
+    const lineage = await this.skills.lineageOf(owner, seed);
     // 아카이브 = 반려된 것 빼고 전부(폐기된 것도 디딤돌로 남는다)
     const archive = lineage
       .filter((s) => s.status !== "rejected" && s.status !== "draft")
@@ -212,16 +228,7 @@ export class SkillEvolution {
     const parent = pickParent(archive, this.rand);
     const champion =
       lineage.find((s) => s.status === "active" || s.status === "retire_proposed") ?? parent;
-    // 섀도우 평가셋: 그 방의 최근 사용자 요청
-    const cases = (await this.db.list<RoomMessage>(owner, "messages"))
-      .filter(
-        (m) => m.roomId === seed.roomId && m.role === "user" && (m.text ?? "").trim().length >= 6,
-      )
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, EVOLVE_CASES)
-      .map((m) => (m.text ?? "").trim());
-    if (cases.length < 2)
-      throw new AppError("이 방의 요청이 2개 이상 쌓여야 새 버전을 시험할 수 있습니다", 409);
+    const cases = await this.cases(owner, seed.roomId);
     const feedback = [
       ...lineage.flatMap((s) => s.evalNotes ?? []),
       ...(await this.skills.rejectReasons(owner, seed.roomId)),
@@ -317,10 +324,44 @@ export class SkillEvolution {
 }
 
 /** POST /api/skills/:id/evolve — 내 개인 스킬 한 세대 진화 (사용자 인증 뒤) */
-export function evolutionRoutes(evolution: SkillEvolution) {
+export function evolutionRoutes(evolution: SkillEvolution, rooms: Rooms) {
   const app = new Hono<{ Variables: { owner: string } }>();
-  app.post("/skills/:id/evolve", async (c) =>
-    c.json(await evolution.evolve(c.get("owner"), c.req.param("id"))),
-  );
+  // 한 세대는 2~4분 — 터널(100초)이 끊으므로 시작만 하고 202, 결과·실패는 그 방 활동에 남긴다(조용히 사라지지 않게)
+  const running = new Set<string>();
+  app.post("/skills/:id/evolve", async (c) => {
+    const owner = c.get("owner");
+    const seed = await evolution.seed(owner, c.req.param("id"));
+    const key = `${owner}:${seed.name}:${seed.roomId}`;
+    if (running.has(key)) throw new AppError("이 스킬은 이미 진화 중입니다", 409);
+    running.add(key);
+    const log = (title: string, detail: string) =>
+      rooms.activity(owner, {
+        roomId: seed.roomId ?? undefined,
+        kind: "skill",
+        actor: "진화",
+        title,
+        detail,
+      });
+    void evolution
+      .evolve(owner, seed.id)
+      .then(
+        (out) => {
+          const best = out.results.filter((r) => !r.blocked).sort((a, b) => b.wins - a.wins)[0];
+          return out.created
+            ? log(
+                `스킬 진화: ${seed.name} v${out.created.version} 장착`,
+                `${out.cases}건 비교에서 지금 버전을 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패로 이겼습니다 — 마음에 안 들면 롤백하세요`,
+              )
+            : log(
+                `스킬 진화: ${seed.name} 그대로`,
+                `새 후보가 지금 버전을 이기지 못해 바꾸지 않았습니다 (가장 나은 후보 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패)`,
+              );
+        },
+        (error: Error) => log(`스킬 진화 실패: ${seed.name}`, error.message),
+      )
+      .catch((error: Error) => console.error(`[osiri] 진화 결과 기록 실패: ${error.message}`))
+      .finally(() => running.delete(key));
+    return c.json({ started: true }, 202);
+  });
   return app;
 }

@@ -67,6 +67,10 @@ const text = {
   packageNote: "패키지 공통 스킬은 운영자가 승인합니다",
   measuring: "효과 측정 중",
   rollback: "롤백",
+  evolve: "더 낫게 진화",
+  evolveStarted:
+    "진화를 시작했어요 — 최근 요청으로 새 버전을 시험해 지금 버전을 이기면 바꿉니다(2~4분). 결과는 그 방 활동에 남아요",
+  generation: (n: number) => `${n}세대`,
   retire: "폐기",
   keep: "유지",
 };
@@ -318,7 +322,19 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
         </Card>
       ) : (
         active.map((skill) => (
-          <ActiveRow key={skill.id} skill={skill} onRollback={() => write(skill, "rollback", {})} />
+          <ActiveRow
+            key={skill.id}
+            skill={skill}
+            onRollback={() => write(skill, "rollback", {})}
+            onEvolve={
+              skill.scope === "personal"
+                ? async () => {
+                    await api.request(`/api/skills/${skill.id}/evolve`, {});
+                    notify(text.evolveStarted);
+                  }
+                : undefined
+            }
+          />
         ))
       )}
       {retiring.length > 0 ? heading(text.retireHeading, retiring.length) : null}
@@ -354,27 +370,44 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
 }
 
 /** 장착 목록 한 줄: 이름 · 버전 · 효과 측정 상태 · [롤백]. */
-function ActiveRow({ skill, onRollback }: { skill: Skill; onRollback: () => Promise<void> }) {
+function ActiveRow({
+  skill,
+  onRollback,
+  onEvolve,
+}: {
+  skill: Skill;
+  onRollback: () => Promise<void>;
+  onEvolve?: () => Promise<void>;
+}) {
   const act = useAction();
+  const evolve = useAction();
   return (
     <Card style={{ gap: 8, padding: 16 }}>
       <View style={[s.row, { gap: 10, alignItems: "flex-start" }]}>
         <SkillTitle skill={skill} />
+        {(skill.generation ?? 1) > 1 ? <Chip>{text.generation(skill.generation ?? 1)}</Chip> : null}
         {skill.measuring ? <Chip tint={colors.warnBg}>{text.measuring}</Chip> : null}
       </View>
       {skill.measuring && skill.measureNote ? (
         <Text style={s.small}>{skill.measureNote}</Text>
       ) : null}
       {skill.effect ? <Text style={s.muted}>{skill.effect}</Text> : null}
-      <ErrorNotice error={act.error} />
-      <Button
-        small
-        busy={act.busy}
-        onPress={() => void act.run(onRollback)}
-        style={{ alignSelf: "flex-start" }}
-      >
-        {text.rollback}
-      </Button>
+      <ErrorNotice error={act.error ?? evolve.error} />
+      <View style={[s.row, { gap: 8 }]}>
+        <Button small busy={act.busy} onPress={() => void act.run(onRollback)}>
+          {text.rollback}
+        </Button>
+        {onEvolve ? (
+          <Button
+            small
+            icon={Sparkles}
+            busy={evolve.busy}
+            onPress={() => void evolve.run(onEvolve)}
+          >
+            {text.evolve}
+          </Button>
+        ) : null}
+      </View>
     </Card>
   );
 }

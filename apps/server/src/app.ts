@@ -484,7 +484,7 @@ export async function createApp(
     accountDeletionRoutes(accounts, (owner, input) => rooms.audit(owner, input)),
   );
   app.route("/api", skillRoutes(skills));
-  app.route("/api", evolutionRoutes(new SkillEvolution(db, skills, () => gatewayLlm())));
+  app.route("/api", evolutionRoutes(new SkillEvolution(db, skills, () => gatewayLlm()), rooms));
   app.route("/api", feedRoutes(feed, accounts));
   app.route("/api", operatorRoutes(operator));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));

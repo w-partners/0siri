@@ -1,15 +1,18 @@
 // 개체군 기반 스킬 진화 (0SIRI-SPEC §17.5, M1~M4): 짝 비교·Bradley–Terry·§17.3 차단·챔피언 직접 승리 규칙·계보 기록.
+
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { Hono } from "hono";
 import { createStore } from "../apps/server/src/db.ts";
 import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import {
   actionItems,
   bradleyTerry,
+  evolutionRoutes,
   judgePair,
   loosensGuard,
   pickParent,
@@ -75,13 +78,16 @@ test("§17.3 완화 문장은 걸리고, 조이는 문장은 통과한다 · 고
   assert.equal(picked.children, 0, "덜 탐색된 쪽이 더 잘 뽑힌다");
 });
 
-async function setup(name: string) {
+async function setup(name: string, asks = 3) {
   const db = await createStore({ dataDir: join(directory, name) });
   const rooms = new Rooms(db, new EventBus());
   const skills = new Skills(db, rooms);
   const owner = `user-${name}`;
   const room = await rooms.ensurePersonalRoom(owner);
-  for (const text of ["보도자료 초안 써줘", "이번 주 보도자료 정리", "보도자료 다시 써줘"])
+  for (const text of ["보도자료 초안 써줘", "이번 주 보도자료 정리", "보도자료 다시 써줘"].slice(
+    0,
+    asks,
+  ))
     await rooms.post(owner, room.id, { role: "user", kind: "text", text });
   const seed = await skills.draft(
     owner,
@@ -94,7 +100,7 @@ async function setup(name: string) {
       proposedBy: "영시리",
     },
   );
-  return { db, skills, owner, seed };
+  return { db, skills, owner, seed, rooms };
 }
 
 /** 가짜 모델: 변이기는 후보 둘(하나는 검수 생략), 실행은 지침을 그대로 돌려주고, 판정은 «출처» 가 든 답을 고른다 */
@@ -137,8 +143,68 @@ test("진화 한 세대: 완화 후보는 평가 전에 막히고, 챔피언을 
   assert.equal(child.generation, 2);
   assert.equal(child.status, "active", "자기 개선 켜짐 → 바로 장착");
   assert.equal(child.version, "2");
-  // 롤백하면 부모가 돌아온다
-  assert.equal((await skills.rollback(owner, child.id)).id, seed.id);
+  // M5: 자기 개선이 장착한 버전이 나빠졌다고 보고되면 사람 결정 없이 부모로 돌아간다
+  const restored = await skills.reportEffect(owner, seed.roomId as string, child.id, {
+    effect: "반려가 늘었다",
+    worse: true,
+  });
+  assert.equal(restored.id, seed.id);
+  assert.equal(restored.status, "active");
+  const activity = await db.list<{ title: string }>(owner, "activity");
+  assert.ok(activity.some((a) => a.title.startsWith("스킬 자동 롤백")));
+});
+
+test("진화 경로: 202 로 바로 돌아오고 결과는 그 방 활동에 남는다 · 평가셋이 모자라면 시작 전에 409", async () => {
+  const { skills, owner, seed, db, rooms } = await setup("route");
+  const app = new Hono<{ Variables: { owner: string } }>();
+  app.onError((e, c) =>
+    c.json({ error: e.message }, ((e as { status?: number }).status ?? 500) as 409),
+  );
+  app.use(async (c, next) => {
+    c.set("owner", owner);
+    await next();
+  });
+  app.route(
+    "/api",
+    evolutionRoutes(
+      new SkillEvolution(
+        db,
+        skills,
+        () => fakeLlm(true),
+        () => 0.3,
+      ),
+      rooms,
+    ),
+  );
+  const res = await app.request(`/api/skills/${seed.id}/evolve`, { method: "POST" });
+  assert.equal(res.status, 202);
+  let titles: string[] = [];
+  for (let i = 0; i < 50 && !titles.some((t) => t.startsWith("스킬 진화")); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    titles = (await db.list<{ title: string }>(owner, "activity")).map((a) => a.title);
+  }
+  assert.ok(
+    titles.some((t) => t.startsWith("스킬 진화: 보도자료 v2 장착")),
+    titles.join(" | "),
+  );
+
+  const empty = await setup("route-empty", 1);
+  const app2 = new Hono<{ Variables: { owner: string } }>();
+  app2.onError((e, c) =>
+    c.json({ error: e.message }, ((e as { status?: number }).status ?? 500) as 409),
+  );
+  app2.use(async (c, next) => {
+    c.set("owner", empty.owner);
+    await next();
+  });
+  app2.route(
+    "/api",
+    evolutionRoutes(new SkillEvolution(empty.db, empty.skills, () => fakeLlm(true)), empty.rooms),
+  );
+  assert.equal(
+    (await app2.request(`/api/skills/${empty.seed.id}/evolve`, { method: "POST" })).status,
+    409,
+  );
 });
 
 test("챔피언을 못 이기면 아무것도 만들지 않는다", async () => {
