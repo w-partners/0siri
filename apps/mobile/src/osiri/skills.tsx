@@ -1,8 +1,8 @@
 // 0Siri 스킬(화면 9) — 팀이 배운 패턴의 초안을 승인·반려하고, 장착된 스킬의 버전·효과를 관리한다.
-// 개인 스킬은 사용자가, 패키지 공통 스킬은 운영자가 승인한다(운영자 경로는 operator.tsx).
+// 개인 스킬은 자기 개선(기본 켜짐)이면 승인 없이 장착되고, 끄면 사용자가 승인한다. 패키지 공통 스킬은 운영자가 승인한다(operator.tsx).
 import { ScanSearch, Sparkles } from "lucide-react-native";
 import { useState } from "react";
-import { Text, useWindowDimensions, View } from "react-native";
+import { Switch, Text, useWindowDimensions, View } from "react-native";
 import {
   type OperatorSkillDecision,
   SKILL_SCOPE_LABELS,
@@ -43,7 +43,13 @@ const text = {
   goChat: "대화하러 가기",
   scanTitle: "스킬화할 수 있는 것 찾기",
   scanDetail:
-    "영시리가 내 대화에서 여러 번 비슷하게 부탁한 일을 찾아 초안으로 올려요. 승인해야 장착됩니다.",
+    "영시리가 내 대화에서 여러 번 비슷하게 부탁한 일을 찾아 스킬로 만들어요. 자기 개선이 켜져 있으면 바로 장착됩니다.",
+  selfImproveTitle: "자기 개선",
+  selfImproveDetail:
+    "켜짐 — 관리자 승인 없이, 영시리가 내 대화와 반려에서 배운 스킬을 바로 장착하고 효과를 재요. 마음에 안 들면 장착 중 목록에서 롤백·폐기하세요.",
+  selfImproveOffDetail: "꺼짐 — 새 스킬은 승인 대기 초안으로 올라오고, 내가 승인해야 장착돼요.",
+  selfImproveOn: "자기 개선을 켰어요",
+  selfImproveOff: "자기 개선을 껐어요",
   scan: "스킬 후보 찾기",
   scanResult: (scanned: number, made: number) =>
     made > 0
@@ -165,6 +171,45 @@ export function SkillDraftCard({
   );
 }
 
+/** 자기 개선 — 켜면(기본) 영시리가 찾은 개인 스킬이 승인 없이 바로 장착되고 효과를 잰다. 끄면 승인 대기로 남는다 */
+function SelfImproveCard() {
+  const { api, notify } = useWorkspace();
+  const pref = useLoad(
+    () => api.request<{ auto: boolean }>("/api/skills/self-improve"),
+    "self-improve",
+  );
+  const act = useAction();
+  const auto = pref.data?.auto;
+  return (
+    <Card style={{ gap: 8, padding: 16 }}>
+      <View style={[s.row, { gap: 10 }]}>
+        <Text style={[s.heading, { flex: 1 }]}>{text.selfImproveTitle}</Text>
+        <Switch
+          accessibilityLabel={text.selfImproveTitle}
+          value={auto ?? false}
+          disabled={auto === undefined || act.busy}
+          onValueChange={(next) =>
+            void act.run(async () => {
+              pref.setData(
+                await api.request<{ auto: boolean }>(
+                  "/api/skills/self-improve",
+                  { auto: next },
+                  "PUT",
+                ),
+              );
+              notify(next ? text.selfImproveOn : text.selfImproveOff);
+            })
+          }
+        />
+      </View>
+      <Text style={s.muted}>
+        {auto === false ? text.selfImproveOffDetail : text.selfImproveDetail}
+      </Text>
+      <ErrorNotice error={act.error ?? pref.error} />
+    </Card>
+  );
+}
+
 export function SkillsScreen({ roomId }: { roomId?: string }) {
   const { api, notify, navigate } = useWorkspace();
   const { width } = useWindowDimensions();
@@ -238,6 +283,7 @@ export function SkillsScreen({ roomId }: { roomId?: string }) {
           <ErrorNotice error={scan.error} />
         </Card>
       )}
+      {roomId ? null : <SelfImproveCard />}
       {heading(text.draftsHeading, drafts.filter((x) => x.status === "draft").length)}
       {drafts.length === 0 ? (
         <Card>

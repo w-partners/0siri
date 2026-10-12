@@ -547,7 +547,9 @@ export class Operator {
     const since = new Date(now - DISCOVER_WINDOW_MS).toISOString();
     const tally = new Map<RejectReasonKind, { rejects: number; people: Set<string> }>();
     const subscribers = await this.subscribers(packageId);
-    for (const { owner, roomId } of subscribers)
+    const personal: string[] = [];
+    for (const { owner, roomId } of subscribers) {
+      const mine = new Map<RejectReasonKind, number>();
       for (const approval of await this.db.listByField<Approval>(
         owner,
         "approvals",
@@ -560,7 +562,34 @@ export class Operator {
         entry.rejects++;
         entry.people.add(owner);
         tally.set(approval.reasonKind, entry);
+        mine.set(approval.reasonKind, (mine.get(approval.reasonKind) ?? 0) + 1);
       }
+      // 자기 개선: 한 사람이 자기 방에서 같은 사유로 반복 반려하면 그 사람 개인 스킬로 — 운영자 승인을 기다리지 않는다
+      // (자동 장착 여부는 그 사람 설정, Skills.draft). 팀 공통 초안(아래)은 여러 사람 신호일 때만 운영자에게 간다
+      const taken = new Set(
+        (await this.skills.listForUser(owner, { roomId, scope: "personal" }))
+          .filter((s) => s.status !== "retired")
+          .map((s) => s.name),
+      );
+      for (const [kind, rejects] of mine) {
+        const name = `내 검수 보강: ${REJECT_REASON_LABELS[kind]}`;
+        if (rejects < DISCOVER_MIN_REJECTS || taken.has(name)) continue;
+        await this.skills.draft(
+          owner,
+          { roomId, packageId },
+          {
+            scope: "personal",
+            name,
+            evidence: `최근 ${DISCOVER_WINDOW_MS / 86_400_000}일 내 방에서 «${REJECT_REASON_LABELS[kind]}» 반려 ${rejects}건`,
+            appliesTo: TIGHTEN[kind],
+            proposedBy: "signal",
+          },
+        );
+        personal.push(name);
+      }
+    }
+    if (personal.length)
+      console.log(`[osiri] 자기 개선 package=${packageId}: 개인 스킬 ${personal.length}건`);
     const existing = await this.skills.packageSkills(packageId);
     const drafted: string[] = [];
     for (const [kind, { rejects, people }] of tally) {

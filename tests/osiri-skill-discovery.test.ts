@@ -94,6 +94,16 @@ test("repeated rejections across subscribers → one package skill draft for the
     "사용자가 쓴 반려 문장은 운영자에게 가지 않는다",
   );
   assert.match(draft?.appliesTo ?? "", /출처/);
+  // 한 사람의 톤 반려 3건 → 운영자를 거치지 않고 그 사람 개인 스킬로 바로 장착(자기 개선 기본 켜짐). 다른 사람에게는 없다
+  const mine = await skills.listForUser("lawyer-a", { roomId: a.roomId, scope: "personal" });
+  assert.deepEqual(
+    mine.map((s) => [s.name, s.status, s.measuring]),
+    [["내 검수 보강: 톤", "active", true]],
+  );
+  assert.equal(
+    (await skills.listForUser("lawyer-b", { roomId: b.roomId, scope: "personal" })).length,
+    0,
+  );
 
   // 다시 돌려도 같은 초안을 또 내지 않는다
   assert.deepEqual(await operator.discoverSkills(packageId), { drafted: [] });

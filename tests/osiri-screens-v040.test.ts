@@ -266,6 +266,8 @@ test("승인이 만료되면 목표가 승인 단계에서 풀려 워커가 다�
 
 test("스킬 초안이 결재함·배지·inbox 이벤트로 온다 · 효과 측정은 팀 보고로 끝난다", async () => {
   const owner = "skill-user";
+  // 결재함으로 오는 흐름은 자기 개선을 끈 사람의 것이다(켜면 바로 장착 — osiri-skill-scan)
+  await skills.setSelfImprove(owner, false);
   const room = await rooms.ensurePersonalRoom(owner);
   const worker = await issueWorkerToken(db, owner, room.id, null);
   const events: RoomEvent[] = [];

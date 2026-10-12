@@ -36,11 +36,26 @@ test("반복된 요청만 초안이 되고, 다시 찾아도 같은 초안을 �
   assert.equal(first.created.length, 1);
   const [draft] = first.created;
   assert.ok(draft?.name.startsWith(SKILL_REPEAT_PREFIX));
-  assert.equal(draft?.status, "draft");
+  // 자기 개선 기본 켜짐 — 관리자·사용자 승인 없이 바로 장착되고 효과 측정이 시작된다
+  assert.equal(draft?.status, "active");
+  assert.equal(draft?.measuring, true);
   assert.equal(draft?.proposedBy, "영시리");
   assert.match(draft?.evidence ?? "", /3번/);
 
   assert.equal((await skills.findCandidates(owner, fakeEmbed)).created.length, 0);
+});
+
+test("자기 개선을 끄면 초안으로 남고 사용자가 결정한다", async () => {
+  const db = await createStore({ dataDir: join(directory, "db3") });
+  const rooms = new Rooms(db, new EventBus());
+  const skills = new Skills(db, rooms);
+  const room = await rooms.ensurePersonalRoom("user-3");
+  assert.deepEqual(await skills.selfImprove("user-3"), { auto: true });
+  await skills.setSelfImprove("user-3", false);
+  for (const text of ["보도자료 초안 써줘", "보도자료 정리", "보도자료 다시"])
+    await rooms.post("user-3", room.id, { role: "user", kind: "text", text });
+  const [draft] = (await skills.findCandidates("user-3", fakeEmbed)).created;
+  assert.equal(draft?.status, "draft");
 });
 
 test("임베딩이 실패하면 «후보 없음» 이 아니라 실패로 보인다", async () => {

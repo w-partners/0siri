@@ -93,6 +93,8 @@ before(async () => {
   });
   packageId = pkg.id;
   await operator.assignOperator(packageId, operatorId);
+  // 이 파일은 사용자가 직접 결정하는 흐름(자기 개선 끔)을 본다. 켜짐(기본)은 osiri-skill-scan·discovery 가 본다
+  await skills.setSelfImprove(userId, false);
   personalRoomId = (await rooms.ensurePersonalRoom(userId)).id;
   teamRoomId = (await catalog.subscribe(userId, packageId)).roomId;
   personalWorker = await issueWorkerToken(db, userId, personalRoomId, null);

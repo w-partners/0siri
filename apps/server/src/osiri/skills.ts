@@ -1,6 +1,6 @@
 // 0Siri 스킬 생명주기 (0SIRI-SPEC §17 · 계약 «스킬 (화면 9)»).
 //  - 개인 스킬은 owner=userId 의 `skills`, 패키지 공통 스킬은 owner="system" 의 `package-skills`(packageId 로 격리).
-//  - 승인 없이는 장착되지 않는다. 개인 스킬은 그 사용자가, 패키지 공통 스킬은 그 패키지 운영자만 결정한다.
+//  - 개인 스킬은 관리자 승인 없이 그 사용자 것으로 바로 장착된다(자기 개선, 사용자가 끌 수 있다). 패키지 공통 스킬은 그 패키지 운영자만 결정한다.
 //  - 검수·컴플라이언스 기준을 완화하는 초안은 서버가 만들지 않는다 (§17.3).
 //  - 모든 결정은 감사 로그(Rooms.audit)에 남는다.
 import { randomUUID } from "node:crypto";
@@ -23,6 +23,9 @@ import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import { asDocument, embed } from "./embeddings.ts";
 import type { RoomMessage, Rooms } from "./rooms.ts";
+
+const SELF_IMPROVE_ID = "self-improve";
+const SELF_IMPROVE_ACTOR = "자기개선(자동)";
 
 /** 계약의 Skill. `packageId`·`enabled` 는 화면이 소속·켜짐을 알 수 있게 덧붙인 필드다. */
 export interface Skill {
@@ -165,17 +168,35 @@ export class Skills {
       sourceRefs: [skill.id],
       result: "ok",
     });
-    // 개인 스킬 초안은 사용자가 결정할 일이다 — 활동에 남겨 결재함·배지가 바로 갱신되게 한다(inbox 이벤트).
     // 패키지 공통 초안은 운영자 콘솔(pendingSkills)로 간다
-    if (skill.scope === "personal")
-      await this.rooms.activity(owner, {
-        roomId: room.roomId,
-        kind: "skill",
-        actor: input.proposedBy,
-        title: `스킬 초안: ${skill.name}`,
-        detail: skill.evidence,
-      });
-    return publicSkill(skill);
+    if (skill.scope !== "personal") return publicSkill(skill);
+    // 자기 개선(기본 켜짐, 마스터 2026-10-12 «관리자의 승인 없이 각 사용자가»): 개인 초안은 바로 장착되고 측정이 시작된다.
+    // 사용자는 언제든 끄기·롤백·폐기한다. 끄면 예전처럼 사용자가 결재함에서 결정한다. §17.3 완화 초안은 위에서 이미 막혔다
+    const auto = (await this.selfImprove(owner)).auto;
+    const result = auto
+      ? await this.apply(owner, SELF_IMPROVE_ACTOR, skill, "approve")
+      : publicSkill(skill);
+    await this.rooms.activity(owner, {
+      roomId: room.roomId,
+      kind: "skill",
+      actor: input.proposedBy,
+      title: auto ? `스킬 자동 장착: ${skill.name}` : `스킬 초안: ${skill.name}`,
+      detail: auto
+        ? `${skill.evidence} — 효과를 재는 중입니다. 스킬 탭에서 끄거나 되돌릴 수 있습니다`
+        : skill.evidence,
+    });
+    return result;
+  }
+
+  // ---- 자기 개선 설정 ----
+  /** 사람마다 하나. 기본 켜짐 — 개인 스킬 초안을 승인 없이 바로 장착한다 */
+  async selfImprove(owner: string): Promise<{ auto: boolean }> {
+    const saved = await this.db.get<{ auto: boolean }>(owner, "settings", SELF_IMPROVE_ID);
+    return { auto: saved?.auto ?? true };
+  }
+  async setSelfImprove(owner: string, auto: boolean) {
+    await this.db.put(owner, "settings", { id: SELF_IMPROVE_ID, auto });
+    return { auto };
   }
 
   // ---- 스킬 후보 찾기 ----
@@ -514,6 +535,11 @@ export function skillRoutes(skills: Skills) {
     ),
   );
   app.post("/skills/scan", async (c) => c.json(await skills.findCandidates(c.get("owner"))));
+  app.get("/skills/self-improve", async (c) => c.json(await skills.selfImprove(c.get("owner"))));
+  app.put("/skills/self-improve", async (c) => {
+    const body = z.object({ auto: z.boolean() }).parse(await c.req.json());
+    return c.json(await skills.setSelfImprove(c.get("owner"), body.auto));
+  });
   app.post("/skills/:id/decide", async (c) => {
     const body = z
       .object({ decision: z.enum(SKILL_DECISIONS), reason: z.string().max(1000).optional() })
