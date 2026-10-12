@@ -105,6 +105,16 @@ export class History {
     );
   }
 
+  /** 이 대화의 메시지 id → 색인된 시각 (message-times 가 옛 메시지 시각을 되찾는 데 쓴다) */
+  async indexedAt(owner: string, threadId: string): Promise<Map<string, Date>> {
+    await this.ensure();
+    const { rows } = await this.db.sql<{ id: string; indexed_at: Date }>(
+      "SELECT id,indexed_at FROM history WHERE owner=$1 AND thread_id=$2",
+      [owner, threadId],
+    );
+    return new Map(rows.map((r) => [r.id.slice(threadId.length + 1), new Date(r.indexed_at)]));
+  }
+
   /** 이 기능 이전에 쌓인 대화를 한 번 색인한다 (서버 시작 때). 이미 색인한 줄은 건너뛰므로 다시 돌려도 된다. */
   async backfill(): Promise<number> {
     const { rows } = await this.db.sql<{

@@ -1,5 +1,6 @@
 // 단체 톡 화면 — 목록(메뉴 안) · 대화 · 멤버(초대·닉네임·나가기). 서버 osiri/groups.ts 가 정본.
 // ponytail: 새 메시지는 3초마다 after=seq 로 묻는다(서버 주석과 같은 상한).
+
 import * as Clipboard from "expo-clipboard";
 import { ArrowLeft, Bot, MessagesSquare, Users } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,18 +15,9 @@ import {
 } from "../../../../packages/domain/src/osiri";
 import type { GroupBot, TeamTools } from "../../../server/src/osiri/bots.ts";
 import type { Group, GroupMessage } from "../../../server/src/osiri/groups.ts";
-import {
-  Button,
-  colors,
-  ErrorNotice,
-  Field,
-  IconButton,
-  Sheet,
-  s,
-  timeLabel,
-  useAction,
-} from "../ui";
+import { Button, colors, ErrorNotice, Field, IconButton, Sheet, s, useAction } from "../ui";
 import { useWorkspace } from "../workspace";
+import { stampLabel } from "./message-actions";
 import { useLoad } from "./store";
 
 export type GroupView = Group & { mine: boolean };
@@ -244,7 +236,7 @@ export function GroupScreen({ group: initial, onBack }: { group: GroupView; onBa
                   {m.text}
                 </Text>
               </View>
-              <Text style={[s.small, { fontSize: 11 }]}>{timeLabel(m.createdAt)}</Text>
+              <Text style={[s.small, { fontSize: 11 }]}>{stampLabel(m.createdAt)}</Text>
             </View>
           ),
         )}

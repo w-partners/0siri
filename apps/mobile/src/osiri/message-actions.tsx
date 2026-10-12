@@ -13,6 +13,8 @@ export const MESSAGE_ACTION_TEXT = {
   branch: "여기서 분기",
   branchTitle: (title: string) => `${title} · 분기`,
   branchFailed: (why: string) => `분기하지 못했습니다: ${why}`,
+  /** 시각 저장 전 옛 메시지 — 같은 턴의 앞 시각이라 정확하지 않다 */
+  approximate: (stamp: string) => `≈ ${stamp}`,
 };
 
 /** 오늘이면 시각만, 아니면 날짜와 시각 */
@@ -48,6 +50,7 @@ function Action({
 export function MessageMeta({
   user,
   time,
+  approximate,
   label,
   copyText,
   onBranch,
@@ -55,6 +58,7 @@ export function MessageMeta({
 }: {
   user: boolean;
   time?: string;
+  approximate?: boolean;
   label?: string;
   copyText: string;
   onBranch?: () => void;
@@ -70,7 +74,8 @@ export function MessageMeta({
       .catch((e) =>
         onError(`${MESSAGE_ACTION_TEXT.copyFailed}: ${e instanceof Error ? e.message : String(e)}`),
       );
-  const stamp = time ? stampLabel(time) : "";
+  const exact = time ? stampLabel(time) : "";
+  const stamp = exact && approximate ? MESSAGE_ACTION_TEXT.approximate(exact) : exact;
   const info = [stamp, label].filter(Boolean).join(" · ");
   return (
     <View

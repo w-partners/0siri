@@ -47,6 +47,7 @@ import { locationRoutes } from "./osiri/location.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
 import { escapeHtml, OAUTH_CALLBACK_PATH } from "./osiri/mcp-oauth.ts";
 import { Memories, memoryRoutes } from "./osiri/memories.ts";
+import { recoverTimes } from "./osiri/message-times.ts";
 import { Operator, operatorRoutes } from "./osiri/operator.ts";
 import {
   OsiriMcp,
@@ -557,9 +558,25 @@ export async function createApp(
   // 0Siri: 방마다 대화가 따로 있다 → `?threadId=<방 id>`. 없으면 openmuse 기본 대화.
   const conversationId = (c: { req: { query(name: string): string | undefined } }) =>
     c.req.query("threadId") || "default";
-  app.get("/api/conversation", async (c) =>
-    c.json((await db.get(c.get("owner"), "conversations", conversationId(c))) ?? { messages: [] }),
-  );
+  // 시각이 없는 옛 메시지는 recoverTimes 가 id·색인 흔적에서 되찾고, 못 찾으면 approx(근사)로 따로 준다 — 저장은 하지 않는다
+  app.get("/api/conversation", async (c) => {
+    const owner = c.get("owner");
+    const saved = await db.get<{ messages?: { id: string }[]; times?: Record<string, string> }>(
+      owner,
+      "conversations",
+      conversationId(c),
+    );
+    if (!saved) return c.json({ messages: [] });
+    const messages = saved.messages ?? [];
+    if (messages.every((m) => saved.times?.[m.id])) return c.json(saved);
+    const indexed = await history.indexedAt(owner, conversationId(c)).catch((error) => {
+      console.error(
+        `[osiri/times] 색인 시각 읽기 실패 — id 흔적만 씁니다: ${(error as Error).message}`,
+      );
+      return new Map<string, Date>();
+    });
+    return c.json({ ...saved, ...recoverTimes(messages, saved.times ?? {}, indexed) });
+  });
   // times: 메시지 id → 처음 저장된 시각. 말풍선 아래 «언제 말했고 언제 답했는지» (마스터 2026-10-11).
   // 화면은 메시지를 처음 본 시각(times)을 같이 보낸다 — 저장은 답이 끝난 뒤라 서버 시각만 쓰면 내 말이 답 시각으로 찍힌다.
   // 새 id 에만 받아들이고, 미래 시각은 지금으로 깎는다. 분기도 이 길로 원래 시각을 옮긴다

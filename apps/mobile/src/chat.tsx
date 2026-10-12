@@ -296,6 +296,8 @@ export function ChatScreen({
   const [voiceOn, setVoiceOn] = useState(false);
   // 말풍선 아래 시각: 서버가 저장해 둔 시각(times), 아직 저장 전이면 이 화면에서 처음 본 시각(firstSeen)
   const [times, setTimes] = useState<Record<string, string>>({});
+  // 시각이 저장되기 전 옛 메시지 — 같은 턴의 앞 시각(근사, «≈» 로 표시). 분기로 옮기지 않는다
+  const [approx, setApprox] = useState<Record<string, string>>({});
   const known = useRef(new Set<string>());
   const firstSeen = useRef<Record<string, string>>({});
   const [voiceError, setVoiceError] = useState<string>();
@@ -421,15 +423,17 @@ export function ChatScreen({
             }
           }
         } else {
-          const { messages, times } = await api.request<{
+          const { messages, times, approx } = await api.request<{
             messages: Message[];
             times?: Record<string, string>;
+            approx?: Record<string, string>;
           }>(conversationPath);
           if (active) {
             // 불러온 메시지는 «처음 본 시각» 을 찍지 않는다 — 시각이 없으면 비워 둔다
             known.current = new Set(messages.map((m) => m.id));
             firstSeen.current = {};
             setTimes(times ?? {});
+            setApprox(approx ?? {});
             agent.setMessages(messages);
           }
         }
@@ -771,7 +775,8 @@ export function ChatScreen({
               : (answerLabel?.(message.id) ?? deviceAnswerLabel(message));
             if (!known.current.has(message.id) && !firstSeen.current[message.id])
               firstSeen.current[message.id] = new Date().toISOString();
-            const time = times[message.id] ?? firstSeen.current[message.id];
+            const time = times[message.id] ?? firstSeen.current[message.id] ?? approx[message.id];
+            const approximate = !times[message.id] && !firstSeen.current[message.id] && !!time;
             return (
               <View
                 key={message.id}
@@ -806,6 +811,7 @@ export function ChatScreen({
                   <MessageMeta
                     user={user}
                     time={time}
+                    approximate={approximate}
                     label={label}
                     copyText={user ? showPhotoMarkers(text) : text}
                     onError={setError}
