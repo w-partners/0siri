@@ -21,6 +21,7 @@ import {
   ANSWER_MODE_LABELS,
   ANSWER_MODES,
   type AnswerMode,
+  ARCHIVE_RETENTION_YEARS,
   BIG_LAYER,
   BIG_LAYER_SIZE,
   CHARACTER_INTENSITIES,
@@ -279,8 +280,8 @@ const text = {
     usage: "호출 · 토큰 · 등급별",
   } satisfies Record<Sub, string>,
   deleteData: "데이터 삭제",
-  deleteHint: "탈퇴 — 로그인이 바로 막히고, 기록은 법령에 따라 분리 보관합니다",
-  deleteConfirm: `탈퇴를 요청하면 로그인이 바로 막히고 되돌릴 수 없습니다. ${RETENTION_DAYS}일 뒤 계정이 보관 상태로 바뀌고, 개인정보·이용 기록은 관계 법령과 분쟁 대응을 위해 분리 보관됩니다(openagentx.org/privacy).`,
+  deleteHint: `탈퇴 — 로그인이 바로 막히고, 기록은 탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년간 분리 보관합니다`,
+  deleteConfirm: `탈퇴를 요청하면 로그인이 바로 막히고 되돌릴 수 없습니다. ${RETENTION_DAYS}일 뒤 계정이 보관 상태로 바뀌고, 개인정보·이용 기록은 관계 법령과 분쟁 대응을 위해 탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년간 분리 보관됩니다(openagentx.org/privacy).`,
   deleteAction: "삭제 요청",
   deleteAccepted: (date: string) =>
     `탈퇴 요청을 접수했습니다. ${date}부터 계정이 보관 상태로 바뀝니다.`,

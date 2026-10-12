@@ -127,6 +127,8 @@ export const STORE_CATEGORY_LABELS: Record<StoreCategory, string> = {
 export const STORE_CATEGORY_ALL_LABEL = "전체";
 /** 해지·탈퇴 후 데이터 보존 일수 (§6.2, §15.4.5, §24-13) */
 export const RETENTION_DAYS = 30;
+/** 탈퇴 계정(보관 상태)의 개인정보·이용 기록 분리 보관 기간 — 마스터 결정 2026-10-12(SEOUL-20261012-YS3). 기간이 지나도 자동 삭제하지 않는다(경과 처리는 따로 결정) */
+export const ARCHIVE_RETENTION_YEARS = 5;
 /** 어느 팀이든 있어야 하는 역할 — 분해(root) · 검수 · 승인 뒤 실행 · 주간 보고 */
 export const CORE_TEAM_ROLES = ["root", "reviewer", "publisher", "analyst"] as const;
 /** 검수 앞 단계를 팀 YAML(`package.x-osiri-flow`)에 선언하지 않았을 때의 흐름 */

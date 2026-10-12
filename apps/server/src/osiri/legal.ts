@@ -3,7 +3,7 @@
 // 내용은 코드 실측 기준(2026-10-12): 위치 location.ts · 탈퇴 accounts.requestDeletion · 보존 RETENTION_DAYS · 푸시 push.ts · 브라우저 browser-containers.ts
 
 import { Hono } from "hono";
-import { RETENTION_DAYS } from "../../../../packages/domain/src/osiri.ts";
+import { ARCHIVE_RETENTION_YEARS, RETENTION_DAYS } from "../../../../packages/domain/src/osiri.ts";
 
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -39,12 +39,12 @@ export const PRIVACY_HTML = page(
 
 <h2>2. 보관 기간</h2>
 <p>계정이 있는 동안 보관합니다. 탈퇴(계정 삭제)를 요청하면 <b>로그인은 즉시 막히고</b>, ${RETENTION_DAYS}일 뒤 계정이 «보관» 상태로 바뀌어 다른 이용자의 화면·검색·초대에서 빠집니다.</p>
-<p>탈퇴한 계정의 개인정보와 이용 기록은 관계 법령과 분쟁 대응을 위해 일반 데이터와 분리해 보관하며, 운영자만 접근합니다. 법령이 보관을 요구하는 기록은 그 기간 동안 따로 보관합니다.</p>
+<p>탈퇴한 계정의 개인정보와 이용 기록은 관계 법령과 분쟁 대응을 위해 일반 데이터와 분리해 탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년간 보관하며, 운영자만 접근합니다. 법령이 보관을 요구하는 기록은 그 기간 동안 따로 보관합니다.</p>
 <table>
 <tr><th>분리 보관 항목</th><th>보관 기간</th></tr>
-<tr><td>계정 정보(전화번호·이름), 대화·기억·올린 파일 등 이용 기록</td><td>[확인 필요 — 운영자 결정 전]</td></tr>
-<tr><td>계약·결제 기록</td><td>[확인 필요] (전자상거래법 5년 검토 중)</td></tr>
-<tr><td>접속 기록</td><td>[확인 필요] (통신비밀보호법 3개월 검토 중)</td></tr>
+<tr><td>계정 정보(전화번호·이름), 대화·기억·올린 파일 등 이용 기록</td><td>탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년</td></tr>
+<tr><td>계약·결제 기록</td><td>탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년</td></tr>
+<tr><td>접속 기록</td><td>탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년</td></tr>
 </table>
 
 <h2>3. 외부에 맡기거나 보내는 곳</h2>
@@ -81,7 +81,7 @@ export const ACCOUNT_DELETE_HTML = page(
 </ol>
 <h2>탈퇴 뒤 처리</h2>
 <p>요청한 날부터 ${RETENTION_DAYS}일 뒤 계정이 «보관» 상태로 바뀌어 다른 이용자의 화면·검색·초대에서 빠집니다.</p>
-<p>개인정보와 이용 기록(대화, 기억, 올린 파일, 목표·승인 기록 등)은 관계 법령과 분쟁 대응을 위해 일반 데이터와 분리해 보관하며, 운영자만 접근합니다. 보관 항목과 기간은 <a href="/privacy">개인정보처리방침</a> 2절에 있습니다. 법령이 보관을 요구하는 기록은 그 기간 동안 따로 보관합니다.</p>
+<p>개인정보와 이용 기록(대화, 기억, 올린 파일, 목표·승인 기록 등)은 관계 법령과 분쟁 대응을 위해 일반 데이터와 분리해 탈퇴 후 ${ARCHIVE_RETENTION_YEARS}년간 보관하며, 운영자만 접근합니다. 보관 항목과 기간은 <a href="/privacy">개인정보처리방침</a> 2절에 있습니다. 법령이 보관을 요구하는 기록은 그 기간 동안 따로 보관합니다.</p>
 <h2>로그인할 수 없을 때</h2>
 <p>로그인 화면의 «비밀번호 찾기»로 비밀번호를 다시 정한 뒤 위 순서대로 하십시오.</p>
 <p class="muted"><a href="/privacy">개인정보처리방침</a></p>`,

@@ -752,7 +752,7 @@ export class Accounts {
    * 기한(`deleteAfter`)이 지난 탈퇴 계정을 «보관» 상태로 돌린다 — 지우지 않는다(마스터 2026-10-12 «개인정보나 활동 로그는 지우면 안 된다»).
    * 하는 것: `archivedAt` 표시 · 남은 세션 폐기 · system 감사 로그. 사용자 행·records·기억·파일·감사 로그는 그대로 둔다.
    * 보관 계정은 로그인이 막히고(requestDeletion 때부터) 가입 네트워크·초대에서 빠진다. 운영자 회원 목록에서만 보인다.
-   * 보관 기간이 끝난 뒤의 파기는 아직 없다 — 기간을 마스터가 정하면 그때 만든다(정해지기 전에는 지우지 않는 쪽).
+   * 보관 기간은 ARCHIVE_RETENTION_YEARS(5년, 마스터 2026-10-12). 기간이 지나도 자동 삭제하지 않는다 — 경과 처리는 따로 결정한다.
    */
   async archiveDeleted(deps: { audit: AuditWriter; now?: number }): Promise<ArchiveReport[]> {
     const now = deps.now ?? Date.now();
