@@ -45,14 +45,29 @@ export interface Skill {
   effect: string | null;
   enabled: boolean;
   createdAt: string;
+  /** 진화 계보 (§17.5.6, M1) — 진화로 태어난 버전만. 사람·워커가 낸 버전은 1세대 뿌리 */
+  parentId?: string;
+  generation?: number;
+  /** 섀도우 비교에서 장착본을 이긴 비율 (0~1) */
+  fitness?: number;
 }
 /** 저장 전용 필드 — 응답에는 내보내지 않는다 (결정자 id 는 다른 구독자에게 보일 이유가 없다). */
-interface StoredSkill extends Skill {
+export interface StoredSkill extends Skill {
   supersedes?: string; // 이 버전이 장착되며 물러난 이전 버전 id (롤백 대상)
   decidedBy?: string;
   decidedAt?: string;
   reason?: string;
+  /** 변이기가 남긴 변경·이유·근거·기대효과·확인 방법 */
+  mutation?: Record<string, string[]>;
+  /** 이 버전을 만든 세대에서 진 판의 고칠 거리 — 다음 변이의 입력 */
+  evalNotes?: string[];
 }
+export type SkillLineageInput = {
+  parentId: string;
+  mutation: Record<string, string[]>;
+  fitness: number;
+  evalNotes: string[];
+};
 type RoomRef = { id: string; packageId: string | null; archived?: boolean };
 type Lineage = Pick<Skill, "scope" | "name" | "roomId" | "packageId">;
 
@@ -68,6 +83,8 @@ export const publicSkill = ({
   decidedBy: _decidedBy,
   decidedAt: _decidedAt,
   reason: _reason,
+  mutation: _mutation,
+  evalNotes: _evalNotes,
   ...skill
 }: StoredSkill): Skill => ({
   ...skill,
@@ -121,6 +138,8 @@ export class Skills {
       appliesTo: string;
       proposedBy: string;
       loosens?: boolean;
+      /** 진화로 태어난 버전이면 부모·변이 기록 (개인 스킬만) */
+      lineage?: SkillLineageInput;
     },
   ): Promise<Skill> {
     if (input.loosens) {
@@ -144,7 +163,10 @@ export class Skills {
       roomId: input.scope === "personal" ? room.roomId : null,
       packageId: room.packageId,
     };
-    const versions = (await this.lineage(owner, target)).map((s) => Number(s.version));
+    const family = await this.lineage(owner, target);
+    const versions = family.map((s) => Number(s.version));
+    const parent = input.lineage && family.find((s) => s.id === input.lineage?.parentId);
+    if (input.lineage && !parent) throw new AppError("진화의 부모 버전을 찾을 수 없습니다", 409);
     const skill: StoredSkill = {
       id: randomUUID(),
       ...target,
@@ -157,6 +179,15 @@ export class Skills {
       effect: null,
       enabled: true,
       createdAt: now(),
+      ...(input.lineage && parent
+        ? {
+            parentId: parent.id,
+            generation: (parent.generation ?? 1) + 1,
+            fitness: input.lineage.fitness,
+            mutation: input.lineage.mutation,
+            evalNotes: input.lineage.evalNotes,
+          }
+        : {}),
     };
     const [scopeOwner, kind] = this.place(skill, owner);
     await this.db.put(scopeOwner, kind, skill);
@@ -326,6 +357,21 @@ export class Skills {
       if (rooms.some((room) => room.packageId === shared.packageId)) return shared;
     }
     throw new AppError("스킬을 찾을 수 없습니다", 404);
+  }
+  // ---- 진화 (§17.5) ----
+  /** 진화의 씨앗 — 내 개인 스킬만 (패키지 공통 스킬은 운영자 몫이라 403) */
+  getPersonal(owner: string, id: string) {
+    return this.personal(owner, id, "진화");
+  }
+  /** 같은 이름의 모든 버전(저장 필드 포함) — 진화 아카이브 */
+  lineageOf(owner: string, skill: Lineage) {
+    return this.lineage(owner, skill);
+  }
+  /** 그 방에서 내가 반려한 스킬의 사유 — 다음 변이가 피해 갈 것 */
+  async rejectReasons(owner: string, roomId: string | null) {
+    return (await this.db.list<StoredSkill>(owner, PERSONAL_KIND))
+      .filter((s) => s.roomId === roomId && s.status === "rejected" && s.reason)
+      .map((s) => `반려: ${s.reason}`);
   }
   /** 사용자 화면의 쓰기는 개인 스킬에만 — 패키지 공통 스킬이면 403. */
   private async personal(owner: string, id: string, what: string): Promise<StoredSkill> {

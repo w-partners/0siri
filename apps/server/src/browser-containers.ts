@@ -142,8 +142,9 @@ export class BrowserContainers {
     let removed = 0;
     for (const name of ps.out.split("\n").filter(Boolean)) {
       // 서버가 다시 떴으면 기록이 없다 — 지금부터 센다
-      const last = this.used.get(name) ?? (this.used.set(name, now), now);
-      if (now - last <= idleMs) continue;
+      const last = this.used.get(name);
+      if (last === undefined) this.used.set(name, now);
+      if (last === undefined || now - last <= idleMs) continue;
       const rm = await this.docker(["rm", "-f", name]);
       if (rm.ok) {
         this.used.delete(name);

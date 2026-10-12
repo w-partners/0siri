@@ -2,6 +2,7 @@
 // 한 세대: 아카이브에서 부모 선택 → 자식 후보 변이 → §17.3 금지 영역 차단 → 섀도우 replay(과거 요청에 다시 돌림)
 //          → 지금 챔피언(장착본)과 짝 비교(순서 무작위) → 챔피언을 직접 이긴 자식만 초안으로 → 장착은 범위별 규칙(Skills.draft).
 // MASS 코드는 라이선스가 없어 복사하지 않았다 — 아이디어만 여기서 새로 썼다.
+import { Hono } from "hono";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
 import type { RoomMessage } from "./rooms.ts";
@@ -52,23 +53,27 @@ export function pickParent<T extends { fitness?: number; children: number }>(
   if (!archive.length) throw new AppError("진화할 스킬 계보가 없습니다", 404);
   const weights = archive.map((s) => Math.max(0.05, s.fitness ?? 0.5) / (1 + s.children));
   let r = rand() * weights.reduce((a, b) => a + b, 0);
-  for (const [i, w] of weights.entries()) if ((r -= w) <= 0) return archive[i] as T;
+  for (const [i, w] of weights.entries()) {
+    r -= w;
+    if (r <= 0) return archive[i] as T;
+  }
   return archive.at(-1) as T;
 }
 
 /** §17.3 — 검수·컴플라이언스 기준 완화, 승인 지점 제거, 근거 접지 해제를 담은 변이는 평가 전에 버린다.
  * ponytail: 낱말 규칙(대상어 + 완화어)이라 돌려 말하면 샌다 — 레드팀 세대 검사(M6)가 그 뒤를 받친다 */
 export function loosensGuard(text: string) {
-  const target = /(검수|컴플라이언스|규정|승인|결재|확인|근거|출처|인용|review|approv|complian|citation|source)/i;
-  const loosen = /(생략|건너뛰|없이|빼고|제거|완화|무시|하지\s*않아도|안\s*해도|skip|omit|without|bypass|ignore|relax)/i;
-  return text
-    .split(/[.\n。!?]/)
-    .some((sentence) => target.test(sentence) && loosen.test(sentence));
+  const target =
+    /(검수|컴플라이언스|규정|승인|결재|확인|근거|출처|인용|review|approv|complian|citation|source)/i;
+  const loosen =
+    /(생략|건너뛰|없이|빼고|제거|완화|무시|하지\s*않아도|안\s*해도|skip|omit|without|bypass|ignore|relax)/i;
+  return text.split(/[.\n。!?]/).some((sentence) => target.test(sentence) && loosen.test(sentence));
 }
 
 /** 판정 이유에서 고칠 거리(실패·누락·불일치…) 문장만 — 다음 변이의 입력 */
 export function actionItems(rationale: string, max = 6) {
-  const cue = /(실패|누락|빠졌|빠진|불일치|어긋|부족|약하|틀렸|틀린|오류|없다|않았|fail|missing|inconsistent|mismatch|lack|weak|error)/i;
+  const cue =
+    /(실패|누락|빠졌|빠진|불일치|어긋|부족|약하|틀렸|틀린|오류|없다|않았|fail|missing|inconsistent|mismatch|lack|weak|error)/i;
   return [
     ...new Set(
       rationale
@@ -111,8 +116,7 @@ export async function judgePair(
   const out = json<{ winner?: string; rationale?: string }>(raw, "판정");
   if (out.winner !== "A" && out.winner !== "B" && out.winner !== "tie")
     throw new Error(`판정 winner 가 A·B·tie 가 아닙니다: ${String(out.winner)}`);
-  const winner =
-    out.winner === "tie" ? "tie" : (out.winner === "A") !== swapped ? "A" : "B";
+  const winner = out.winner === "tie" ? "tie" : (out.winner === "A") !== swapped ? "A" : "B";
   return { a: input.a.id, b: input.b.id, winner, rationale: String(out.rationale ?? "") };
 }
 
@@ -142,11 +146,15 @@ export async function mutate(
     3,
     MUTATE_SYSTEM,
     `# 스킬 «${parent.name}»\n## 지금 지침\n${parent.appliesTo}\n## 근거\n${parent.evidence}\n## 고칠 거리(판정·반려에서)\n${
-      feedback.length ? feedback.map((f) => `- ${f}`).join("\n") : "- (아직 없음 — 계약을 더 구체적으로)"
+      feedback.length
+        ? feedback.map((f) => `- ${f}`).join("\n")
+        : "- (아직 없음 — 계약을 더 구체적으로)"
     }\n\n후보 ${n}개를 서로 다른 방향으로 내라.`,
   );
   const out = json<{ candidates?: (Mutation & { appliesTo?: string })[] }>(raw, "변이");
-  const list = (out.candidates ?? []).filter((c) => typeof c.appliesTo === "string" && c.appliesTo.trim());
+  const list = (out.candidates ?? []).filter(
+    (c) => typeof c.appliesTo === "string" && c.appliesTo.trim(),
+  );
   if (!list.length) throw new Error("변이기가 후보를 하나도 내지 않았습니다");
   const arr = (x: unknown) => (Array.isArray(x) ? x.map(String).slice(0, 8) : []);
   return list.slice(0, n).map((c) => ({
@@ -173,7 +181,8 @@ export class SkillEvolution {
   constructor(
     private readonly db: Store,
     private readonly skills: Skills,
-    private readonly llm: () => Llm,
+    /** ponytail: 지금은 공용키(gatewayLlm) — 주간 한도가 비용 상한. 구독 세션으로 돌리려면 owner 로 구독을 고른다 */
+    private readonly llm: (owner: string) => Llm,
     private readonly rand = Math.random,
   ) {}
 
@@ -186,7 +195,10 @@ export class SkillEvolution {
       (s) => s.parentId && Date.parse(s.createdAt) >= since,
     ).length;
     if (recent >= EVOLVE_WEEKLY)
-      throw new AppError(`이번 주 진화 한도(${EVOLVE_WEEKLY}개)를 다 썼습니다 — 다음 주에 다시 돌립니다`, 429);
+      throw new AppError(
+        `이번 주 진화 한도(${EVOLVE_WEEKLY}개)를 다 썼습니다 — 다음 주에 다시 돌립니다`,
+        429,
+      );
     // 아카이브 = 반려된 것 빼고 전부(폐기된 것도 디딤돌로 남는다)
     const archive = lineage
       .filter((s) => s.status !== "rejected" && s.status !== "draft")
@@ -196,7 +208,9 @@ export class SkillEvolution {
       lineage.find((s) => s.status === "active" || s.status === "retire_proposed") ?? parent;
     // 섀도우 평가셋: 그 방의 최근 사용자 요청
     const cases = (await this.db.list<RoomMessage>(owner, "messages"))
-      .filter((m) => m.roomId === seed.roomId && m.role === "user" && (m.text ?? "").trim().length >= 6)
+      .filter(
+        (m) => m.roomId === seed.roomId && m.role === "user" && (m.text ?? "").trim().length >= 6,
+      )
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, EVOLVE_CASES)
       .map((m) => (m.text ?? "").trim());
@@ -207,13 +221,22 @@ export class SkillEvolution {
       ...(await this.skills.rejectReasons(owner, seed.roomId)),
     ].slice(0, 6);
 
-    const llm = this.llm();
+    const llm = this.llm(owner);
     const children = await mutate(llm, parent, feedback, EVOLVE_CHILDREN);
-    const run = (instruction: string, request: string) => llm("skill-run", 2, RUN_SYSTEM(instruction), request);
+    const run = (instruction: string, request: string) =>
+      llm("skill-run", 2, RUN_SYSTEM(instruction), request);
     const championOut = await Promise.all(cases.map((c) => run(champion.appliesTo, c)));
 
     const verdicts: Verdict[] = [];
-    const results: { id: string; appliesTo: string; mutation: Mutation; blocked: boolean; wins: number; losses: number; notes: string[] }[] = [];
+    const results: {
+      id: string;
+      appliesTo: string;
+      mutation: Mutation;
+      blocked: boolean;
+      wins: number;
+      losses: number;
+      notes: string[];
+    }[] = [];
     for (const [k, child] of children.entries()) {
       const id = `child-${k}`;
       if (loosensGuard(child.appliesTo)) {
@@ -252,7 +275,13 @@ export class SkillEvolution {
       strength: strength[r.id] ?? null,
     }));
     if (!winner)
-      return { parent: parent.id, champion: champion.id, cases: cases.length, results: evaluated, created: null };
+      return {
+        parent: parent.id,
+        champion: champion.id,
+        cases: cases.length,
+        results: evaluated,
+        created: null,
+      };
     const created = await this.skills.draft(
       owner,
       { roomId: seed.roomId as string, packageId: seed.packageId },
@@ -270,6 +299,21 @@ export class SkillEvolution {
         },
       },
     );
-    return { parent: parent.id, champion: champion.id, cases: cases.length, results: evaluated, created };
+    return {
+      parent: parent.id,
+      champion: champion.id,
+      cases: cases.length,
+      results: evaluated,
+      created,
+    };
   }
+}
+
+/** POST /api/skills/:id/evolve — 내 개인 스킬 한 세대 진화 (사용자 인증 뒤) */
+export function evolutionRoutes(evolution: SkillEvolution) {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  app.post("/skills/:id/evolve", async (c) =>
+    c.json(await evolution.evolve(c.get("owner"), c.req.param("id"))),
+  );
+  return app;
 }

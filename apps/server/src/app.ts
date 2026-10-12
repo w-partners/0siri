@@ -64,6 +64,7 @@ import { Push, pushRoutes } from "./osiri/push.ts";
 import { roomRoutes, type TeamLlmFor, teamRuntime, workerRoutes } from "./osiri/room-routes.ts";
 import { Rooms } from "./osiri/rooms.ts";
 import { Routing, routingRoutes, settingsRoutes } from "./osiri/routing.ts";
+import { evolutionRoutes, SkillEvolution } from "./osiri/skill-evolution.ts";
 import { Skills, skillRoutes, skillWorkerRoutes } from "./osiri/skills.ts";
 import { Catalog, type Subscription, storeRoutes, subscriptionControls } from "./osiri/store.ts";
 import { type PermissionAsk, Subscriptions, subscriptionRoutes } from "./osiri/subscription.ts";
@@ -483,6 +484,7 @@ export async function createApp(
     accountDeletionRoutes(accounts, (owner, input) => rooms.audit(owner, input)),
   );
   app.route("/api", skillRoutes(skills));
+  app.route("/api", evolutionRoutes(new SkillEvolution(db, skills, () => gatewayLlm())));
   app.route("/api", feedRoutes(feed, accounts));
   app.route("/api", operatorRoutes(operator));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));
