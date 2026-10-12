@@ -35,6 +35,8 @@ export interface Config {
   dataDir: string;
   /** 구독 사용(서버 컨테이너) 이미지 — SUBSCRIPTION_IMAGE. 없으면 서버 구독은 꺼지고 «내 PC» 만 된다 */
   subscriptionImage?: string;
+  /** 사람별 브라우저 컨테이너 이미지 — BROWSER_IMAGE. 있으면 사람마다 자기 컨테이너, 없으면 BROWSER_WORKER_URL 공용 워커 */
+  browserImage?: string;
   databaseUrl?: string;
   accessKey?: string;
   encryptionKey?: string;
@@ -105,6 +107,13 @@ export function assertApiDeploymentConfig(
 }
 
 /** Accept a full worker URL, or host:port from a platform that omits the scheme. */
+/** 브라우저를 쓸 수 있나 — 토큰이 있고, 사람별 컨테이너 이미지나 공용 워커 주소 중 하나가 있다 */
+export function browserConfigured(
+  config: Pick<Config, "workerToken" | "browserImage" | "workerUrl">,
+) {
+  return Boolean(config.workerToken && (config.browserImage || config.workerUrl));
+}
+
 export function browserWorkerUrl(value?: string): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -166,6 +175,7 @@ export function readConfig(): Config {
     webDist: process.env.WEB_DIST?.trim() || undefined,
     releasesDir: process.env.RELEASES_DIR?.trim() || undefined,
     subscriptionImage: process.env.SUBSCRIPTION_IMAGE?.trim() || undefined,
+    browserImage: process.env.BROWSER_IMAGE?.trim() || undefined,
     otpBase: process.env.OTP_BASE?.trim().replace(/\/$/, "") || undefined,
     otpKeyFile: process.env.OTP_KEY_FILE?.trim() || undefined,
     pagePickerBase: process.env.PAGE_PICKER_BASE?.trim().replace(/\/$/, "") || undefined,

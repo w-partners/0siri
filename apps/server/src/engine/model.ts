@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { AgentTask } from "../../../../packages/domain/src/agent.ts";
 import { emailDraftSchema, eventDraftSchema } from "../../../../packages/domain/src/index.ts";
 import { computerInstructions, computerTools } from "../computer-tools.ts";
+import { browserConfigured as hasBrowser } from "../config.ts";
 import { searchDescription, searchInputSchema, searchInstructions } from "../search.ts";
 import type { AgentService } from "./service.ts";
 import { tanstackAgent } from "./tanstack-agent.ts";
@@ -18,7 +19,7 @@ export async function executeModelTask(
   ctx: TaskContext,
 ): Promise<Partial<AgentTask>> {
   const config = service.config;
-  const browserConfigured = !!(config.workerUrl && config.workerToken);
+  const browserConfigured = hasBrowser(config);
   if (!config.model)
     return {
       status: "waiting_input",

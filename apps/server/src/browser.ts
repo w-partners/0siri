@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { BrowserSession } from "../../../packages/domain/src/index.ts";
 import type { Auth } from "./auth.ts";
 import { browserConsole } from "./browser-console.ts";
+import { BrowserContainers } from "./browser-containers.ts";
+import { type DockerRunner, runDocker } from "./computer.ts";
 import type { Config } from "./config.ts";
 import type { Store } from "./db.ts";
 import { AppError } from "./errors.ts";
@@ -61,18 +63,50 @@ export class BrowserService {
     private readonly auth: Auth,
     private readonly files: Files,
     private readonly now: () => number = Date.now,
-  ) {}
-  /** Whether the configured worker answers its health check, cached briefly for snapshots. */
+    docker: DockerRunner = runDocker,
+  ) {
+    // 사람마다 자기 브라우저 컨테이너(마스터 2026-10-12). 이미지가 없으면 BROWSER_WORKER_URL 공용 워커(개발용)
+    if (config.browserImage && config.workerToken)
+      this.containers = new BrowserContainers({
+        image: config.browserImage,
+        dir: `${config.dataDir}/browsers`,
+        secret: config.workerToken,
+        docker,
+      });
+    this.docker = docker;
+  }
+  readonly containers?: BrowserContainers;
+  private readonly docker: DockerRunner;
+  /** 그 사람의 워커 주소·토큰 — 사람별 컨테이너면 띄워서, 아니면 공용 워커 */
+  private async endpoint(owner: string) {
+    if (this.containers)
+      return this.containers.endpoint(owner).catch((error: Error) => {
+        console.error(`[osiri] 브라우저 컨테이너 실패 owner=${owner}: ${error.message}`);
+        throw new AppError(`브라우저를 띄우지 못했습니다: ${error.message}`, 503);
+      });
+    if (!this.config.workerUrl || !this.config.workerToken)
+      throw new AppError("Browser worker is not configured. Start it using the setup guide.", 503);
+    return { url: this.config.workerUrl, token: this.config.workerToken };
+  }
+  /** 브라우저가 준비됐나 — 사람별이면 이미지가 있는지, 공용이면 워커 health. 짧게 캐시 */
   reachable(): Promise<boolean> {
-    if (!this.config.workerUrl || !this.config.workerToken) return Promise.resolve(false);
+    if (!this.config.workerToken) return Promise.resolve(false);
     const now = this.now();
     if (this.health && now - this.health.checkedAt < 15_000) return this.health.reachable;
-    const reachable = fetch(`${this.config.workerUrl}/health`, {
-      signal: AbortSignal.timeout(2000),
-    }).then(
-      (response) => response.ok,
-      () => false,
-    );
+    const reachable = this.config.browserImage
+      ? this.docker(["image", "inspect", "-f", "{{.Id}}", this.config.browserImage], {
+          timeoutMs: 5000,
+          maxOutputBytes: 1000,
+        }).then(
+          (r) => r.exitCode === 0,
+          () => false,
+        )
+      : this.config.workerUrl
+        ? fetch(`${this.config.workerUrl}/health`, { signal: AbortSignal.timeout(2000) }).then(
+            (response) => response.ok,
+            () => false,
+          )
+        : Promise.resolve(false);
     this.health = { checkedAt: now, reachable };
     return reachable;
   }
@@ -85,16 +119,15 @@ export class BrowserService {
       if (this.queues.get(id) === next) this.queues.delete(id);
     }
   }
-  private async request(path: string, body?: unknown, signal?: AbortSignal) {
+  private async request(owner: string, path: string, body?: unknown, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (!this.config.workerUrl || !this.config.workerToken)
-      throw new AppError("Browser worker is not configured. Start it using the setup guide.", 503);
+    const worker = await this.endpoint(owner);
     let response: Response;
     try {
-      response = await fetch(`${this.config.workerUrl}${path}`, {
+      response = await fetch(`${worker.url}${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
-          Authorization: `Bearer ${this.config.workerToken}`,
+          Authorization: `Bearer ${worker.token}`,
           "Content-Type": "application/json",
         },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -156,7 +189,7 @@ export class BrowserService {
     const value = await this.get(owner, id);
     const target = url ?? value.url;
     try {
-      const response = await this.request("/sessions", { id, url: target }, signal);
+      const response = await this.request(owner, "/sessions", { id, url: target }, signal);
       return await this.save(owner, await response.json(), id);
     } catch (error) {
       signal?.throwIfAborted();
@@ -178,7 +211,7 @@ export class BrowserService {
     const session = await this.get(owner, id);
     const result = readSchema.parse(
       await (
-        await this.request(`/sessions/${encodeURIComponent(id)}/read`, undefined, signal)
+        await this.request(owner, `/sessions/${encodeURIComponent(id)}/read`, undefined, signal)
       ).json(),
     );
     await this.save(
@@ -237,14 +270,14 @@ export class BrowserService {
       await this.get(owner, id);
       return this.save(
         owner,
-        await (await this.request(`/sessions/${encodeURIComponent(id)}/close`, {})).json(),
+        await (await this.request(owner, `/sessions/${encodeURIComponent(id)}/close`, {})).json(),
         id,
       );
     });
   }
   async preview(owner: string, id: string) {
     await this.get(owner, id);
-    return this.request(`/sessions/${encodeURIComponent(id)}/screenshot`);
+    return this.request(owner, `/sessions/${encodeURIComponent(id)}/screenshot`);
   }
   async input(owner: string, id: string, value: unknown) {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -258,7 +291,9 @@ export class BrowserService {
       await this.get(owner, id);
       return this.save(
         owner,
-        await (await this.request(`/sessions/${encodeURIComponent(id)}/input`, value)).json(),
+        await (
+          await this.request(owner, `/sessions/${encodeURIComponent(id)}/input`, value)
+        ).json(),
         id,
       );
     });
@@ -275,7 +310,9 @@ export class BrowserService {
         ),
         failures: z.array(failureSchema),
       })
-      .parse(await (await this.request(`/sessions/${encodeURIComponent(id)}/downloads`)).json());
+      .parse(
+        await (await this.request(owner, `/sessions/${encodeURIComponent(id)}/downloads`)).json(),
+      );
     const saved = [];
     for (const download of downloads) {
       const existing = await this.db.get<{ fileId: string }>(
@@ -288,6 +325,7 @@ export class BrowserService {
         continue;
       }
       const response = await this.request(
+        owner,
         `/sessions/${encodeURIComponent(id)}/downloads/${encodeURIComponent(download.id)}`,
       );
       const file = await this.files.import(

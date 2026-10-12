@@ -21,7 +21,7 @@ import { createAuth } from "./auth.ts";
 import { BrowserService } from "./browser.ts";
 import { ComputerService, type DockerRunner } from "./computer.ts";
 import { computerRoutes } from "./computer-routes.ts";
-import type { Config } from "./config.ts";
+import { browserConfigured, type Config } from "./config.ts";
 import type { Store } from "./db.ts";
 import { agentRoutes } from "./engine/routes.ts";
 import { AgentService } from "./engine/service.ts";
@@ -320,7 +320,7 @@ export async function createApp(
       ok: true,
       mode: config.mode,
       agentConfigured: agentConfigured(config),
-      browserConfigured: Boolean(config.workerUrl && config.workerToken),
+      browserConfigured: browserConfigured(config),
     }),
   );
   let loginWindow = 0,

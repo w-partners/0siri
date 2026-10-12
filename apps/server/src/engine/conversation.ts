@@ -18,7 +18,7 @@ import {
   SUBSCRIPTION_PROVIDER_LABELS,
 } from "../../../../packages/domain/src/osiri.ts";
 import { computerInstructions, computerTools } from "../computer-tools.ts";
-import type { Config } from "../config.ts";
+import { type Config, browserConfigured as hasBrowser } from "../config.ts";
 import { createJevAdapter, type JevAdapter } from "../jev/adapter.ts";
 import { JevService } from "../jev/service.ts";
 import { presentChoicesTool } from "../jev/tools.ts";
@@ -162,7 +162,7 @@ export class ConversationAgent extends AbstractAgent {
     const key = (name: string, value: unknown) =>
       `${requestKey}:${name}:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
     const browserAbort = new AbortController();
-    const browserConfigured = !!(this.config.workerUrl && this.config.workerToken);
+    const browserConfigured = hasBrowser(this.config);
     const tools = [
       ...computerTools(
         this.service.computer,

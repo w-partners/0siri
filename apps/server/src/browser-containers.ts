@@ -22,8 +22,21 @@ export class BrowserContainers {
       secret: string;
       docker: DockerRunner;
       idleMs?: number;
+      /** 유휴 정리 주기 — 0 이면 돌지 않는다(시험용) */
+      reapEveryMs?: number;
     },
-  ) {}
+  ) {
+    const every = options.reapEveryMs ?? 5 * 60_000;
+    if (every > 0)
+      setInterval(
+        () =>
+          void this.reap().then(
+            (n) => n && console.log(`[osiri] 브라우저 컨테이너 유휴 정리: ${n}개`),
+            (error: Error) => console.error(`[osiri] 브라우저 유휴 정리 실패: ${error.message}`),
+          ),
+        every,
+      ).unref();
+  }
   name(owner: string) {
     return `osiri-br-${sha(owner).slice(0, 12)}`;
   }
