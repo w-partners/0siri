@@ -5,10 +5,8 @@ import { fetch as streamFetch } from "expo/fetch";
 import * as DocumentPicker from "expo-document-picker";
 import {
   ArrowLeft,
-  ArrowLeftRight,
   BellOff,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Images,
@@ -118,7 +116,7 @@ import { CharacterAvatar, type Mood, selfAnimated, useCharacterPref, useStill } 
 import type { GroupView } from "./groups";
 import { HtmlFrame } from "./html-frame";
 import { MESSAGE_ACTION_TEXT } from "./message-actions";
-import { customTabId, moveTab, orderTabs } from "./room-tabs";
+import { customTabId, orderTabs } from "./room-tabs";
 import { SkillsScreen } from "./skills";
 import { Choice, LoadState, useAction, useLoad } from "./store";
 import { type GoalProposal, LoadError, TeamGoalsScreen } from "./team-goals";
@@ -267,15 +265,8 @@ const text = {
   characterDefault: "팀 기본",
   characterPhoto: "내 사진",
   photoTooBig: "사진이 너무 커요 — 200KB 이하 그림으로 골라 주세요",
-  teamSummary: "팀 상태",
   operatorChat: "운영자와 대화",
-  teamSummaryLine: (pending: number, progress: number, done: number) =>
-    `승인 대기 ${pending} · 목표 진척 ${progress}% · 오늘 완료 ${done}건`,
-  tabOrder: "탭 순서 바꾸기",
-  tabOrderDone: "순서 저장",
-  tabMoveLeft: (t: string) => `${t} 앞으로`,
-  tabMoveRight: (t: string) => `${t} 뒤로`,
-  tabOrderFailed: "탭 순서를 저장하지 못했어요",
+  teamMenu: "팀 메뉴",
   agents: (n: number) => `에이전트 ${n}명`,
   agentDone: "완료",
   agentErrors: "오류",
@@ -2057,12 +2048,8 @@ export function RoomScreen({
 }) {
   const { api } = useWorkspace();
   const desktop = useWindowDimensions().width >= 900;
-  const [tab, setTab] = useState<RoomTab>("chat");
-  // 사용자가 옮긴 탭 순서 — 저장 전까지 여기, 저장하면 room.tabOrder
-  const [order, setOrder] = useState<string[] | null>(null);
-  const [ordering, setOrdering] = useState(false);
-  const [orderError, setOrderError] = useState("");
-  const [brief, setBrief] = useState<Summary | null>(null);
+  // 팀 탭(현황판·목표·스킬…)은 채팅 위에 붙이지 않고 아래에서 올라오는 시트로 연다 (마스터 2026-10-12 «거기에 두려고 한 건데»)
+  const [panel, setPanel] = useState<RoomTab | null>(null);
   const teamIcons = useCharacterPref().teamIcons ?? "row";
   const [mood, setMood] = useState<Mood>("idle");
   const [headHeight, setHeadHeight] = useState(0);
@@ -2084,7 +2071,7 @@ export function RoomScreen({
   const ys = useRef(new Map<string, number>());
   const show = useCallback((next: RoomFocus) => {
     setTarget(next);
-    setTab("chat");
+    setPanel(null);
   }, []);
   useEffect(() => {
     if (focus) show(focus);
@@ -2108,13 +2095,6 @@ export function RoomScreen({
   useEffect(() => {
     void load();
   }, [load]);
-  // 팀 방: 머리 아래 팀 상태 요약 — 목표·승인 이벤트가 오면 다시 읽는다
-  useEffect(() => {
-    if (plain || tick.goal + tick.approval < 0) return;
-    api
-      .request<Summary>(`/api/rooms/${room.id}/summary`)
-      .then(setBrief, (e) => setError(errorText(e)));
-  }, [api, room.id, plain, tick.goal, tick.approval]);
   // 답이 끝나면 «누가 답했는지» 를 다시 받는다 (계약: timeline.answers)
   const wasBusy = useRef(false);
   useEffect(() => {
@@ -2228,13 +2208,17 @@ export function RoomScreen({
           focused && { borderLeftWidth: 3, borderLeftColor: colors.accent },
         ]}
       >
-        <Message message={m} onDecide={(d, r) => decide(m, d, r)} onGoals={() => setTab("goals")} />
+        <Message
+          message={m}
+          onDecide={(d, r) => decide(m, d, r)}
+          onGoals={() => setPanel("goals")}
+        />
       </View>
     );
   };
   // 가리킨 곳으로: 지금 결정할 승인 카드는 대화 끝(footer)에 있고, 지난 메시지는 머리(header) 안의 제 자리에 있다
   useEffect(() => {
-    if (!target || !messages || tab !== "chat" || scrolled.current === target) return;
+    if (!target || !messages || scrolled.current === target) return;
     setFocusNote("");
     const m = target.messageId ? messages.find((x) => x.id === target.messageId) : undefined;
     if (target.messageId && !m) {
@@ -2248,26 +2232,16 @@ export function RoomScreen({
     if (y === undefined) return; // 아직 자리가 안 잡혔다 — 잡히면 onLayout 이 보낸다
     scrolled.current = target;
     setAnchor({ y });
-  }, [target, messages, tab]);
+  }, [target, messages]);
   const answerLabel = (id: string) => {
     const a = timeline?.answers?.[id];
     return a ? answerLine(a) : undefined;
   };
   const teamTabs = timeline?.tabs ?? [];
-  const tabIds = order ?? orderTabs(teamTabs, room.tabOrder);
-  const custom = teamTabs.find((t) => customTabId(t) === tab);
+  const tabIds = orderTabs(teamTabs, room.tabOrder).filter((id) => id !== "chat");
+  const custom = teamTabs.find((t) => customTabId(t) === panel);
   const tabTitle = (id: string) =>
     text.tabs[id as BuiltinRoomTab] ?? teamTabs.find((t) => customTabId(t) === id)?.title ?? id;
-  const saveOrder = async () => {
-    setOrderError("");
-    try {
-      await api.request(`/api/rooms/${room.id}`, { tabOrder: tabIds }, "PATCH");
-      setOrdering(false);
-      void refreshRooms(api);
-    } catch (e) {
-      setOrderError(errorText(e));
-    }
-  };
   // 한 흐름: 지난 기록(부재 중 진척 → 보고·결정된 카드) → 대화 → 지금 결정할 승인 카드
   const header: ReactNode = (
     <View style={{ gap: 10 }}>
@@ -2332,8 +2306,8 @@ export function RoomScreen({
   const waiting = messages?.filter(isPendingCard) ?? [];
 
   // Muse 처럼 머리가 대화 위에 떠 있고, 대화가 그 밑으로 지나가며 흐려진다 (마스터 2026-10-10 «대화가 넘가면 블러 처리되는 것도 없고»).
-  // 팀 방은 탭 줄·현황판이 머리 아래 붙어 있어 지금처럼 쌓는다.
-  const float = plain && !desktop;
+  // 팀 방도 같다 — 팀 상태·탭은 시트에 있다.
+  const float = !desktop;
   return (
     <View style={{ flex: 1 }}>
       {/* Muse 처럼: 위 가운데 작은 동그란 프로필 + 그 아래 이름·상태 알약. 양옆 버튼은 같은 줄 */}
@@ -2362,7 +2336,7 @@ export function RoomScreen({
           <IconButton
             icon={SlidersHorizontal}
             label={text.roomSettings}
-            onPress={() => setSettingsOpen(true)}
+            onPress={() => (plain ? setSettingsOpen(true) : void openSummary())}
           />
         </View>
         <Character
@@ -2395,178 +2369,47 @@ export function RoomScreen({
           <RoomStrip onOpen={(next) => onOpenRoom?.(next)} />
         )}
       </View>
-      {!plain && (
-        <View style={{ paddingHorizontal: 16, paddingTop: 6, gap: 6 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={text.summaryTitle}
-            onPress={() => void openSummary()}
-            style={{
-              gap: 6,
-              padding: 10,
-              borderRadius: 10,
-              borderWidth: 1,
-              borderColor: colors.line,
-              backgroundColor: colors.card,
-            }}
-          >
-            <Text style={s.label}>{text.teamSummary}</Text>
-            <Text style={[s.small, mono, { color: colors.text }]}>
-              {text.teamSummaryLine(
-                pending,
-                board?.progress ?? brief?.progress ?? 0,
-                brief?.doneToday ?? 0,
-              )}
-            </Text>
-            {brief && <Flow flow={brief.flow} />}
-          </Pressable>
-          {onOpenGroup && (
-            <View style={[s.row, { gap: 8 }]}>
-              <Button
-                small
-                icon={MessageSquarePlus}
-                onPress={() =>
-                  void api
-                    .request<GroupView>(`/api/rooms/${room.id}/operator-chat`, {})
-                    .then(onOpenGroup, (e) => setError(errorText(e)))
+      <View style={{ flex: 1 }}>
+        <ChatScreen
+          roomId={room.id}
+          active
+          onMood={setMood}
+          header={
+            float ? (
+              <>
+                <View style={{ height: Math.max(0, headHeight - 40) }} />
+                {header}
+              </>
+            ) : (
+              header
+            )
+          }
+          footer={waiting.length ? <View style={{ gap: 10 }}>{waiting.map(render)}</View> : null}
+          placeholder={plain ? undefined : text.composer}
+          welcome={home}
+          deviceChat={home}
+          answerLabel={answerLabel}
+          onBranch={
+            plain && onOpenRoom
+              ? async (messages, times) => {
+                  const made = await api.request<Room>("/api/rooms", {
+                    title: MESSAGE_ACTION_TEXT.branchTitle(room.title),
+                  });
+                  await api.request(
+                    `/api/conversation?threadId=${encodeURIComponent(made.id)}`,
+                    { messages, times },
+                    "PUT",
+                  );
+                  const list = await refreshRooms(api);
+                  onOpenRoom(list?.find((r) => r.id === made.id) ?? made);
                 }
-              >
-                {text.operatorChat}
-              </Button>
-            </View>
-          )}
-        </View>
-      )}
-      {!plain && (
-        <View style={[s.row, { borderBottomWidth: 1, borderBottomColor: colors.line }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }}>
-            <View accessibilityRole="tablist" style={s.row}>
-              {tabIds.map((id, i) => (
-                <View key={id} style={[s.row, { gap: 0 }]}>
-                  {ordering && i > 0 && (
-                    <IconButton
-                      icon={ChevronLeft}
-                      label={text.tabMoveLeft(tabTitle(id))}
-                      onPress={() => setOrder(moveTab(tabIds, id, -1))}
-                    />
-                  )}
-                  <Pressable
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: tab === id }}
-                    onPress={() => setTab(id)}
-                    style={{
-                      alignItems: "center",
-                      paddingVertical: 10,
-                      paddingHorizontal: 12,
-                      borderBottomWidth: 2,
-                      borderBottomColor: tab === id ? colors.accent : "transparent",
-                    }}
-                  >
-                    <Text
-                      style={[
-                        s.text,
-                        { fontSize: 14 },
-                        tab === id
-                          ? { color: colors.accent, fontWeight: "700" }
-                          : { color: colors.muted },
-                      ]}
-                    >
-                      {tabTitle(id)}
-                    </Text>
-                  </Pressable>
-                  {ordering && i < tabIds.length - 1 && (
-                    <IconButton
-                      icon={ChevronRight}
-                      label={text.tabMoveRight(tabTitle(id))}
-                      onPress={() => setOrder(moveTab(tabIds, id, 1))}
-                    />
-                  )}
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-          {ordering ? (
-            <Button small onPress={() => void saveOrder()}>
-              {text.tabOrderDone}
-            </Button>
-          ) : (
-            <IconButton
-              icon={ArrowLeftRight}
-              label={text.tabOrder}
-              onPress={() => setOrdering(true)}
-            />
-          )}
-        </View>
-      )}
-      {!!orderError && (
-        <View style={{ paddingHorizontal: 16, paddingTop: 6 }}>
-          <ErrorNotice error={`${text.tabOrderFailed}: ${orderError}`} />
-        </View>
-      )}
-      {tab === "chat" ? (
-        <View style={{ flex: 1 }}>
-          <ChatScreen
-            roomId={room.id}
-            active
-            onMood={setMood}
-            header={
-              float ? (
-                <>
-                  <View style={{ height: Math.max(0, headHeight - 40) }} />
-                  {header}
-                </>
-              ) : (
-                header
-              )
-            }
-            footer={waiting.length ? <View style={{ gap: 10 }}>{waiting.map(render)}</View> : null}
-            placeholder={plain ? undefined : text.composer}
-            welcome={home}
-            deviceChat={home}
-            answerLabel={answerLabel}
-            onBranch={
-              plain && onOpenRoom
-                ? async (messages, times) => {
-                    const made = await api.request<Room>("/api/rooms", {
-                      title: MESSAGE_ACTION_TEXT.branchTitle(room.title),
-                    });
-                    await api.request(
-                      `/api/conversation?threadId=${encodeURIComponent(made.id)}`,
-                      { messages, times },
-                      "PUT",
-                    );
-                    const list = await refreshRooms(api);
-                    onOpenRoom(list?.find((r) => r.id === made.id) ?? made);
-                  }
-                : undefined
-            }
-            anchor={anchor}
-            online={!offline}
-            readOnly={room.archived ? ARCHIVED_ROOM_NOTICE : undefined}
-          />
-        </View>
-      ) : custom?.html ? (
-        <View style={{ flex: 1 }}>
-          <HtmlFrame html={custom.html} />
-        </View>
-      ) : (
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
-          {custom?.markdown !== undefined && <AssistantResponse content={custom.markdown} />}
-          {tab === "board" && (board ? <BoardWidget board={board} /> : <Skeleton rows={3} />)}
-          {tab === "skills" && <SkillsScreen roomId={room.id} />}
-          {tab === "goals" && (
-            <TeamGoalsScreen
-              roomId={room.id}
-              tick={tick.goal}
-              onOpenRoom={(_id, next) => show(next ?? {})}
-              onChat={() => setTab("chat")}
-            />
-          )}
-          {tab === "feed" && <FeedTab roomId={room.id} tick={tick.approval} onFocus={show} />}
-          {tab === "ideas" && <IdeasTab roomId={room.id} />}
-          {tab === "files" && <FilesTab roomId={room.id} />}
-        </ScrollView>
-      )}
+              : undefined
+          }
+          anchor={anchor}
+          online={!offline}
+          readOnly={room.archived ? ARCHIVED_ROOM_NOTICE : undefined}
+        />
+      </View>
       {home && !desktop && teamIcons === "float" && (
         <FloatingRooms onOpen={(next) => onOpenRoom?.(next)} />
       )}
@@ -2584,6 +2427,44 @@ export function RoomScreen({
               onBack();
             }}
           />
+        </Sheet>
+      )}
+      {panel !== null && (
+        <Sheet title={tabTitle(panel)} subtitle={title} wide onClose={() => setPanel(null)}>
+          <View style={[s.row, { marginBottom: 8 }]}>
+            <Button
+              small
+              icon={ArrowLeft}
+              onPress={() => {
+                setPanel(null);
+                void openSummary();
+              }}
+            >
+              {text.teamMenu}
+            </Button>
+          </View>
+          {custom?.html ? (
+            <View style={{ height: 560 }}>
+              <HtmlFrame html={custom.html} />
+            </View>
+          ) : (
+            <View style={{ gap: 10 }}>
+              {custom?.markdown !== undefined && <AssistantResponse content={custom.markdown} />}
+              {panel === "board" && (board ? <BoardWidget board={board} /> : <Skeleton rows={3} />)}
+              {panel === "skills" && <SkillsScreen roomId={room.id} />}
+              {panel === "goals" && (
+                <TeamGoalsScreen
+                  roomId={room.id}
+                  tick={tick.goal}
+                  onOpenRoom={(_id, next) => show(next ?? {})}
+                  onChat={() => setPanel(null)}
+                />
+              )}
+              {panel === "feed" && <FeedTab roomId={room.id} tick={tick.approval} onFocus={show} />}
+              {panel === "ideas" && <IdeasTab roomId={room.id} />}
+              {panel === "files" && <FilesTab roomId={room.id} />}
+            </View>
+          )}
         </Sheet>
       )}
       {skillsOpen && (
@@ -2646,9 +2527,81 @@ export function RoomScreen({
               </Text>
             </View>
           )}
+          {!plain && (
+            <View style={{ gap: 6, marginTop: 14 }}>
+              {onOpenGroup && (
+                <MenuRow
+                  icon={MessageSquarePlus}
+                  label={text.operatorChat}
+                  onPress={() =>
+                    void api.request<GroupView>(`/api/rooms/${room.id}/operator-chat`, {}).then(
+                      (g) => {
+                        setSummary(null);
+                        onOpenGroup(g);
+                      },
+                      (e) => setSummary({ error: errorText(e) }),
+                    )
+                  }
+                />
+              )}
+              {tabIds.map((id) => (
+                <MenuRow
+                  key={id}
+                  label={tabTitle(id)}
+                  onPress={() => {
+                    setSummary(null);
+                    setPanel(id);
+                  }}
+                />
+              ))}
+              <MenuRow
+                icon={SlidersHorizontal}
+                label={text.roomSettings}
+                onPress={() => {
+                  setSummary(null);
+                  setSettingsOpen(true);
+                }}
+              />
+            </View>
+          )}
         </Sheet>
       )}
     </View>
+  );
+}
+
+/** 팀 메뉴 시트의 한 줄 — 누르면 그 화면으로 */
+function MenuRow({
+  icon: Icon,
+  label,
+  onPress,
+}: {
+  icon?: typeof ChevronRight;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={[
+        s.row,
+        {
+          gap: 10,
+          paddingVertical: 12,
+          paddingHorizontal: 12,
+          borderRadius: 10,
+          borderWidth: 1,
+          borderColor: colors.line,
+          backgroundColor: colors.card,
+        },
+      ]}
+    >
+      {Icon && <Icon size={18} color={colors.text} />}
+      <Text style={[s.text, { flex: 1 }]}>{label}</Text>
+      <ChevronRight size={18} color={colors.muted} />
+    </Pressable>
   );
 }
 
