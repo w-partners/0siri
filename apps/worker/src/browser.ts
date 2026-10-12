@@ -188,11 +188,15 @@ export async function createBrowserManager(
     let context: BrowserContext;
     try {
       const { chromium } = await import("playwright");
-      // W브라우저 컨테이너: 사람이 noVNC 로 로그인해 둔 Chrome 에 붙는다(새로 띄우지 않는다).
-      // ponytail: 이 Chrome 은 egress 프록시를 거치지 않는다 — 페이지 route 검사만 남아 DNS rebinding 방어가 launch 모드보다 약하다
+      // W브라우저 컨테이너: 사람이 로그인해 둔 Chrome 에 붙는다(새로 띄우지 않는다).
+      // 그 Chrome 도 이 워커의 egress 프록시를 거친다(apps/wbrowser/chrome.sh) — DNS rebinding 방어는 launch 모드와 같다
       if (cdpUrl) {
-        if (!attached?.isConnected())
-          attached = await chromium.connectOverCDP(cdpUrl, { timeout: 25_000 });
+        // 워커가 Chrome 보다 먼저 뜬다(Chrome 이 워커 프록시를 쓰므로) — 컨테이너 기동 직후 첫 세션은 Chrome 을 기다린다
+        for (let i = 0; !attached?.isConnected(); i++)
+          attached = await chromium.connectOverCDP(cdpUrl, { timeout: 5_000 }).catch((error) => {
+            if (i >= 25) throw error;
+            return new Promise<undefined>((r) => setTimeout(r, 1000));
+          });
         const shared = attached.contexts()[0];
         if (!shared) throw new Error(`CDP ${cdpUrl} 에 기본 컨텍스트가 없다`);
         context = shared;

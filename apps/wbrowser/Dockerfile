@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk 
  && rm -rf /var/lib/apt/lists/* \
  && git clone -q --depth 1 --branch "$WBROWSER_REF" https://github.com/w-partners/Wbrowser /opt/wbrowser \
  && cd /opt/wbrowser && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
- && mkdir /data && chown pwuser:pwuser /data
+ && mkdir /data && chown pwuser:pwuser /data && mkdir -m 1777 -p /tmp/.X11-unix
 WORKDIR /app
 COPY worker/package.json worker/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
@@ -26,6 +26,7 @@ ENV NODE_ENV=production \
     WBROWSER_HEADLESS=0 \
     WORKER_DATA_DIR=/data/worker \
     WORKER_HOST=0.0.0.0 \
-    WORKER_CDP_URL=http://127.0.0.1:9222
-EXPOSE 8790 6080
+    WORKER_CDP_URL=http://127.0.0.1:9222 \
+    WORKER_PROXY_PORT=8791
+EXPOSE 8790
 CMD ["/opt/start.sh"]

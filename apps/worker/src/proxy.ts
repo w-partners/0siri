@@ -86,7 +86,8 @@ export async function startEgressProxy(
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
-  server.listen(0, "127.0.0.1");
+  // W브라우저 컨테이너: 워커보다 먼저 뜨는 Chrome 이 이 프록시를 쓰도록 포트를 고정한다(apps/wbrowser/chrome.sh)
+  server.listen(Number(process.env.WORKER_PROXY_PORT) || 0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Proxy unavailable");
