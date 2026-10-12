@@ -12,6 +12,7 @@ import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import {
   actionItems,
   approvalRate,
+  autoEvolveOnce,
   bradleyTerry,
   evolutionRoutes,
   judgePair,
@@ -251,4 +252,36 @@ test("M2 하한: 자동 장착본의 승인율이 이전 버전보다 떨어지�
   const out = await evo.evolve(owner, child.id);
   assert.equal(out.rolledBack?.id, seed.id);
   assert.equal(out.created, null);
+});
+
+test("자동 진화: 자기 개선 켠 사람만, 새 요청이 쌓인 장착 스킬만 한 세대 돌고, 다시 돌면 건너뛴다", async () => {
+  const { skills, owner, seed, db, rooms } = await setup("auto");
+  await db.put("system", "users", { id: owner });
+  await db.put("system", "users", { id: "off-user" });
+  await skills.setSelfImprove("off-user", false);
+  const evolution = new SkillEvolution(
+    db,
+    skills,
+    () => fakeLlm(true),
+    () => 0.3,
+  );
+  // 요청마다 다른 방향 — 후보 찾기가 새 스킬을 만들지 않게(진화만 센다)
+  const embedTexts = async (texts: string[]) =>
+    texts.map((_, i) => texts.map((__, k) => (k === i ? 1 : 0)));
+  const deps = { db, skills, rooms, evolution, embedTexts };
+  // 씨앗 이후 새 요청이 없다 → 건너뜀
+  let s = await autoEvolveOnce(deps);
+  assert.equal(s.users, 1, "자기 개선 끈 사람은 안 돈다");
+  assert.equal(s.evolved, 0);
+  for (const text of ["보도자료 하나 더 써줘", "보도자료 또 부탁해"])
+    await rooms.post(owner, seed.roomId as string, { role: "user", kind: "text", text });
+  s = await autoEvolveOnce(deps);
+  assert.equal(s.evolved, 1);
+  const titles = (await db.list<{ title: string }>(owner, "activity")).map((a) => a.title);
+  assert.ok(
+    titles.some((t) => t.startsWith("스킬 진화: 보도자료 v2 장착")),
+    titles.join(" | "),
+  );
+  // 방금 시도했으니 새 요청이 다시 쌓일 때까지 건너뛴다
+  assert.equal((await autoEvolveOnce(deps)).evolved, 0);
 });

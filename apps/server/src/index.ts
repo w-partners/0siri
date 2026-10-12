@@ -5,6 +5,7 @@ import { readConfig } from "./config.ts";
 import { createStore } from "./db.ts";
 import { warmUp } from "./osiri/embeddings.ts";
 import { Provisioner } from "./osiri/provisioner.ts";
+import { startAutoEvolution } from "./osiri/skill-evolution.ts";
 
 const config = readConfig();
 const db = await createStore({
@@ -27,6 +28,13 @@ const provisioner = new Provisioner(db, osiri.rooms, osiri.catalog, {
 osiri.subscriptions.startReaper();
 // 구독자들의 반려 신호에서 팀 공통 스킬 초안을 찾아 운영자 콘솔에 올린다 (§17.1 → §17.2, 하루 한 번)
 osiri.operator.startSkillDiscovery();
+// 자동 자기 개선: 자기 개선을 켠 사람마다 스킬 후보 찾기 + 새 요청이 쌓인 장착 스킬 진화 (6시간마다)
+startAutoEvolution({
+  db,
+  skills: osiri.skills,
+  rooms: osiri.rooms,
+  evolution: osiri.evolution,
+});
 if (config.teamProvisionerEnabled) provisioner.start();
 else
   console.log(

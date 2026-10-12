@@ -385,47 +385,152 @@ export class SkillEvolution {
   }
 }
 
-/** POST /api/skills/:id/evolve — 내 개인 스킬 한 세대 진화 (사용자 인증 뒤) */
+/** 같은 스킬(사람·이름·방) 동시 진화 막기 — 버튼과 자동 주기가 같은 표를 본다 */
+const running = new Set<string>();
+
+/** 한 세대를 돌리고 결과·실패를 그 방 활동에 남긴다(조용히 사라지지 않게). 이미 진화 중이면 409 */
+export function runLogged(
+  evolution: SkillEvolution,
+  rooms: Rooms,
+  owner: string,
+  seed: Pick<Skill, "id" | "name" | "roomId">,
+  actor = "진화",
+) {
+  const key = `${owner}:${seed.name}:${seed.roomId}`;
+  if (running.has(key)) throw new AppError("이 스킬은 이미 진화 중입니다", 409);
+  running.add(key);
+  const log = (title: string, detail: string) =>
+    rooms.activity(owner, {
+      roomId: seed.roomId ?? undefined,
+      kind: "skill",
+      actor,
+      title,
+      detail,
+    });
+  return evolution
+    .evolve(owner, seed.id)
+    .then(
+      (out) => {
+        // 하한 위반이면 진화 대신 롤백(또는 폐기 제안) — 그 기록은 Skills 가 이미 활동에 남겼다
+        if (out.parent === null) return;
+        const best = out.results.filter((r) => !r.blocked).sort((a, b) => b.wins - a.wins)[0];
+        return out.created
+          ? log(
+              `스킬 진화: ${seed.name} v${out.created.version} 장착`,
+              `${out.cases}건 비교에서 지금 버전을 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패로 이겼습니다 — 마음에 안 들면 롤백하세요`,
+            )
+          : log(
+              `스킬 진화: ${seed.name} 그대로`,
+              `새 후보가 지금 버전을 이기지 못해 바꾸지 않았습니다 (가장 나은 후보 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패)`,
+            );
+      },
+      (error: Error) => log(`스킬 진화 실패: ${seed.name}`, error.message),
+    )
+    .catch((error: Error) => console.error(`[osiri] 진화 결과 기록 실패: ${error.message}`))
+    .finally(() => running.delete(key));
+}
+
+/** POST /api/skills/:id/evolve — 내 개인 스킬 한 세대 진화 (사용자 인증 뒤).
+ * 한 세대는 2~4분 — 터널(100초)이 끊으므로 시작만 하고 202 */
 export function evolutionRoutes(evolution: SkillEvolution, rooms: Rooms) {
   const app = new Hono<{ Variables: { owner: string } }>();
-  // 한 세대는 2~4분 — 터널(100초)이 끊으므로 시작만 하고 202, 결과·실패는 그 방 활동에 남긴다(조용히 사라지지 않게)
-  const running = new Set<string>();
   app.post("/skills/:id/evolve", async (c) => {
     const owner = c.get("owner");
     const seed = await evolution.seed(owner, c.req.param("id"));
-    const key = `${owner}:${seed.name}:${seed.roomId}`;
-    if (running.has(key)) throw new AppError("이 스킬은 이미 진화 중입니다", 409);
-    running.add(key);
-    const log = (title: string, detail: string) =>
-      rooms.activity(owner, {
-        roomId: seed.roomId ?? undefined,
-        kind: "skill",
-        actor: "진화",
-        title,
-        detail,
-      });
-    void evolution
-      .evolve(owner, seed.id)
-      .then(
-        (out) => {
-          // 하한 위반이면 진화 대신 롤백(또는 폐기 제안) — 그 기록은 Skills 가 이미 활동에 남겼다
-          if (out.parent === null) return;
-          const best = out.results.filter((r) => !r.blocked).sort((a, b) => b.wins - a.wins)[0];
-          return out.created
-            ? log(
-                `스킬 진화: ${seed.name} v${out.created.version} 장착`,
-                `${out.cases}건 비교에서 지금 버전을 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패로 이겼습니다 — 마음에 안 들면 롤백하세요`,
-              )
-            : log(
-                `스킬 진화: ${seed.name} 그대로`,
-                `새 후보가 지금 버전을 이기지 못해 바꾸지 않았습니다 (가장 나은 후보 ${best?.wins ?? 0}승 ${best?.losses ?? 0}패)`,
-              );
-        },
-        (error: Error) => log(`스킬 진화 실패: ${seed.name}`, error.message),
-      )
-      .catch((error: Error) => console.error(`[osiri] 진화 결과 기록 실패: ${error.message}`))
-      .finally(() => running.delete(key));
+    void runLogged(evolution, rooms, owner, seed);
     return c.json({ started: true }, 202);
   });
   return app;
+}
+
+/** 자동 진화에 필요한 새 요청 수 — 지난 시도 뒤 그 방에 이만큼 쌓여야 다시 돌린다(비용) */
+export const AUTO_EVOLVE_NEW_ASKS = 2;
+const ATTEMPTS_ID = "evolve-attempts";
+
+/**
+ * 자동 자기 개선 주기 (마스터 2026-10-12 «자동 진화 맞지?»): 자기 개선을 켠 사람마다
+ * ① 반복 요청에서 스킬 후보 찾기 → ② 장착 중 개인 스킬 중 지난 시도 뒤 새 요청이 AUTO_EVOLVE_NEW_ASKS 개 이상 쌓인 것만 한 세대.
+ * 한 번에 하나씩 차례로(비용·게이트웨이 부하), 주간 한도는 seed() 가 지킨다. 실패는 사람별로 로그·활동에 남기고 다음 사람으로.
+ */
+export async function autoEvolveOnce(
+  deps: {
+    db: Store;
+    skills: Skills;
+    rooms: Rooms;
+    evolution: SkillEvolution;
+    /** 시험용 — 기본은 실제 임베딩 모델 */
+    embedTexts?: (texts: string[]) => Promise<number[][]>;
+  },
+  now = Date.now(),
+) {
+  const { db, skills, rooms, evolution } = deps;
+  const summary = { users: 0, scanned: 0, evolved: 0, skipped: 0 };
+  for (const user of await db.list<{ id: string }>("system", "users")) {
+    const owner = user.id;
+    if (!(await skills.selfImprove(owner)).auto) continue;
+    summary.users++;
+    try {
+      summary.scanned += (await skills.findCandidates(owner, deps.embedTexts)).created.length;
+    } catch (error) {
+      console.error(`[osiri] 자동 스킬 후보 찾기 실패 ${owner}: ${(error as Error).message}`);
+    }
+    const attempts =
+      (await db.get<{ id: string; at: Record<string, string> }>(owner, "settings", ATTEMPTS_ID))
+        ?.at ?? {};
+    const asks = (await db.list<RoomMessage>(owner, "messages")).filter((m) => m.role === "user");
+    for (const skill of (await skills.listForUser(owner, { scope: "personal" })).filter(
+      (s) => s.status === "active" && s.enabled,
+    )) {
+      const key = `${skill.roomId}:${skill.name}`;
+      const since = attempts[key] ?? skill.createdAt;
+      if (
+        asks.filter((m) => m.roomId === skill.roomId && m.createdAt > since).length <
+        AUTO_EVOLVE_NEW_ASKS
+      ) {
+        summary.skipped++;
+        continue;
+      }
+      attempts[key] = new Date(now).toISOString();
+      await db.put(owner, "settings", { id: ATTEMPTS_ID, at: attempts });
+      try {
+        await runLogged(
+          evolution,
+          rooms,
+          owner,
+          await evolution.seed(owner, skill.id),
+          "자동 진화",
+        );
+        summary.evolved++;
+      } catch (error) {
+        // 한도·진화 중 등 시작 전 거절 — 다음 주기에 다시 본다
+        console.error(
+          `[osiri] 자동 진화 건너뜀 ${owner}/${skill.name}: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
+  return summary;
+}
+
+export function startAutoEvolution(
+  deps: Parameters<typeof autoEvolveOnce>[0],
+  intervalMs = 6 * 3600_000,
+) {
+  const run = () =>
+    autoEvolveOnce(deps).then(
+      (s) =>
+        console.log(
+          `[osiri] 자동 진화: 사람 ${s.users} · 새 스킬 ${s.scanned} · 진화 ${s.evolved} · 건너뜀 ${s.skipped}`,
+        ),
+      (error: Error) => console.error(`[osiri] 자동 진화 주기 실패: ${error.message}`),
+    );
+  // 재시작이 6시간보다 잦아도 돌게 기동 10분 뒤 한 번(기동 직후 게이트웨이를 몰아치지 않게)
+  const first = setTimeout(() => void run(), 10 * 60_000);
+  first.unref?.();
+  const timer = setInterval(() => void run(), intervalMs);
+  timer.unref?.();
+  return () => {
+    clearTimeout(first);
+    clearInterval(timer);
+  };
 }

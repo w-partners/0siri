@@ -135,6 +135,8 @@ export async function createApp(
   approvals.limits = limits;
   const routing = new Routing(db, rooms);
   const skills = new Skills(db, rooms);
+  // ponytail: 진화는 공용키(gatewayLlm) — 주간 한도가 비용 상한. 구독 세션으로 돌리려면 owner 로 구독을 고른다
+  const evolution = new SkillEvolution(db, skills, () => gatewayLlm());
   const operator = new Operator(db, rooms, catalog, accounts, skills);
   const feed = new Feed(db, new SearchService(db));
   // 단체 톡 봇 — 방장의 구독 팀 도구를 방장 이름으로 부른다. 워커와 같은 게이트(정지·팀 중지·일시정지·끈 도구는 Mcp.call)
@@ -246,6 +248,7 @@ export async function createApp(
     subscriptions,
     osiriMcp,
     operator,
+    evolution,
     teamLlm,
     /** 방 하나의 팀 루프 (Provisioner 가 부른다) */
     teamRuntime: (owner: string, roomId: string, packageId: string) =>
@@ -484,7 +487,7 @@ export async function createApp(
     accountDeletionRoutes(accounts, (owner, input) => rooms.audit(owner, input)),
   );
   app.route("/api", skillRoutes(skills));
-  app.route("/api", evolutionRoutes(new SkillEvolution(db, skills, () => gatewayLlm()), rooms));
+  app.route("/api", evolutionRoutes(evolution, rooms));
   app.route("/api", feedRoutes(feed, accounts));
   app.route("/api", operatorRoutes(operator));
   app.get("/api/calendars", async (c) => c.json(await workspace.calendars(c.get("owner"))));
