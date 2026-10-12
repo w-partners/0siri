@@ -593,6 +593,7 @@ export const t = {
     markdown: {
       image: "[이미지]",
       imageAlt: (alt: string) => `[이미지: ${alt}]`,
+      chartInvalid: (why: string) => `차트를 그리지 못했습니다 — ${why}`,
     },
   },
   /** 상대 시각 문구 (relative-date.ts). 절대 날짜는 ko-KR 로캘로 포맷한다. */

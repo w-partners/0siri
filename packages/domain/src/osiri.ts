@@ -749,3 +749,45 @@ export const GROUP_BOT_TRIGGER_LABELS: Record<GroupBotTrigger, string> = {
 export const PUSH_CHANNEL = "messages";
 /** 봇 답 한 번의 최대 글자 — 넘으면 자른다 */
 export const GROUP_BOT_REPLY_MAX = 1500;
+
+// 대화 안 차트 (마스터 2026-10-12 «ChatGPT 처럼 자체 렌더링») — 모델이 ```chart 블록에 JSON 을 쓰면 앱이 막대그래프로 그린다.
+// 서버 persona.ts 가 CHART_PROMPT 로 형식을 알려 주고, 화면 assistant-response.tsx 가 parseChart 로 읽는다.
+export const CHART_FENCE = "chart";
+export const CHART_POINTS_MAX = 30;
+export interface ChartSpec {
+  title: string;
+  subtitle?: string;
+  unit?: string;
+  source?: string;
+  data: { label: string; value: number }[];
+}
+export const CHART_PROMPT = `수치를 비교할 때는 \`\`\`${CHART_FENCE} 코드 블록에 JSON {"title":"제목","subtitle":"기준·단위 설명","unit":"%","source":"출처 이름","data":[{"label":"항목","value":12.3}]} 을 쓰면 앱이 막대그래프로 그린다(항목 ${CHART_POINTS_MAX}개까지, 출처를 모르면 source 를 비운다). 여러 속성 비교는 마크다운 표로 쓴다.`;
+/** 형식이 틀리면 사유 문자열 — 화면은 그 사유와 원문을 보인다(조용히 버리지 않는다) */
+export function parseChart(raw: string): ChartSpec | string {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (e) {
+    return `JSON 이 아닙니다: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  const v = value as Partial<ChartSpec> | null;
+  if (!v || typeof v.title !== "string" || !v.title.trim()) return "title 이 없습니다";
+  if (!Array.isArray(v.data) || v.data.length === 0) return "data 가 없습니다";
+  if (v.data.length > CHART_POINTS_MAX) return `항목이 ${CHART_POINTS_MAX}개를 넘습니다`;
+  for (const p of v.data)
+    if (
+      !p ||
+      typeof p.label !== "string" ||
+      typeof p.value !== "number" ||
+      !Number.isFinite(p.value)
+    )
+      return "data 항목은 {label: 글, value: 숫자} 여야 합니다";
+  const text = (x: unknown) => (typeof x === "string" && x.trim() ? x.trim() : undefined);
+  return {
+    title: v.title.trim(),
+    subtitle: text(v.subtitle),
+    unit: text(v.unit),
+    source: text(v.source),
+    data: v.data.map((p) => ({ label: p.label, value: p.value })),
+  };
+}
