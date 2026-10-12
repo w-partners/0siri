@@ -3,7 +3,7 @@
 // 버튼 한 번으로 안드로이드 설치 화면을 연다 — 설치 승인은 사람이 한다. 웹은 서버가 곧 최신이라 대상 아님.
 import * as FileSystem from "expo-file-system/legacy";
 import * as IntentLauncher from "expo-intent-launcher";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform, Text, View } from "react-native";
 import appJson from "../../app.json";
 import { apiBase, plainFetch } from "../api";
@@ -19,7 +19,7 @@ export function isNewer(candidate: string, current: string) {
 }
 
 const text = {
-  downloading: (v: string) => `새 버전 v${v} 내려받는 중…`,
+  downloading: (v: string, pct: number) => `새 버전 v${v} 내려받는 중… ${pct}%`,
   ready: (v: string) => `새 버전 v${v} 준비됨`,
   install: "설치",
   failed: (why: string) => `업데이트 확인 실패: ${why}`,
@@ -33,9 +33,14 @@ export function UpdateBanner() {
   const [status, setStatus] = useState("");
   const [installError, setInstallError] = useState("");
 
+  // 받는 중엔 다시 확인하지 않는다 — 앱에 돌아올 때마다(active) 새로 받기 시작해 같은 파일에 겹쳐 쓰던 것이
+  // «10분 넘게 내려받는 중»의 원인이었다(마스터 2026-10-12)
+  const busy = useRef(false);
   const check = useCallback(async () => {
     // Play 판은 Play 가 업데이트한다 — 스스로 APK 를 받지 않는다(app.config.js 가 설치 권한도 뺀다)
     if (Platform.OS !== "android" || process.env.EXPO_PUBLIC_OSIRI_CHANNEL === "play") return;
+    if (busy.current) return;
+    busy.current = true;
     try {
       const res = await plainFetch(`${apiBase()}/releases/latest.json`, { cache: "no-store" });
       if (res.status === 404) return; // 릴리스를 안 내는 서버 — 기능 미구성이지 실패가 아니다
@@ -50,15 +55,27 @@ export function UpdateBanner() {
       const info = await FileSystem.getInfoAsync(dest);
       // ponytail: 크기만 대조한다. sha256 은 120MB 를 JS 로 해시해야 해서 뺐다 — 출처가 우리 HTTPS 도메인 하나다
       if (!(info.exists && info.size === next.size)) {
-        setStatus(text.downloading(next.version));
+        setStatus(text.downloading(next.version, 0));
         const url = next.url.startsWith("http") ? next.url : `${apiBase()}${next.url}`;
-        const dl = await FileSystem.downloadAsync(url, dest);
-        if (dl.status !== 200) throw new Error(`다운로드 ${dl.status}`);
+        // .part 로 받고 다 받은 뒤에만 이름을 바꾼다 — 끊긴 반쪽 파일을 «준비됨»으로 보지 않는다
+        const part = `${dest}.part`;
+        await FileSystem.deleteAsync(part, { idempotent: true });
+        let shown = 0;
+        const dl = await FileSystem.createDownloadResumable(url, part, {}, (p) => {
+          const pct = Math.floor(
+            (p.totalBytesWritten / (p.totalBytesExpectedToWrite || next.size)) * 100,
+          );
+          if (pct !== shown) setStatus(text.downloading(next.version, (shown = pct)));
+        }).downloadAsync();
+        if (dl?.status !== 200) throw new Error(`다운로드 ${dl?.status ?? "중단"}`);
+        await FileSystem.moveAsync({ from: part, to: dest });
       }
       setFile(dest);
       setStatus("");
     } catch (e) {
       setStatus(text.failed(e instanceof Error ? e.message : String(e)));
+    } finally {
+      busy.current = false;
     }
   }, []);
 
