@@ -543,7 +543,7 @@ test("가입 신청: 번호만 있는 옛 항목은 승인할 수 없다고 분�
   assert.equal(await accounts.userByPhone("01022220003"), null);
 });
 
-test("탈퇴 정리: 지워지는 회원의 아래 사람은 한 단계 위로 붙고, 안 쓰인 초대는 사라진다", async () => {
+test("탈퇴 보관: 보관된 회원은 트리에서 빠지고 아래 사람은 한 단계 위에 보이며, 그 회원의 초대는 못 쓴다(행은 지우지 않는다)", async () => {
   await accounts.ensureAdmin("010-0000-0003", PASSWORD);
   const top = await login("010-0000-0003");
   const middle = await inviteAndJoin(top.token, "010-3333-0001");
@@ -553,8 +553,7 @@ test("탈퇴 정리: 지워지는 회원의 아래 사람은 한 단계 위로 �
     201,
   );
   await accounts.requestDeletion(middle.user.id, async () => undefined);
-  const reports = await accounts.purgeDeleted({
-    memories: { removeAll: async () => 0 },
+  const reports = await accounts.archiveDeleted({
     audit: async () => undefined,
     now: Date.now() + 365 * 24 * 60 * 60 * 1000,
   });
@@ -568,6 +567,12 @@ test("탈퇴 정리: 지워지는 회원의 아래 사람은 한 단계 위로 �
     [bottom.user.id],
   );
   assert.equal((await call(`/api/auth/invite/${tokenOf(pending.link)}`)).status, 404);
+  // 지우지 않았다: 보관된 회원 행·아래 사람의 invitedBy·초대 행이 그대로다
+  assert.ok((await accounts.userById(middle.user.id))?.archivedAt);
+  assert.equal((await accounts.userById(bottom.user.id))?.invitedBy, middle.user.id);
+  assert.ok(
+    (await accounts.listInvites()).some((i) => i.createdBy === middle.user.id && !i.usedBy),
+  );
 });
 
 test("권한 부여: 관리자만 역할을 바꾸고, 자기 역할은 못 바꾼다", async () => {

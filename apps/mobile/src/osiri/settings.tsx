@@ -279,11 +279,11 @@ const text = {
     usage: "호출 · 토큰 · 등급별",
   } satisfies Record<Sub, string>,
   deleteData: "데이터 삭제",
-  deleteHint: `계정과 모든 데이터를 ${RETENTION_DAYS}일 안에 삭제합니다`,
-  deleteConfirm: `데이터 삭제를 요청하면 ${RETENTION_DAYS}일 안에 계정·기억·대화가 모두 지워지고 되돌릴 수 없습니다.`,
+  deleteHint: "탈퇴 — 로그인이 바로 막히고, 기록은 법령에 따라 분리 보관합니다",
+  deleteConfirm: `탈퇴를 요청하면 로그인이 바로 막히고 되돌릴 수 없습니다. ${RETENTION_DAYS}일 뒤 계정이 보관 상태로 바뀌고, 개인정보·이용 기록은 관계 법령과 분쟁 대응을 위해 분리 보관됩니다(openagentx.org/privacy).`,
   deleteAction: "삭제 요청",
   deleteAccepted: (date: string) =>
-    `삭제 요청을 접수했습니다. ${RETENTION_DAYS}일 안에(${date}까지) 모두 삭제되고 증적이 남습니다.`,
+    `탈퇴 요청을 접수했습니다. ${date}부터 계정이 보관 상태로 바뀝니다.`,
   logout: "로그아웃",
   forbidden: "이 화면을 볼 권한이 없습니다",
   // 프로필 · 사용량 상세 · 관리자 (기존 기능을 하위 화면으로 옮겼다)

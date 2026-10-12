@@ -50,8 +50,10 @@ export interface User {
   invitedBy?: string | null;
   /** 탈퇴 요청 시각. 있으면 로그인이 막힌다 */
   deleteRequestedAt?: string;
-  /** 이 시각이 지나면 정리(sweep)가 계정과 데이터를 지운다 */
+  /** 이 시각이 지나면 정리(sweep)가 계정을 «보관» 상태로 돌린다 — 지우지 않는다 */
   deleteAfter?: string;
+  /** 보관 전환 시각. 있으면 가입 네트워크·초대에서 빠지고 운영자만 본다 */
+  archivedAt?: string;
   /** 가입 때 동의한 이용약관 판과 시각 (TERMS_VERSION). 약관 도입 전 계정은 없다 */
   termsAgreed?: TermsAgreed;
   /** 관리자 이용 정지 — 있으면 로그인·워커(팀)·0Siri MCP 열쇠가 모두 막힌다 (wgolf RPT-02 E) */
@@ -127,12 +129,10 @@ export type AuditWriter = (
   owner: string,
   input: { packageId: null; actor: string; action: string; result: "ok" | "error" | "blocked" },
 ) => Promise<unknown>;
-export interface PurgeReport {
+export interface ArchiveReport {
   userId: string;
   deleteAfter: string;
-  /** 지운 records 수 (kind 별) */
-  records: Record<string, number>;
-  memories: number;
+  /** 폐기한 세션 수 */
   sessions: number;
   error?: string;
 }
@@ -340,7 +340,7 @@ export class Accounts {
     // 비밀번호까지 맞은 본인에게만 알린다 — 탈퇴 요청된 계정은 다시 쓸 수 없다
     if (user.deleteAfter)
       throw new AppError(
-        `탈퇴를 요청한 계정입니다. ${user.deleteAfter.slice(0, 10)} 이후 삭제되며 다시 로그인할 수 없습니다`,
+        `탈퇴를 요청한 계정입니다. ${user.deleteAfter.slice(0, 10)} 부터 분리 보관되며 다시 로그인할 수 없습니다`,
         403,
       );
     await requireNotSuspended(this.db, user.id);
@@ -410,6 +410,11 @@ export class Accounts {
     if (invite.usedBy) throw new AppError("이미 가입한 초대는 취소할 수 없습니다", 409);
     await this.db.remove("system", "invites", id);
   }
+  /** 보관(탈퇴) 계정이 보낸 초대는 못 쓴다 — 초대 행은 지우지 않고 막기만 한다 */
+  private async requireInviterActive(invite: Invite, status: 400 | 404) {
+    if ((await this.userById(invite.createdBy))?.archivedAt)
+      throw new AppError("초대한 회원이 탈퇴해 쓸 수 없는 초대 링크입니다", status);
+  }
   /** 초대 링크를 열었을 때 보여 줄 것 — 번호는 가운데를 가린다. 번호 없는 (관리자) 초대는 phoneHint 가 null. */
   async previewInvite(
     token: string,
@@ -418,6 +423,7 @@ export class Accounts {
     if (!invite) throw new AppError("초대 링크가 올바르지 않습니다", 404);
     if (invite.usedBy) throw new AppError("이미 사용된 초대 링크입니다", 410);
     if (invite.expiresAt < Date.now()) throw new AppError("초대 링크가 만료되었습니다", 410);
+    await this.requireInviterActive(invite, 404);
     return {
       phoneHint: invite.phone ? maskPhone(invite.phone) : null,
       inviterName: (await this.profile(invite.createdBy)).displayName || null,
@@ -433,6 +439,7 @@ export class Accounts {
     if (!invite) throw new AppError("초대 링크가 올바르지 않습니다", 400);
     if (invite.usedBy) throw new AppError("이미 사용된 초대 링크입니다", 400);
     if (invite.expiresAt < Date.now()) throw new AppError("초대 링크가 만료되었습니다", 400);
+    await this.requireInviterActive(invite, 400);
     const phone = normalizePhone(input.phone);
     if (invite.phone && invite.phone !== phone)
       throw new AppError(INVITE_PHONE_MISMATCH_MESSAGE, 400);
@@ -499,10 +506,19 @@ export class Accounts {
     const me = users.find((u) => u.id === userId);
     if (!me) throw new AppError("사용자를 찾을 수 없습니다", 404);
     const names = await this.displayNames();
+    // 보관(탈퇴) 계정은 트리에서 빼고, 그 아래 사람은 보관 계정이 아닌 가장 가까운 윗사람 밑에 보인다 — 저장된 invitedBy 는 바꾸지 않는다
+    const byId = new Map(users.map((u) => [u.id, u]));
+    const parentOf = (user: User) => {
+      let parent = user.invitedBy ? byId.get(user.invitedBy) : undefined;
+      for (let hops = 0; parent?.archivedAt && hops < users.length; hops++)
+        parent = parent.invitedBy ? byId.get(parent.invitedBy) : undefined;
+      return parent?.archivedAt ? undefined : parent?.id;
+    };
     const childrenOf = new Map<string, User[]>();
-    for (const user of users)
-      if (user.invitedBy)
-        childrenOf.set(user.invitedBy, [...(childrenOf.get(user.invitedBy) ?? []), user]);
+    for (const user of users) {
+      const parent = user.archivedAt ? undefined : parentOf(user);
+      if (parent) childrenOf.set(parent, [...(childrenOf.get(parent) ?? []), user]);
+    }
     // 순환 방지: 한 번 붙인 사람은 다시 붙이지 않는다 (기록이 꼬여 A→B→A 가 돼도 끝난다)
     const seen = new Set<string>([userId]);
     let total = 0;
@@ -733,82 +749,53 @@ export class Accounts {
     return sessions.length;
   }
   /**
-   * 보존 기간이 지난 탈퇴 계정을 지운다: 그 소유자의 records 전부 · 기억 · 세션 · 전화번호 색인 · 사용자 행.
-   * 사용자 행을 맨 끝에 지우므로 중간에 실패하면 다음 정리가 다시 잡는다. 한 계정의 실패가 나머지를 막지 않는다.
-   * ponytail: 디스크의 PDF 바이트(files)·컴퓨터 컨테이너는 여기서 지우지 않는다 — 그 모듈이 소유한다.
+   * 기한(`deleteAfter`)이 지난 탈퇴 계정을 «보관» 상태로 돌린다 — 지우지 않는다(마스터 2026-10-12 «개인정보나 활동 로그는 지우면 안 된다»).
+   * 하는 것: `archivedAt` 표시 · 남은 세션 폐기 · system 감사 로그. 사용자 행·records·기억·파일·감사 로그는 그대로 둔다.
+   * 보관 계정은 로그인이 막히고(requestDeletion 때부터) 가입 네트워크·초대에서 빠진다. 운영자 회원 목록에서만 보인다.
+   * 보관 기간이 끝난 뒤의 파기는 아직 없다 — 기간을 마스터가 정하면 그때 만든다(정해지기 전에는 지우지 않는 쪽).
    */
-  async purgeDeleted(deps: {
-    memories: { removeAll(owner: string): Promise<number> };
-    audit: AuditWriter;
-    now?: number;
-  }): Promise<PurgeReport[]> {
+  async archiveDeleted(deps: { audit: AuditWriter; now?: number }): Promise<ArchiveReport[]> {
     const now = deps.now ?? Date.now();
     const due = (await this.db.list<User>("system", "users")).filter(
-      (u) => u.deleteAfter !== undefined && Date.parse(u.deleteAfter) <= now,
+      (u) => u.deleteAfter !== undefined && !u.archivedAt && Date.parse(u.deleteAfter) <= now,
     );
-    const reports: PurgeReport[] = [];
+    const reports: ArchiveReport[] = [];
     for (const user of due) {
-      const report: PurgeReport = {
+      const report: ArchiveReport = {
         userId: user.id,
         deleteAfter: user.deleteAfter as string,
-        records: {},
-        memories: 0,
         sessions: 0,
       };
       try {
-        const { rows } = await this.db.sql<{ kind: string }>(
-          "DELETE FROM records WHERE owner=$1 RETURNING kind",
-          [user.id],
-        );
-        for (const { kind } of rows) report.records[kind] = (report.records[kind] ?? 0) + 1;
-        report.memories = await deps.memories.removeAll(user.id);
         report.sessions = await this.revokeSessions(user.id);
         await deps.audit("system", {
           packageId: null,
           actor: `user:${user.id}`,
-          action: "account.purged",
+          action: "account.archived",
           result: "ok",
         });
-        // 가입 네트워크: 아래 사람들을 한 단계 위로 붙이고(끊긴 가지가 생기지 않게), 안 쓰인 초대는 지운다
-        for (const child of await this.db.listByField<User>(
-          "system",
-          "users",
-          "invitedBy",
-          user.id,
-        ))
-          await this.db.put<User>("system", "users", {
-            ...child,
-            invitedBy: user.invitedBy ?? null,
-          });
-        for (const invite of await this.db.listByField<Invite>(
-          "system",
-          "invites",
-          "createdBy",
-          user.id,
-        ))
-          if (!invite.usedBy) await this.db.remove("system", "invites", invite.id);
-        await this.db.remove("system", "phone-index", user.phone);
-        await this.db.remove("system", "users", user.id);
-        console.log(
-          `[osiri] 탈퇴 계정 삭제 user=${user.id} (기한 ${report.deleteAfter}): records ${JSON.stringify(report.records)} · 기억 ${report.memories} · 세션 ${report.sessions}`,
-        );
+        await this.db.put<User>("system", "users", {
+          ...user,
+          archivedAt: new Date(now).toISOString(),
+        });
+        console.log(`[osiri] 탈퇴 계정 보관 전환 user=${user.id} (기한 ${report.deleteAfter})`);
       } catch (error) {
         report.error = error instanceof Error ? error.message : String(error);
         console.error(
-          `[osiri] 탈퇴 계정 삭제 실패 user=${user.id} — 다음 정리 때 다시 시도합니다: ${report.error} (여기까지 지운 것: records ${JSON.stringify(report.records)} · 기억 ${report.memories} · 세션 ${report.sessions})`,
+          `[osiri] 탈퇴 계정 보관 전환 실패 user=${user.id} — 다음 정리 때 다시 시도합니다: ${report.error}`,
         );
       }
       reports.push(report);
     }
     return reports;
   }
-  /** 기동 직후 한 번 + 주기적으로 `purgeDeleted` 를 돌린다. 프로세스 종료를 붙잡지 않는다(unref). */
-  startPurgeSweep(
-    deps: Parameters<Accounts["purgeDeleted"]>[0],
+  /** 기동 직후 한 번 + 주기적으로 `archiveDeleted` 를 돌린다. 프로세스 종료를 붙잡지 않는다(unref). */
+  startArchiveSweep(
+    deps: Parameters<Accounts["archiveDeleted"]>[0],
     intervalMs = PURGE_INTERVAL_MS,
   ): () => void {
     const run = () =>
-      void this.purgeDeleted(deps).catch((error) =>
+      void this.archiveDeleted(deps).catch((error) =>
         console.error(
           `[osiri] 탈퇴 계정 정리를 돌리지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
         ),

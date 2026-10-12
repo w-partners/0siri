@@ -994,42 +994,48 @@ test("탈퇴: deleteAfter = 지금 + 보존 기간 · 증적 기록 · 로그인
   );
   assert.equal((await trail("system", "account.delete_requested")).length, 1);
 
-  // 기한 전의 정리는 아무것도 지우지 않는다
+  // 보관 전환은 아무것도 지우지 않는다 — 기한 전·후 모두 users·records·감사 로그·기억 행 수가 그대로다(마스터 2026-10-12)
   const deps = {
-    memories,
     audit: (owner: string, input: Parameters<Rooms["audit"]>[1]) => rooms.audit(owner, input),
   };
-  assert.deepEqual(await accounts.purgeDeleted({ ...deps, now: Date.parse(deleteAfter) - 1 }), []);
-  assert.ok(await accounts.userById(user.id));
-  assert.equal((await memories.list(user.id)).length, 1);
+  const counts = async () => ({
+    users: (await db.list("system", "users")).length,
+    rooms: (await db.list(user.id, "rooms")).length,
+    profiles: (await db.list(user.id, "profiles")).length,
+    audit: (await db.list(user.id, "audit")).length,
+    memories: (await memories.list(user.id)).length,
+  });
+  const before_ = await counts();
+  assert.deepEqual(
+    await accounts.archiveDeleted({ ...deps, now: Date.parse(deleteAfter) - 1 }),
+    [],
+  );
+  assert.equal((await accounts.userById(user.id))?.archivedAt, undefined);
 
-  // 기한이 지나면 지우고, 무엇을 지웠는지 돌려준다
-  const reports = await accounts.purgeDeleted({ ...deps, now: Date.parse(deleteAfter) + 1 });
-  assert.equal(reports.length, 1);
-  const report = reports[0];
-  assert.equal(report?.userId, user.id);
-  assert.equal(report?.error, undefined);
-  assert.equal(report?.memories, 1);
-  assert.equal(report?.records.profiles, 1);
-  assert.equal(report?.records.rooms, 1);
-  assert.equal(report?.records.audit, 1);
-  assert.equal(await accounts.userById(user.id), null);
-  assert.equal(await accounts.userByPhone(phone), null);
-  assert.equal((await db.list(user.id, "rooms")).length, 0);
-  assert.equal((await db.list(user.id, "profiles")).length, 0);
-  assert.equal((await memories.list(user.id)).length, 0);
-  assert.equal((await trail("system", "account.purged")).length, 1);
+  // 기한이 지나면 «보관» 으로 돌린다
+  const reports = await accounts.archiveDeleted({ ...deps, now: Date.parse(deleteAfter) + 1 });
+  assert.deepEqual(
+    reports.map((r) => [r.userId, r.error]),
+    [[user.id, undefined]],
+  );
+  assert.deepEqual(await counts(), before_);
+  assert.ok((await accounts.userById(user.id))?.archivedAt);
+  assert.ok(await accounts.userByPhone(phone));
+  assert.equal((await trail("system", "account.archived")).length, 1);
   assert.equal((await trail("system", "account.delete_requested")).length, 1);
-  // 다시 돌려도 지울 것이 없다
-  assert.deepEqual(await accounts.purgeDeleted({ ...deps, now: Date.parse(deleteAfter) + 2 }), []);
+  // 다시 돌려도 할 일이 없다
+  assert.deepEqual(
+    await accounts.archiveDeleted({ ...deps, now: Date.parse(deleteAfter) + 2 }),
+    [],
+  );
   // 남의 데이터는 그대로다
   assert.ok(await accounts.userById(keeper.id));
   assert.equal((await memories.list(keeper.id)).length, 1);
   assert.equal((await db.list(keeper.id, "rooms")).length, 1);
-  // 지워진 번호로는 로그인할 계정이 없다
-  assert.equal((await login()).status, 401);
+  // 로그인만 거절된다
+  assert.equal((await login()).status, 403);
   assert.equal(
     ((await db.list<User>("system", "users")) as User[]).some((u) => u.phone === phone),
-    false,
+    true,
   );
 });

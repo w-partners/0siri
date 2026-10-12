@@ -43,6 +43,7 @@ import { Feed, feedRoutes } from "./osiri/feed.ts";
 import { Groups, groupRoutes } from "./osiri/groups.ts";
 import { History, historyRoutes } from "./osiri/history.ts";
 import { Images, imageRoutes } from "./osiri/images.ts";
+import { legalRoutes } from "./osiri/legal.ts";
 import { UsageLimits } from "./osiri/limits.ts";
 import { locationRoutes } from "./osiri/location.ts";
 import { Mcp, mcpRoutes } from "./osiri/mcp.ts";
@@ -775,6 +776,8 @@ export async function createApp(
     );
   // 없는 릴리스 파일·미설정일 때 SPA index.html 이 대신 나가면 앱이 HTML 을 latest.json 으로 읽는다
   app.all("/releases/*", (c) => c.json({ error: "릴리스 파일을 찾을 수 없습니다" }, 404));
+  // 개인정보처리방침·계정 삭제 안내 — 로그인 없이(Play 등록 요건). SPA 보다 먼저
+  app.route("/", legalRoutes());
   // 0Siri: 웹 빌드(expo export --platform web)를 같은 포트에서 낸다. SPA 라 모르는 경로는 index.html.
   if (config.webDist) {
     app.use("/*", serveStatic({ root: config.webDist }));
