@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assistantMarkdown, isSafeAssistantUrl } from "../src/assistant-markdown.ts";
+import { assistantMarkdown, checkboxes, isSafeAssistantUrl } from "../src/assistant-markdown.ts";
+
+test("체크리스트 «- [ ]» 는 목록 머리만 상자 글자로 — 본문 속 «[ ]» 는 그대로", () => {
+  assert.equal(
+    checkboxes("- [ ] 자료 확인\n* [x] 예약\n1. [X] 명함\n본문 [ ] 그대로\n- [ ]붙음"),
+    "- ☐ 자료 확인\n* ☑ 예약\n1. ☑ 명함\n본문 [ ] 그대로\n- [ ]붙음",
+  );
+});
 
 test("assistant Markdown structures the reported response", () => {
   const html = assistantMarkdown.render(

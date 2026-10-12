@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Linking, ScrollView, Text, type TextStyle, View, type ViewStyle } from "react-native";
 import Markdown, { type MarkdownStyles, type RenderRules } from "react-native-markdown-renderer";
 import { CHART_FENCE, type ChartSpec, parseChart } from "../../../packages/domain/src/osiri";
-import { assistantMarkdown, isSafeAssistantUrl } from "./assistant-markdown";
+import { assistantMarkdown, checkboxes, isSafeAssistantUrl } from "./assistant-markdown";
 import { t } from "./strings";
 import { colors, ErrorNotice } from "./ui";
 
@@ -164,7 +164,7 @@ export function AssistantResponse({ content }: { content: string }) {
         rules={rules}
         onLinkPress={onLinkPress}
       >
-        {content}
+        {checkboxes(content)}
       </Markdown>
       <ErrorNotice error={linkError} />
     </>

@@ -9,6 +9,14 @@ export const assistantMarkdown = new MarkdownIt({
   typographer: false,
 }).use(cjkFriendly);
 
+// 체크리스트 «- [ ] 할 일» — markdown-it 은 GFM 작업 목록을 몰라 «[ ]» 가 글자로 나온다. 목록 줄 머리만 상자 글자로 바꾼다
+// ponytail: 눌러서 체크하는 기능은 없다 — 표시만. 필요해지면 markdown-it-task-lists 로
+export const checkboxes = (content: string) =>
+  content.replace(
+    /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\](?=\s)/gm,
+    (_, head: string, mark: string) => `${head}${mark === " " ? "☐" : "☑"}`,
+  );
+
 export function isSafeAssistantUrl(value: string): boolean {
   try {
     const url = new URL(value);
