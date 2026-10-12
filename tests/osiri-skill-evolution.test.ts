@@ -11,6 +11,7 @@ import { EventBus } from "../apps/server/src/osiri/events.ts";
 import { Rooms } from "../apps/server/src/osiri/rooms.ts";
 import {
   actionItems,
+  approvalRate,
   bradleyTerry,
   evolutionRoutes,
   judgePair,
@@ -217,4 +218,37 @@ test("챔피언을 못 이기면 아무것도 만들지 않는다", async () => 
   ).evolve(owner, seed.id);
   assert.equal(out.created, null);
   assert.equal((await skills.listForUser(owner)).length, 1);
+});
+
+test("M2 하한: 자동 장착본의 승인율이 이전 버전보다 떨어지면 진화 대신 롤백한다", async () => {
+  assert.equal(
+    approvalRate([{ status: "approved", decidedAt: "b" }], "a", "z"),
+    null,
+    "3건 미만은 모름",
+  );
+  const { skills, owner, seed, db } = await setup("floor");
+  const evo = new SkillEvolution(
+    db,
+    skills,
+    () => fakeLlm(true),
+    () => 0.3,
+  );
+  const child = (await evo.evolve(owner, seed.id)).created;
+  assert.ok(child);
+  const family = await skills.lineageOf(owner, child);
+  const at = (id: string) => family.find((s) => s.id === id)?.decidedAt as string;
+  const [t0, t1] = [Date.parse(at(seed.id)), Date.parse(at(child.id))];
+  const put = (i: number, status: string, t: number) =>
+    db.put(owner, "approvals", {
+      id: `ap-${i}`,
+      roomId: seed.roomId,
+      status,
+      decidedAt: new Date(t).toISOString(),
+    });
+  // 부모 기간: 승인 3 (부모 decidedAt 과 자식 decidedAt 사이) · 자식 기간: 반려 3
+  for (let i = 0; i < 3; i++) await put(i, "approved", t0 + ((t1 - t0) * (i + 1)) / 5);
+  for (let i = 3; i < 6; i++) await put(i, "rejected", t1 + 1000 * i);
+  const out = await evo.evolve(owner, child.id);
+  assert.equal(out.rolledBack?.id, seed.id);
+  assert.equal(out.created, null);
 });

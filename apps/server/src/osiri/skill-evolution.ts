@@ -5,8 +5,9 @@
 import { Hono } from "hono";
 import type { Store } from "../db.ts";
 import { AppError } from "../errors.ts";
+import type { Approval } from "./approvals.ts";
 import type { RoomMessage, Rooms } from "./rooms.ts";
-import type { Skill, Skills } from "./skills.ts";
+import type { Skill, Skills, StoredSkill } from "./skills.ts";
 import type { Llm } from "./team-runtime.ts";
 
 export type Verdict = { a: string; b: string; winner: "A" | "B" | "tie"; rationale: string };
@@ -73,6 +74,24 @@ export function loosensGuard(text: string) {
   return text
     .split(/[.\n。!?]/)
     .some((s) => target.test(s) && loosen.test(s) && (!forbids.test(s) || permits.test(s)));
+}
+
+/** 승인율이 이만큼(비율) 떨어지면 하한 위반 — 자동 장착본을 롤백한다 */
+export const PROXY_FLOOR = 0.15;
+const PROXY_MIN_DECISIONS = 3;
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+/** [from, to) 에 결정된 승인 요청의 승인율. 결정이 PROXY_MIN_DECISIONS 건 미만이면 모름(null) */
+export function approvalRate(
+  approvals: Pick<Approval, "status" | "decidedAt">[],
+  from: string,
+  to: string,
+) {
+  const inWindow = approvals.filter(
+    (a) => a.decidedAt && a.decidedAt >= from && a.decidedAt < to && a.status !== "pending",
+  );
+  if (inWindow.length < PROXY_MIN_DECISIONS) return null;
+  return inWindow.filter((a) => a.status === "approved").length / inWindow.length;
 }
 
 /** 판정 이유에서 고칠 거리(실패·누락·불일치…) 문장만 — 다음 변이의 입력 */
@@ -221,13 +240,54 @@ export class SkillEvolution {
   async evolve(owner: string, skillId: string) {
     const seed = await this.seed(owner, skillId);
     const lineage = await this.skills.lineageOf(owner, seed);
-    // 아카이브 = 반려된 것 빼고 전부(폐기된 것도 디딤돌로 남는다)
+    // M2 proxy: 버전마다 장착 기간의 승인율(반려 대비). 결정 3건 미만이면 모름(null)
+    const approvals = (await this.db.list<Approval>(owner, "approvals")).filter(
+      (a) =>
+        a.roomId === seed.roomId &&
+        a.decidedAt &&
+        (a.status === "approved" || a.status === "rejected"),
+    );
+    const proxy = (s: StoredSkill) => {
+      if (!s.decidedAt) return null;
+      const end = lineage.find((n) => n.supersedes === s.id)?.decidedAt ?? "9999";
+      return approvalRate(approvals, s.decidedAt, end);
+    };
+    const live = lineage.find((s) => s.status === "active" || s.status === "retire_proposed");
+    // 하한(Goodhart 방지): 자기 개선이 장착한 지금 버전의 승인율이 이전 버전보다 확실히 떨어졌으면 진화보다 롤백이 먼저
+    const prev = live?.supersedes ? lineage.find((s) => s.id === live.supersedes) : undefined;
+    const [now, before] = [live && proxy(live), prev && proxy(prev)];
+    if (
+      live &&
+      typeof now === "number" &&
+      typeof before === "number" &&
+      now < before - PROXY_FLOOR
+    ) {
+      const restored = await this.skills.reportEffect(owner, live.roomId as string, live.id, {
+        effect: `승인율 ${pct(before)} → ${pct(now)} 로 떨어졌습니다`,
+        worse: true,
+      });
+      return {
+        rolledBack: restored.id === live.id ? null : restored,
+        parent: null,
+        champion: live.id,
+        cases: 0,
+        results: [],
+        created: null,
+      };
+    }
+    // 아카이브 = 반려된 것 빼고 전부(폐기된 것도 디딤돌로 남는다). 점수 = 섀도우 승률과 승인율의 평균(있는 것만)
     const archive = lineage
       .filter((s) => s.status !== "rejected" && s.status !== "draft")
-      .map((s) => ({ ...s, children: lineage.filter((c) => c.parentId === s.id).length }));
+      .map((s) => {
+        const known = [s.fitness, proxy(s)].filter((x): x is number => typeof x === "number");
+        return {
+          ...s,
+          fitness: known.length ? known.reduce((a, b) => a + b, 0) / known.length : undefined,
+          children: lineage.filter((c) => c.parentId === s.id).length,
+        };
+      });
     const parent = pickParent(archive, this.rand);
-    const champion =
-      lineage.find((s) => s.status === "active" || s.status === "retire_proposed") ?? parent;
+    const champion = live ?? parent;
     const cases = await this.cases(owner, seed.roomId);
     const feedback = [
       ...lineage.flatMap((s) => s.evalNotes ?? []),
@@ -290,6 +350,7 @@ export class SkillEvolution {
     }));
     if (!winner)
       return {
+        rolledBack: null,
         parent: parent.id,
         champion: champion.id,
         cases: cases.length,
@@ -314,6 +375,7 @@ export class SkillEvolution {
       },
     );
     return {
+      rolledBack: null,
       parent: parent.id,
       champion: champion.id,
       cases: cases.length,
@@ -346,6 +408,8 @@ export function evolutionRoutes(evolution: SkillEvolution, rooms: Rooms) {
       .evolve(owner, seed.id)
       .then(
         (out) => {
+          // 하한 위반이면 진화 대신 롤백(또는 폐기 제안) — 그 기록은 Skills 가 이미 활동에 남겼다
+          if (out.parent === null) return;
           const best = out.results.filter((r) => !r.blocked).sort((a, b) => b.wins - a.wins)[0];
           return out.created
             ? log(
